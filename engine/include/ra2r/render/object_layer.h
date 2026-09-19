@@ -36,6 +36,10 @@ struct ObjectRenderStats {
     int skipped = 0;
 };
 
+// 建造/展开动画时长（原版 [General] BuildupTime 默认 0.05 分钟 = 3s @15Hz）：
+// Buildup SHP 播完一遍后显示建筑本体 make 帧，与工期/帧数无关（object_layer.cpp）
+constexpr int kBuildupTicks = 45;
+
 struct ObjectRenderCache; // 定义见下（render_objects 的可选缓存参数）
 
 // 待渲染对象（kind: 0=建筑 1=载具 2=步兵）
@@ -49,12 +53,20 @@ struct PlacedObject {
     int off_x = 0, off_y = 0; // 格内像素偏移（M3 平滑移动插值用；建筑恒 0）
     uint8_t alpha = 255;      // 不透明度（其余恒 255）
     // 建筑帧语义（OpenRA ra2 ^Structure 约定）：
-    //   idle=帧0(阴影帧3)、damaged-idle=帧1(阴影帧4)、make=帧2(阴影帧5，
-    //   按 build_p 0..1 缩放表现建造动画)；hp<128 → 受损帧；build_p<0 = 建成
+    //   idle=帧0(阴影帧3)、damaged-idle=帧1(阴影帧4)、make=帧2(阴影帧5)；
+    //   hp<128 → 受损帧；build_p<0 = 建成
     int hp = 256;
     float build_p = -1.0f;
     // 阵营色：0 = 不重映射；N = cfg.house_ramps[N-1]（Remap 段 16..31 整段替换）
     uint8_t remap = 0;
+    // ── 动画状态（渲染用；默认静态）──
+    // 建造：已用/总逻辑帧。有 Buildup 动画时按固定时长（原版 BuildupTime
+    // 默认 0.05 分钟 = 3s）播完一遍，随后显示 make 帧直到完工（见 object_layer.cpp）
+    int build_ticks = 0;
+    int build_total = 0;
+    // 步兵：moving=行进中（播 Walk 序列）；anim_clock = 逻辑帧时钟（走序列相位）
+    uint8_t moving = 0;
+    uint32_t anim_clock = 0;
 };
 
 // 渲染对象到画布（画在地形之后，按 (cx+cy, cx) 深度排序）。

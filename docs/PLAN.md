@@ -136,7 +136,7 @@
 | 光照等级管线 | ✅ PaletteLut 32 级 + --light 距离渐变（中心 0/边缘 24 已验证） |
 | 建筑渲染管线（artmd Image/Foundation + SHP 首帧 + 单位盘） | ✅ 战役图 119 建筑实测 |
 | 载具渲染管线（VXL+HVA 体素锚点对齐格中心，dir→yaw） | ✅ 战役图 21 载具实测 |
-| 步兵渲染管线（Image= 链 + Sequence 朝向帧 + subcell） | ✅ 战役图 41 步兵实测 |
+| 步兵渲染管线（Image= 链 + Sequence 朝向帧 + subcell） | ✅ 战役图 41 步兵实测；**行走动画** = artmd `Sequence=` 节 `Walk=Start,Length,Stride` 循环段（行进中 `moving` 播 Walk、否则 Guard；相位 ≈100ms/帧 @15Hz = clock·2/3，确定性整数运算；`PlacedObject.moving/anim_clock` 由 sim 注入，见 object_layer.cpp） |
 | 等距包围盒修复（右极值角 (W-1,0)，此前右半被裁） | ✅ DEBUGGING.md 3.7 |
 | 全单位陈列场景（验收） | ✅ --showcase：218/218 VXL 网格渲染 |
 | 混合过渡（斜坡/水岸边的过渡瓦片选择） | ✅ 编辑器烘焙瓦片天然支持；斜坡高度经 cell.height 抬升 + 悬崖扩展区渲染 |
@@ -199,7 +199,7 @@
 | 遭遇战开局（阵营 / 阵营色 / 开局兵力） | ✅ `engine/sim/skirmish`：国家（`[Countries]` + 国家节 `Side=/Color=/Multiplay=`）、阵营（`[Sides]`）、颜色（`[Colors]` H,S,V）全部解析；开局兵力按 OpenRA `MPStartUnits` **机制**（BaseActor + SupportActors + Inner/OuterSupportRadius 3..5 环带确定性散布），数值表与 `mods/yr/rules/world.yaml` 逐项一致、单位名取 rulesmd；`--country/--color/--ocountry/--ocolor/--skclass/--sktech` 与 GUI 下拉可选；battle1.yrm 实测玩家 7 单位（中装）@(37,56)、对手 8 单位 @(14,53) |
 | 出生点解析（地图 waypoint） | ✅ `StageMap::waypoints`：`[Waypoints]` 值 `ry·1000+rx` → `col=(rx−ry+W−1)/2`、`row=rx+ry−W−1`（OpenRA `ReadWaypoints` 同式；与 MapFile 的 min_d=−(W−1)、min_s=W+1 等价）；battle1 实测 wp0(66,41)→(37,56)、wp1(42,62)→(14,53)，奇偶不齐也按整除截断 |
 | 基地车展开（`DeploysInto` + 展开动画） | ✅ `[AMCV]/[SMCV]/[PCV] DeploysInto=GACNST/NACNST/YACNST`（AMCV 美术 = `Image=MCV`）；地基以车格为中心（4×4 → 左上 = 车格 −1,−1，中心被占按固定邻序试近旁）；展开动画 = artmd `Buildup=`（GACNSTMK 58 帧 = **29 建造帧 + 29 阴影帧**，同建筑本体分段判据），播放帧 = 进度 × 建造段帧数，时长 ≈ 1.9s；`D` 键 / 侧边栏按钮触发展开 |
-| 建造/展开动画（Buildup 帧序列） | ✅ 建筑 `under_construction` 时优先播放 artmd `Buildup=` 逐帧序列（取代早期"make 帧缩放"近似），无 Buildup 才回退；建造中的建筑不再半透明（原版即动画表现） |
+| 建造/展开动画（Buildup 帧序列） | ✅ 建筑 `under_construction` 时播放 artmd `Buildup=`（缺省 `<Image>MK`）动画：按原版 **BuildupTime 语义**（ModEnc `[General] BuildupTime` 默认 0.05 分钟 = 3s，与帧数/工期无关）在放置后播完一遍（前半建造帧 + 后半同数阴影帧垫底），之后停在建筑本体 `make` 帧（帧2+阴影帧5）直到工期结束——旧实现把帧按 build_p 摊满工期（GAPOWR 25 帧拖成 27s）已修；无 Buildup 保留 make 帧静态回退 |
 | 科技树（Owner / Prerequisite / TechLevel / ConstructionYard） | ✅ `RulesDB` 解析 `Owner/Prerequisite/TechLevel/Strength/BuildCat/ConstructionYard/Factory/WeaponsFactory/Radar/Powered/DeploysInto/UndeploysInto/DeploySound/Buildup/FreeBuildup`；`[General] Prerequisite<组名>=` 组（POWER/PROC/RADAR/FACTORY/BARRACKS/TECH + ProcAlternate）展开为类型表；判定顺序 = 有 rulesmd 节 → Owner 含国家（空 Owner= 不可建）→ TechLevel → 已建成建造厂 → Prerequisite 全满足；实测盟军链条 GACNST→GAPOWR→GAREFN/GAPILE→GAWEAP→GADEPT（GATECH 仍需 RADAR），苏军 NACNST→NAPOWR→NAREFN→NAHAND→NAWEAP |
 | 建造队列（排队 → 进度 → 落点） | ✅ `SimWorld::build_queue`（每 House 单队列）：`queue_build` 排队即扣款、`tick` 推进、`build_ready/take_ready_build` 就绪取出、`cancel_build` 按 `[General] RefundPercent=50%` 退款；落点校验 `can_place`（矩形地基 + 阻挡表），落点后播放 Buildup 动画；侧边栏显示进度条/就绪提示、地图上绿/红地基预览菱形 |
 | 阵营色重映射（Remap 16..31） | ✅ `PaletteLut::build(pal, remap16)` 与 `VoxelView::remap` 双路径（SHP 用剧场单位盘、VXL 用内嵌盘，同段 16..31）；ramp 按 ModEnc 语义生成（H 恒定、V 最大亮度、越暗越饱和，8 位不经 6 位 ×4）；`PlacedObject.remap` 按 House 索引、帧/体素缓存键含 remap；battle1 实测盟军建筑/载具/步兵蓝、苏军红 |

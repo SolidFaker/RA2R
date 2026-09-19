@@ -158,13 +158,18 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
         float build_p;    // 建筑建造进度（<0 = 建成）
         int remap;        // 阵营色重映射下标（0 = 无）
         int seq;          // 原始序号（确定性决胜：同格对象稳定排序）
+        int build_ticks;  // 建造已用逻辑帧（Buildup 动画时长用）
+        int build_total;  // 建造总逻辑帧
+        uint8_t moving;   // 步兵行进中（Walk 序列）
+        uint32_t anim_clock; // 动画时钟（逻辑帧）
     };
     std::vector<Obj> sorted;
     for (size_t i = 0; i < objs.size(); ++i) {
         const auto& o = objs[i];
         sorted.push_back({o.cx, o.cy, o.cx + o.cy, o.kind, o.id, o.dir, o.subcell, o.height,
                           o.off_x, o.off_y, o.alpha, o.hp, o.build_p, o.remap,
-                          static_cast<int>(i)});
+                          static_cast<int>(i), o.build_ticks, o.build_total, o.moving,
+                          o.anim_clock});
     }
     std::sort(sorted.begin(), sorted.end(), [](const Obj& a, const Obj& b) {
         if (a.cy != b.cy) return a.cy < b.cy; // 砖墙行序（后行盖前行）
@@ -292,6 +297,12 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                 continue;
             }
             int seq_start = 0, seq_stride = 1;
+            // 行走序列（artmd Sequence= → [seq] 节；格式 Start,Length,Stride[,定向]）：
+            //   Guard/Ready = 站立（Length=1 的朝向表）；Walk = 行走循环
+            //   （每朝向连续 Length 帧依次播放，Stride = 朝向间帧步长）。
+            // 原版：行进中播 Walk、否则 Guard；4 参数 = 单朝向（Stride=0 时
+            // 朝向偏移恒 0，仅按相位循环）。
+            int walk_start = -1, walk_len = 0, walk_stride = 1;
             if (have_art) {
                 // 序列节查找：artmd [id]，缺省回退美术名节（如 E1 → [GI]）
                 const std::string art_sec = art.has_section(o.id) ? o.id : img_name;
@@ -299,14 +310,25 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                 if (!seq.empty()) {
                     std::string guard = art.get(seq, "Guard", "");
                     if (guard.empty()) guard = art.get(seq, "Ready", "0,1,1");
-                    int len = 1;
-                    std::sscanf(guard.c_str(), "%d,%d,%d", &seq_start, &len, &seq_stride);
+                    int glen = 1;
+                    std::sscanf(guard.c_str(), "%d,%d,%d", &seq_start, &glen, &seq_stride);
+                    const std::string walk = art.get(seq, "Walk", "");
+                    if (!walk.empty())
+                        std::sscanf(walk.c_str(), "%d,%d,%d", &walk_start, &walk_len,
+                                    &walk_stride);
                 }
                 // 无 Sequence= 的步兵（动物/平民）默认帧 0..7 为朝向帧（stride 1）
             }
             const int facing = (o.dir + 16) / 32 % 8;
-            const int frame_i =
-                std::min<int>(shp.frame_count() - 1, seq_start + facing * seq_stride);
+            int frame_i = seq_start + facing * seq_stride;
+            if (o.moving && walk_start >= 0 && walk_len > 0) {
+                // 行走相位：约 100ms/帧 @15Hz（OpenRA ra2 步兵默认 Tick:100；
+                // GI 为 120ms），整数运算保持确定性
+                const uint32_t phase =
+                    (o.anim_clock * 2 / 3) % static_cast<uint32_t>(walk_len);
+                frame_i = walk_start + facing * walk_stride + static_cast<int>(phase);
+            }
+            frame_i = std::clamp(frame_i, 0, static_cast<int>(shp.frame_count()) - 1);
             // 步兵帧 RGBA 缓存（按 美术名|帧号|阵营色；朝向帧跨帧复用）
             const std::string ikey =
                 img_name + '|' + std::to_string(frame_i) + '|' + std::to_string(o.remap);
@@ -422,7 +444,7 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
             const float ax = ox + o.cx * 60.0f + (o.cy & 1) * 30.0f + 30.0f;
             // y 锚点 = 顶格顶顶点（格中心再上移半格 15px，原版观感实测）
             const float ay = oy + o.cy * 15.0f - o.height * kHeightLevelPx;
-            // 阴影帧（3+i）垫底；精灵帧置顶；建造中按进度最近邻缩放（底心锚定）
+            // 阴影帧垫底、精灵帧置顶（scale 恒 1；建造生长由 Buildup 动画承担）
             const auto blit_entry = [&](const ObjectRenderCache::BldEntry& ent, float scale,
                                         uint8_t alpha) {
                 const int dx = static_cast<int>(ent.cx * scale);
@@ -444,16 +466,26 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                     }
                 }
             };
-            // ── 建造/展开动画：按进度取 Buildup 的**建造段**帧（原版 Buildup SHP 与
-            //    建筑本体同构：前半为建造帧、后半为同数阴影帧），画完即完成 ──
-            if (have_buildup) {
+            // ── 建造/展开动画：Buildup SHP（前半建造帧、后半同数阴影帧）──
+            // 原版语义（ModEnc BuildupTime）：动画在放置后**固定时长播完一遍**
+            //（[General] BuildupTime 默认 0.05 分钟 = 3s = 45 逻辑帧，与帧数/工期
+            // 无关）；播完后显示建筑本体 make 帧（+阴影）直到工期结束。
+            // 旧实现把帧按 build_p 摊满整个工期（GAPOWR 25 帧动画被拉成 27s），
+            // 不符合原版。GACNSTMK 等 29 帧同理。
+            const int b_ticks = o.build_ticks;
+            if (have_buildup && (!raw || b_ticks < kBuildupTicks)) {
                 const int bn = static_cast<int>(bshp.frame_count());
                 const int sh = ra2r::assets::shp_shadow_start(bshp);
                 const int make_n = sh > 0 ? sh : bn; // 建造段帧数（无阴影段则全部）
-                const int bf = std::clamp(static_cast<int>(o.build_p * make_n), 0, make_n - 1);
-                ObjectRenderCache::BldEntry bent;
-                if (entry_of(bshp, buildup_name, bf, o.remap, bent))
-                    blit_entry(bent, 1.0f, o.alpha);
+                const int bf = (!raw) // 无本体 SHP（如 GADUMY）：始终末帧
+                                   ? make_n - 1
+                                   : std::clamp(b_ticks * make_n / kBuildupTicks, 0, make_n - 1);
+                ObjectRenderCache::BldEntry bshadow, bsprite;
+                if (sh > 0 && sh + bf < bn &&
+                    entry_of(bshp, buildup_name, sh + bf, o.remap, bshadow))
+                    blit_entry(bshadow, 1.0f, o.alpha); // 阴影帧垫底
+                if (entry_of(bshp, buildup_name, bf, o.remap, bsprite))
+                    blit_entry(bsprite, 1.0f, o.alpha);
                 ++stats.buildings;
                 continue;
             }
@@ -474,16 +506,10 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                 sh_start = ra2r::assets::shp_shadow_start(shp);
             }
             if (sh_start >= 0 && sh_start + fi < n && get_entry(sh_start + fi, shadow)) {
-                const float s0 = constructing ? std::clamp(0.25f + 0.75f * o.build_p, 0.25f,
-                                                          1.0f)
-                                              : 1.0f;
-                blit_entry(shadow, s0, o.alpha);
+                blit_entry(shadow, 1.0f, o.alpha);
             }
             if (get_entry(fi, sprite)) {
-                const float s0 = constructing ? std::clamp(0.25f + 0.75f * o.build_p, 0.25f,
-                                                          1.0f)
-                                              : 1.0f;
-                blit_entry(sprite, s0, o.alpha);
+                blit_entry(sprite, 1.0f, o.alpha);
             }
             // 建筑体素炮塔：由 stage 侧 draw_bld_turret_voxel 统一绘制
             // （rulesmd Turret=/TurretAnim=/TurretAnimX/Y 驱动 + HVA 动画时钟）。

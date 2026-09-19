@@ -481,19 +481,28 @@ void append_sim_objects(StageApp& a, std::vector<ra2r::render::PlacedObject>& ob
                                        static_cast<int>(a.map.cell(b.col, b.row).height), 0, 0,
                                        static_cast<uint8_t>(255), 256, -1.0f, rm});
         }
-        // 帧语义：idle/damaged-idle/make 由 hp/build_p 驱动（object_layer）；
-        // 建造中若有 artmd Buildup= 则播放其逐帧动画
-        objects_out.push_back({0, b.type, b.col, b.row, 0, 0,
-                               static_cast<int>(a.map.cell(b.col, b.row).height), 0, 0,
-                               static_cast<uint8_t>(255), b.hp,
-                               b.under_construction
-                                   ? static_cast<float>(b.build_ticks) /
-                                         std::max(1, b.build_total)
-                                   : -1.0f,
-                               rm});
+        // 帧语义：idle/damaged-idle/make 由 hp/建造状态驱动（object_layer）；
+        // 建造中若有 artmd Buildup= 则播放其独立建造动画（固定 3s 播一遍，
+        // 之后停在 make 帧直到工期结束——见 object_layer.cpp）
+        ra2r::render::PlacedObject po{};
+        po.kind = 0;
+        po.id = b.type;
+        po.cx = b.col;
+        po.cy = b.row;
+        po.height = static_cast<int>(a.map.cell(b.col, b.row).height);
+        po.alpha = 255;
+        po.hp = b.hp;
+        po.build_p = b.under_construction
+                         ? static_cast<float>(b.build_ticks) / std::max(1, b.build_total)
+                         : -1.0f;
+        po.remap = rm;
+        po.build_ticks = b.under_construction ? b.build_ticks : 0;
+        po.build_total = b.build_total;
+        objects_out.push_back(po);
     }
     for (size_t i = 0; i < a.sim.units.size(); ++i) {
         const ra2r::sim::SimUnit& u = a.sim.units[i];
+        if (!u.alive) continue;
         int cx = u.col, cy = u.row;
         if (cx < 0 || cy < 0 || cx >= a.map.w || cy >= a.map.h) continue;
         // 段内插值像素偏移 = (终点格中心 − 起点格中心)·frac/256
@@ -502,10 +511,23 @@ void append_sim_objects(StageApp& a, std::vector<ra2r::render::PlacedObject>& ob
         grid.cell_to_pixel(u.next_col, u.next_row, nx, ny);
         const int off_x = ((nx - tx) * u.frac) / ra2r::sim::kFracMax;
         const int off_y = ((ny - ty) * u.frac) / ra2r::sim::kFracMax;
-        objects_out.push_back({u.kind, u.type, cx, cy,
-                               static_cast<uint8_t>(u.dir * 32), 0,
-                               static_cast<int>(a.map.cell(cx, cy).height), off_x, off_y,
-                               static_cast<uint8_t>(255), 256, -1.0f, remap_of(u.owner)});
+        ra2r::render::PlacedObject po{};
+        po.kind = u.kind;
+        po.id = u.type;
+        po.cx = cx;
+        po.cy = cy;
+        po.dir = static_cast<uint8_t>(u.dir * 32);
+        po.height = static_cast<int>(a.map.cell(cx, cy).height);
+        po.off_x = off_x;
+        po.off_y = off_y;
+        po.alpha = 255;
+        po.hp = 256;
+        po.build_p = -1.0f;
+        po.remap = remap_of(u.owner);
+        // 步兵行走动画：moving + 逻辑帧时钟（object_layer 播 Walk 序列）
+        po.moving = (u.kind == 2 && a.sim.unit_moving(i)) ? 1 : 0;
+        po.anim_clock = static_cast<uint32_t>(a.sim.logic_ticks);
+        objects_out.push_back(po);
     }
 }
 
@@ -993,17 +1015,12 @@ void scan_map_files(StageApp& a, const std::filesystem::path& dir) {
 
 std::vector<std::pair<int, int>> map_waypoints(const StageApp& a) { return a.map.waypoints; }
 
-int buildup_frames(StageApp& a, const std::string& type) {
+// 展开（基地车）逻辑帧时长：与建造动画同规——原版 BuildupTime 默认 3s
+//（render::kBuildupTicks = 45 @15Hz）；无 Buildup 美术时返回 0（调用方回退）
+int deploy_ticks(StageApp& a, const std::string& type) {
     const auto* u = a.rules.unit(type);
     if (!u || u->buildup.empty()) return 0;
-    const auto* raw = load_file(a, u->buildup + ".SHP");
-    if (!raw) return 0;
-    ra2r::assets::ShpFile shp;
-    std::string err;
-    if (!shp.open(raw->data(), raw->size(), &err)) return 0;
-    // Buildup SHP 与建筑本体同构：前半建造帧 + 后半同数阴影帧 → 取建造段帧数
-    const int sh = ra2r::assets::shp_shadow_start(shp);
-    return sh > 0 ? sh : static_cast<int>(shp.frame_count());
+    return load_file(a, u->buildup + ".SHP") ? ra2r::render::kBuildupTicks : 0;
 }
 
 std::vector<const ra2r::assets::UnitTypeDef*> buildable_for(StageApp& a,
@@ -1209,10 +1226,10 @@ bool deploy_selected_mcv(StageApp& a) {
         const auto* bt = a.rules.unit(t->deploys_into);
         if (!bt) continue;
         const std::string btype = t->deploys_into;
-        const int bf = buildup_frames(a, btype);
+        const int bf = deploy_ticks(a, btype);
         const uint32_t bid = ra2r::sim::deploy_mcv(a.sim, i, btype, bt->fw, bt->fh, bt->cost,
                                                    bt->power, bf > 0 ? bf : 60, bt->strength);
-        std::printf("[stage] %s(%s) 展开 → %s @(%d,%d) 动画 %d 帧 %s\n", utype.c_str(),
+        std::printf("[stage] %s(%s) 展开 → %s @(%d,%d) 动画 %d 逻辑帧 %s\n", utype.c_str(),
                     uowner.c_str(), btype.c_str(), ucol, urow, bf, bid ? "ok" : "fail");
         if (bid) {
             any = true;
@@ -1289,7 +1306,7 @@ void skirmish_ai_tick(StageApp& a) {
                 const auto* bt = a.rules.unit(t->deploys_into);
                 if (!bt) break;
                 const std::string btype = t->deploys_into;
-                const int bf = buildup_frames(a, btype);
+                const int bf = deploy_ticks(a, btype);
                 const uint32_t id = ra2r::sim::deploy_mcv(a.sim, i, btype, bt->fw, bt->fh,
                                                           bt->cost, bt->power,
                                                           bf > 0 ? bf : 60, bt->strength);
