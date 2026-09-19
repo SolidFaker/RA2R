@@ -126,7 +126,8 @@ jobs:
           cp build/tools/{stage,mapview,mixbrowser,mixdump,shpview,vxlview,assetcheck,cachebuild,smoketest,gen_fixtures}.exe dist/ra2r/
           cp "$(cygpath -u "$MINGW_PREFIX")/bin/SDL3.dll" dist/ra2r/
           cp LICENSE README.md dist/ra2r/
-          zip -r "${{ matrix.archive }}" dist/ra2r
+          # 打包内容平铺（解压即得 exe 与 SDL3.dll，不含 dist/ 前缀）
+          (cd dist/ra2r && zip -r "../../${{ matrix.archive }}" .)
 
       - uses: actions/upload-artifact@v4
         with:
