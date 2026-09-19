@@ -54,9 +54,6 @@ void console_utf8() {
 }
 
 namespace {
-// 前向：扫描常见字体目录里名字像 CJK 的字体文件（定义在文件尾；fontconfig 兜底）
-std::vector<std::string> list_cjk_font_files();
-
 // 追加存在的字体文件到候选表
 void add_font(std::vector<std::string>& out, const std::string& path) {
     std::error_code ec;
@@ -88,74 +85,10 @@ void add_fontconfig_candidates(std::vector<std::string>& out) {
         add_font(out, path);
     }
 }
-#endif
-} // namespace
 
-bool setup_cjk_font(float pixel_size) {
-    ImGuiIO& io = ImGui::GetIO();
-    // 候选顺序：Windows 黑体/雅黑/宋体/等线/楷体；Linux 常见发行版路径；
-    // fontconfig 兜底（发行版路径千差万别，交给 fontconfig 最稳）。
-    // CJK 字体自带拉丁字形，直接作为唯一默认字体即可。
-    std::vector<std::string> fonts;
-    add_font(fonts, "C:\\Windows\\Fonts\\simhei.ttf");
-    add_font(fonts, "C:\\Windows\\Fonts\\msyh.ttf");
-    add_font(fonts, "C:\\Windows\\Fonts\\msyh.ttc");
-    add_font(fonts, "C:\\Windows\\Fonts\\simsun.ttc");
-    add_font(fonts, "C:\\Windows\\Fonts\\Deng.ttf");
-    add_font(fonts, "C:\\Windows\\Fonts\\simkai.ttf");
-    add_font(fonts, "C:\\Windows\\Fonts\\msyhl.ttc");
-    // Arch（noto-cjk）/ Debian（opentype/noto）/ Fedora / 文泉驿 / 思源
-    add_font(fonts, "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc");
-    add_font(fonts, "/usr/share/fonts/noto-cjk/NotoSansCJKsc-Regular.otf");
-    add_font(fonts, "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc");
-    add_font(fonts, "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf");
-    add_font(fonts, "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc");
-    add_font(fonts, "/usr/share/fonts/noto-cjk/NotoSerifCJK-Regular.ttc");
-    add_font(fonts, "/usr/share/fonts/adobe-source-han-sans/SourceHanSansSC-Regular.otf");
-    add_font(fonts, "/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf");
-    add_font(fonts, "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc");
-    add_font(fonts, "/usr/share/fonts/wenquanyi/wqy-zenhei/wqy-zenhei.ttc");
-    add_font(fonts, "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc");
-    add_font(fonts, "/usr/share/fonts/truetype/arphic/uming.ttc");
-    add_font(fonts, "/usr/share/fonts/truetype/arphic/ukai.ttc");
-#ifdef __linux__
-    add_fontconfig_candidates(fonts);
-    if (fonts.empty()) {
-        // fontconfig 也不可用（极简容器）：扫描常见字体目录里名字像 CJK 的字体
-        for (const auto& f : list_cjk_font_files()) fonts.push_back(f);
-    }
-#endif
-    for (const auto& f : fonts) {
-        ImFont* font = io.Fonts->AddFontFromFileTTF(
-            f.c_str(), pixel_size, nullptr, io.Fonts->GetGlyphRangesChineseFull());
-        if (font) {
-            io.FontDefault = font;
-            std::printf("[ui] CJK font: %s\n", f.c_str());
-            return true;
-        }
-    }
-    std::fprintf(stderr, "[ui] 未找到中文字体（安装 noto-cjk 或 wqy-microhei）\n");
-    return false;
-}
-
-float scale_window_to_dpi(SDL_Window* window, int logical_w, int logical_h) {
-    float s = 1.0f;
-    if (window) s = SDL_GetWindowDisplayScale(window);
-    if (s > 0.0f) {
-        SDL_SetWindowSize(window, static_cast<int>(logical_w * s + 0.5f),
-                          static_cast<int>(logical_h * s + 0.5f));
-        return s;
-    }
-    return 1.0f;
-}
-
-// 列出系统里所有"看起来像 CJK"的字体文件（fontconfig 不可用时的兜底扫描）。
-// 非 Linux 返回空表。
+// 列出系统里所有"看起来像 CJK"的字体文件（fontconfig 不可用时的兜底扫描）
 std::vector<std::string> list_cjk_font_files() {
     std::vector<std::string> out;
-#ifndef __linux__
-    return out;
-#else
     static const char* kDirs[] = {"/usr/share/fonts", "/usr/local/share/fonts",
                                   "/run/host/fonts", "/var/lib/flatpak/exports/share/fonts"};
     for (const char* root : kDirs) {
@@ -189,7 +122,67 @@ std::vector<std::string> list_cjk_font_files() {
         }
     }
     return out;
+}
 #endif
+} // namespace
+
+bool setup_cjk_font(float pixel_size) {
+    ImGuiIO& io = ImGui::GetIO();
+    // 候选顺序：Windows 黑体/雅黑/宋体/等线/楷体；Linux 常见发行版路径；
+    // fontconfig 兜底（发行版路径千差万别，交给 fontconfig 最稳）。
+    // CJK 字体自带拉丁字形，直接作为唯一默认字体即可。
+    std::vector<std::string> fonts;
+    add_font(fonts, "C:\\Windows\\Fonts\\simhei.ttf");
+    add_font(fonts, "C:\\Windows\\Fonts\\msyh.ttf");
+    add_font(fonts, "C:\\Windows\\Fonts\\msyh.ttc");
+    add_font(fonts, "C:\\Windows\\Fonts\\simsun.ttc");
+    add_font(fonts, "C:\\Windows\\Fonts\\Deng.ttf");
+    add_font(fonts, "C:\\Windows\\Fonts\\simkai.ttf");
+    add_font(fonts, "C:\\Windows\\Fonts\\msyhl.ttc");
+    // Arch（noto-cjk）/ Debian（opentype/noto）/ Fedora / 文泉驿 / 思源
+    add_font(fonts, "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc");
+    add_font(fonts, "/usr/share/fonts/noto-cjk/NotoSansCJKsc-Regular.otf");
+    add_font(fonts, "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc");
+    add_font(fonts, "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf");
+    add_font(fonts, "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc");
+    add_font(fonts, "/usr/share/fonts/noto-cjk/NotoSerifCJK-Regular.ttc");
+    add_font(fonts, "/usr/share/fonts/adobe-source-han-sans/SourceHanSansSC-Regular.otf");
+    add_font(fonts, "/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf");
+    add_font(fonts, "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc");
+    add_font(fonts, "/usr/share/fonts/wenquanyi/wqy-zenhei/wqy-zenhei.ttc");
+    add_font(fonts, "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc");
+    add_font(fonts, "/usr/share/fonts/truetype/arphic/uming.ttc");
+    add_font(fonts, "/usr/share/fonts/truetype/arphic/ukai.ttc");
+#ifdef __linux__
+    const size_t before_fc = fonts.size();
+    add_fontconfig_candidates(fonts);
+    if (fonts.size() == before_fc) {
+        // fontconfig 也不可用（极简容器）：扫描常见字体目录里名字像 CJK 的字体
+        for (const auto& f : list_cjk_font_files()) fonts.push_back(f);
+    }
+#endif
+    for (const auto& f : fonts) {
+        ImFont* font = io.Fonts->AddFontFromFileTTF(
+            f.c_str(), pixel_size, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+        if (font) {
+            io.FontDefault = font;
+            std::printf("[ui] CJK font: %s\n", f.c_str());
+            return true;
+        }
+    }
+    std::fprintf(stderr, "[ui] 未找到中文字体（安装 noto-cjk 或 wqy-microhei）\n");
+    return false;
+}
+
+float scale_window_to_dpi(SDL_Window* window, int logical_w, int logical_h) {
+    float s = 1.0f;
+    if (window) s = SDL_GetWindowDisplayScale(window);
+    if (s > 0.0f) {
+        SDL_SetWindowSize(window, static_cast<int>(logical_w * s + 0.5f),
+                          static_cast<int>(logical_h * s + 0.5f));
+        return s;
+    }
+    return 1.0f;
 }
 
 } // namespace ra2r::ui
