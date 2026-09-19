@@ -55,8 +55,10 @@ std::filesystem::path resolve_ci(const std::filesystem::path& p, std::error_code
             continue;
         }
         const std::filesystem::path next = out / part;
-        if (std::filesystem::is_directory(next, ec) || std::filesystem::is_regular_file(next, ec))
+        if (std::filesystem::is_directory(next, ec) || std::filesystem::is_regular_file(next, ec)) {
+            out = next; // 该级存在（大小写已匹配）→ 继续下一级
             continue;
+        }
         // 在父目录里按大小写不敏感找一个同名项
         bool found = false;
         for (const auto& de : std::filesystem::directory_iterator(
