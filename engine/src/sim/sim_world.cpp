@@ -9,14 +9,25 @@
 namespace ra2r::sim {
 
 namespace {
-// 段方向 → 朝向索引（0=NE..7=NW，渲染侧 ×32 得 dir 字节）。
-// 列步 = 屏幕水平（E/W）；行步的屏幕斜向由起点行奇偶决定（砖墙 30px 错位）：
-//   行奇 → 下行是 SW、上行是 NE；行偶 → 下行是 SE、上行是 NW。
+// 段的屏幕方向（8 向）：按屏幕增量取最接近的规范方向（kDirV 与 dir_toward 共用）。
+// 砖墙格 (c,r) 的屏幕位置 = (60c + 30(r&1), 15r)（见 IsometricGrid）；8 邻接步
+// 覆盖屏幕 8 向：45° 步 (0,±1)/(±1,±1)、水平 (±1,0)、垂直 (0,±2)
 uint8_t dir_of(int c, int r, int nc, int nr) {
-    if (nc > c) return 1; // E
-    if (nc < c) return 5; // W
-    if (nr > r) return (r & 1) ? 4 : 2;  // SW / SE
-    return (r & 1) ? 0 : 7;              // NE / NW
+    const int dx = 60 * (nc - c) + 30 * ((nr & 1) - (r & 1));
+    const int dy = 15 * (nr - r);
+    static const int kDirV[8][2] = {{30, -15}, {60, 0},  {30, 15},  {0, 30},
+                                    {-30, 15}, {-60, 0}, {-30, -15}, {0, -30}};
+    int best = 0;
+    long long best_dot = INT64_MIN;
+    for (int k = 0; k < 8; ++k) {
+        const long long dot = static_cast<long long>(dx) * kDirV[k][0] +
+                              static_cast<long long>(dy) * kDirV[k][1];
+        if (dot > best_dot) {
+            best_dot = dot;
+            best = k;
+        }
+    }
+    return static_cast<uint8_t>(best);
 }
 
 // 朝目标格的 8 向朝向（任意距离）：取与屏幕向量点积最大的规范方向
@@ -197,6 +208,8 @@ bool SimWorld::load_map(const assets::MapFile& map,
 bool SimWorld::advance_segment(SimUnit& u) {
     bool changed = false;
     while (u.frac >= kFracMax) {
+        u.prev_col = u.col; // 渲染转角平滑用（上一格 = 本段起点）
+        u.prev_row = u.row;
         u.col = u.next_col;
         u.row = u.next_row;
         u.frac -= kFracMax;
@@ -216,16 +229,23 @@ bool SimWorld::advance_segment(SimUnit& u) {
         u.frac = 0;
         return changed;
     }
-    // 行步（地图轴步，33.5px）基准速率；列步（地图对角步，60px）按
-    // 33.5/60 ≈ 143/256 折算，保持恒定屏幕速率
-    const int inc = (u.next_col != u.col) ? (u.speed * 143) / 256 : u.speed;
+    // 步长折算（恒定屏幕速率 = 33.5px/speed 单位）：45° 步 33.5px → speed；
+    // 屏幕水平 60px → speed·143/256；屏幕垂直 30px → speed·286/256
+    // （OpenRA 同思路：位置按世界距离推进，方向不同的步长按屏幕投影折算）
+    const int dc = u.next_col - u.col;
+    const int dr = u.next_row - u.row;
+    int inc;
+    if (dc == 0 && (dr == 2 || dr == -2)) inc = (u.speed * 286) / 256;
+    else if (dc != 0 && dr == 0) inc = (u.speed * 143) / 256;
+    else inc = u.speed;
     u.frac += inc;
     return true;
 }
 
 // 朝目标格寻路（失败 → 清路径并驻停，返回是否可达）
 bool SimWorld::set_move_target(SimUnit& u, int tc, int tr) {
-    std::vector<std::pair<int, int>> path = find_path(blocked, w, h, u.col, u.row, tc, tr);
+    std::vector<std::pair<int, int>> path =
+        find_path(blocked, w, h, u.col, u.row, tc, tr, (min_s + min_d) & 1);
     if (path.empty()) {
         u.path.clear();
         u.next_col = u.col;
@@ -234,6 +254,8 @@ bool SimWorld::set_move_target(SimUnit& u, int tc, int tr) {
         return false;
     }
     u.path = std::move(path);
+    u.prev_col = u.col; // 该段为路径起点（渲染端按直线外推，转角平滑端点精确）
+    u.prev_row = u.row;
     u.next_col = u.path.front().first;
     u.next_row = u.path.front().second;
     u.path.erase(u.path.begin());
@@ -254,7 +276,7 @@ bool SimWorld::set_move_target_near(SimUnit& u, int tc, int tr) {
         if (nc < 0 || nr < 0 || nc >= w || nr >= h) continue;
         if (blocked[static_cast<size_t>(nr) * w + nc]) continue;
         std::vector<std::pair<int, int>> path =
-            find_path(blocked, w, h, u.col, u.row, nc, nr);
+            find_path(blocked, w, h, u.col, u.row, nc, nr, (min_s + min_d) & 1);
         if (path.empty()) continue;
         if (best.empty() || path.size() < best.size()) best = std::move(path);
     }
@@ -266,6 +288,8 @@ bool SimWorld::set_move_target_near(SimUnit& u, int tc, int tr) {
         return false;
     }
     u.path = std::move(best);
+    u.prev_col = u.col; // 该段为路径起点（渲染端按直线外推）
+    u.prev_row = u.row;
     u.next_col = u.path.front().first;
     u.next_row = u.path.front().second;
     u.path.erase(u.path.begin());

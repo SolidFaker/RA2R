@@ -505,12 +505,47 @@ void append_sim_objects(StageApp& a, std::vector<ra2r::render::PlacedObject>& ob
         if (!u.alive) continue;
         int cx = u.col, cy = u.row;
         if (cx < 0 || cy < 0 || cx >= a.map.w || cy >= a.map.h) continue;
-        // 段内插值像素偏移 = (终点格中心 − 起点格中心)·frac/256
+        // 段内插值像素偏移 + 转角平滑（参考 OpenRA Move/MoveFirstHalf：世界坐标
+        // 直线推进 + 转角圆弧；本引擎用二次 B 样条，控制点 = 相邻格中心、缺失的
+        // 邻居按直线外推 → 直线段精确、转弯处自然切角、路径端点仍精确落在格心）
         int tx, ty, nx, ny;
         grid.cell_to_pixel(u.col, u.row, tx, ty);
         grid.cell_to_pixel(u.next_col, u.next_row, nx, ny);
-        const int off_x = ((nx - tx) * u.frac) / ra2r::sim::kFracMax;
-        const int off_y = ((ny - ty) * u.frac) / ra2r::sim::kFracMax;
+        int off_x = ((nx - tx) * u.frac) / ra2r::sim::kFracMax;
+        int off_y = ((ny - ty) * u.frac) / ra2r::sim::kFracMax;
+        const bool seg = u.next_col != u.col || u.next_row != u.row;
+        if (seg) {
+            int qx, qy;
+            grid.cell_to_pixel(u.prev_col, u.prev_row, qx, qy);
+            if (u.prev_col == u.col && u.prev_row == u.row) { // 无上一段 → 直线外推
+                qx = 2 * tx - nx;
+                qy = 2 * ty - ny;
+            }
+            int wx, wy;
+            if (!u.path.empty()) { // 下一段的再下一格（真实邻居）
+                grid.cell_to_pixel(u.path.front().first, u.path.front().second, wx, wy);
+            } else { // 路径终点 → 直线外推（端点落在格心）
+                wx = 2 * nx - tx;
+                wy = 2 * ny - ty;
+            }
+            // 中点用 2× 坐标（整数精确），二次式算出后再 /2 → 直线段零抖动
+            const int m0x = qx + tx, m0y = qy + ty;
+            const int m1x = tx + nx, m1y = ty + ny;
+            const int m2x = nx + wx, m2y = ny + wy;
+            const long long f = u.frac; // 0..255（kFracMax=256）
+            long long sx2, sy2;         // 2× 平滑位置
+            if (f < 128) { // 前半段：过当前格心（控制点 tx,ty）
+                const long long v = f + 128, a = 256 - v, b = v;
+                sx2 = (a * a * m0x + 2 * a * b * (2LL * tx) + b * b * m1x) / 65536;
+                sy2 = (a * a * m0y + 2 * a * b * (2LL * ty) + b * b * m1y) / 65536;
+            } else { // 后半段：过下一格心（控制点 nx,ny）
+                const long long v = f - 128, a = 256 - v, b = v;
+                sx2 = (a * a * m1x + 2 * a * b * (2LL * nx) + b * b * m2x) / 65536;
+                sy2 = (a * a * m1y + 2 * a * b * (2LL * ny) + b * b * m2y) / 65536;
+            }
+            off_x = static_cast<int>((sx2 - 2LL * tx) / 2);
+            off_y = static_cast<int>((sy2 - 2LL * ty) / 2);
+        }
         ra2r::render::PlacedObject po{};
         po.kind = u.kind;
         po.id = u.type;

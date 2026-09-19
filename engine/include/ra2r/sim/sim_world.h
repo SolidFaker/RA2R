@@ -56,6 +56,8 @@ struct SimUnit {
     int target = -1;               // 攻击/护卫目标下标（按 order 语义）
     int cooldown = 0;
     int speed = 68; // 每逻辑帧 frac 增量（行步基准 ≈4 格/秒 @15Hz）
+    // 上一格（渲染转角平滑用；= 当前格表示该段是路径起点）
+    int prev_col = 0, prev_row = 0;
     std::vector<std::pair<int, int>> path; // 剩余途经格（不含当前格与段终点）
     std::vector<std::pair<int, int>> waypoints; // 巡逻点（kOrderPatrol 循环）
     size_t wp_idx = 0;
