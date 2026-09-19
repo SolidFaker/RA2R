@@ -53,6 +53,24 @@ build\tools\mapview.exe <地图文件>              # 地图查看
 build\tools\stage.exe --test                    # 模拟/渲染测试台
 ```
 
+## 测试
+
+框架：**GoogleTest**（vendored 于 `third_party/googletest`，离线可构建）。
+分两层——纯逻辑用例不依赖游戏素材；资产/渲染功能用例需要游戏目录
+（默认 `I:\ai\RA2R\Yuri`，可用环境变量 `RA2R_GAME_DIR` 覆盖；缺失时自动 SKIP）。
+
+```powershell
+cmake -B build -G "MinGW Makefiles" -DCMAKE_PREFIX_PATH=<SDL3 目录> -DRA2R_BUILD_TESTS=ON
+cmake --build build --target ra2r_tests -j
+ctest --test-dir build --output-on-failure      # 或直接跑 build\tests\ra2r_tests.exe
+build\tests\ra2r_tests.exe --gtest_filter=SimMove.*   # 按套件过滤
+```
+
+覆盖：INI 解析 / 等距几何 / 调色板 LUT / 8 向 A* 寻路；移动（8 向朝向·恒速直线·
+重下令·idle 调度）·建造（工期/电力/队列/修理出售）·经济（采矿卸货）·防御建筑攻击·
+确定性哈希；遭遇战（展开/科技树/阵营色）；资产解析（MIX/SHP/地图/rulesmd/VXL/HVA）；
+渲染功能（步兵朝向块序与速率·idle·Buildup 进度·体素光栅）。
+
 ## 格式规格文档
 
 洁净室逆向、本机实测驱动，见 [docs/formats/](docs/formats/)：

@@ -1125,7 +1125,7 @@ void adopt_building(StageApp& a, uint32_t id, int dir) {
             if (const auto* wp = a.rules.weapon(u->primary))
                 w = {wp->damage, wp->rof, wp->range};
         }
-        a.sim.configure_building(id, dir, w);
+        a.sim.configure_building(id, dir, w, u && u->refinery);
         if (u && (!u->anim.empty() || !u->anim_two.empty() || !u->anim_three.empty() ||
                   !u->special.empty() || (u->turret && u->turret_voxel)))
             b.has_anim = true;

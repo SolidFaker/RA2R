@@ -33,11 +33,14 @@ enum SimOrder : uint8_t {
     kOrderHarvest = 6,       // 采矿车自动循环（采矿 → 精炼厂卸货）
 };
 
-// 基础武器（stage 从 rulesmd 解析注入；缺省 = 默认手枪档）
+// 基础武器（stage 从 rulesmd 解析注入）
 struct SimWeapon {
-    int damage = 25;
+    // damage = 0 且 range = 0 = **无武器**（默认即"无"；有武器必须显式注入
+    // rulesmd Primary=）。旧默认 25/1 会把"没配武器"的建筑/单位变成 25 伤害的
+    // 近战武器（防御建筑误开火），已改为零值。
+    int damage = 0;
     int rof = 30;   // 冷却（逻辑帧）
-    int range = 1;  // 射程（格，曼哈顿距离，向上取整）
+    int range = 0;  // 射程（格，曼哈顿距离，向上取整）
 };
 
 struct SimUnit {
@@ -220,9 +223,10 @@ struct SimWorld {
     int64_t sell_building(size_t building_idx, int refund_percent = 50);
 
     // ── 建筑配置 / 防御攻击（M4）──
-    // 落成后由 stage 按 rulesmd 注入：朝向 dir（0..255，也作为炮塔初始朝向）与
-    // Primary 武器（无武器传空 = 纯建筑）。返回是否找到该建筑。
-    bool configure_building(uint32_t id, int dir, const SimWeapon& w);
+    // 落成后由 stage 按 rulesmd 注入：朝向 dir（0..255，也作为炮塔初始朝向）、
+    // Primary 武器（无武器传空 = 纯建筑）与精炼厂标记（Refinery=yes；采矿车
+    // 卸货目标判定用）。返回是否找到该建筑。
+    bool configure_building(uint32_t id, int dir, const SimWeapon& w, bool is_refinery = false);
     // 命令建筑攻击单位（防御建筑；仅同/敌我校验，射程外会先转向等待）。
     bool issue_build_attack(size_t building_idx, size_t unit_idx);
     // 停止建筑攻击（清目标，恢复自动索敌）

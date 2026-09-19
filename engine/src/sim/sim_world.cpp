@@ -81,6 +81,8 @@ int dist_to_building(const SimBuilding& b, int col, int row, int* out_col = null
 // 最近有矿格（由近及远环形扫描，确定性）；无矿返回 false
 bool find_nearest_ore(const std::vector<int16_t>& ore, int w, int h, int col, int row, int& tc,
                       int& tr) {
+    // 防御：矿石格栅缺失/尺寸不符（无矿地图）直接无矿（否则越界读）
+    if (ore.size() < static_cast<size_t>(w) * static_cast<size_t>(h)) return false;
     const int maxr = std::max(w, h);
     for (int rad = 0; rad <= maxr; ++rad) {
         for (int dy = -rad; dy <= rad; ++dy) {
@@ -241,6 +243,7 @@ bool SimWorld::advance_segment(SimUnit& u) {
         changed = true;
         u.frac = rem;
         if (u.path.empty()) {
+            u.frac = 0; // 到达终点：清段内余量（否则 unit_moving 恒真、走路动画停不下来）
             u.next_col = u.col;
             u.next_row = u.row;
             if (u.order == kOrderMove) u.order = kOrderNone; // 移动完成 → 空闲
@@ -961,12 +964,13 @@ bool SimWorld::build_ready(const std::string& owner) const {
 
 // ── 建筑配置 / 防御攻击（M4）──
 
-bool SimWorld::configure_building(uint32_t id, int dir, const SimWeapon& w) {
+bool SimWorld::configure_building(uint32_t id, int dir, const SimWeapon& w, bool is_refinery) {
     for (auto& b : buildings) {
         if (b.id != id) continue;
         b.dir = static_cast<uint8_t>(dir & 255);
         b.turret_dir = b.dir;
         b.weapon = w;
+        b.is_refinery = is_refinery;
         return true;
     }
     return false;

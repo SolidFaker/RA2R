@@ -210,6 +210,7 @@
 | 建筑修理 / 出售 | ✅ `toggle_repair/sell_building`：修理按满修≈300 帧节奏回血并等比扣款（资金耗尽自停、满血自停、低电减半）；出售退款 = Cost·RefundPercent%·残血比，静默移除（无爆炸）并解除地基阻挡；stage 点选建筑（地基格拾取）→ 侧边栏 修理/出售 按钮 |
 | 落成建筑动画（新落成建筑收编） | ✅ `stage adopt_building`：基地车展开/建造放置/AI 建造的建筑统一走"收编"——注入 Primary 武器与朝向（`configure_building`）、按与地图装载同判据标记 `SimBuilding.has_anim`（ActiveAnim/SpecialAnim/体素炮塔）。此前 `has_anim` 只在地图装载时设置，遭遇战里自己造的建筑**没有任何配件动画/炮塔时钟**（bmpdiff 修前/修后：差异仅落在两基地建筑带 9318 px = 补上的 ActiveAnim）。 |
 | 建筑选中 / 血条 / 防御建筑攻击 | ✅ 左键点地基格选中建筑 → 地基格绿框 + 血条（受损常显、选中必显，宽度随地基尺寸）；`SimBuilding.weapon/target/cooldown/turret_dir`：rulesmd `Primary=` 注入（`configure_building`，地图装载同路径）；**手动指定**：选中防御建筑后右键敌方单位（`issue_build_attack`，右键空地/按钮 `stop_build_attack`）→ 炮塔每帧转向 ≤16/256、对准（±16）且射程内按 ROF 开火扣血（沿用死亡整批结算）；**自动索敌**：无目标每 15 帧扫射程内最近敌单位（Neutral/Special 陈设不自动开火）；炮塔渲染改用 `turret_dir`（SHP 面向帧 / 体素 yaw）；`probe_bdef` 验证：手动射程内命中扣血、射程外只转向不开火、自动索敌生效、Neutral 不开火 |
+| 测试基建（GoogleTest，`RA2R_BUILD_TESTS=ON`） | ✅ GoogleTest v1.15.2 vendored（`third_party/googletest`，离线可构建）+ `tests/`（51 用例 / 18 套件，`ctest` 一键跑，纯逻辑 ~1.5s）：INI 解析·等距几何·调色板 LUT（6 位×4/索引0透明/索引1阴影/remap 16..31）·8 向 A*（直线/对角步/障碍/奇偶/确定性）；SimWorld 移动（8 向朝向表·恒速直线·重下令保进度·frac<256·到达清零）·idle 调度·建造（工期/电力/队列/修理出售）·采矿卸货·防御攻击（手动/自动/Neutral）·单位击杀·确定性哈希；遭遇战（展开/科技树/阵营色/开局兵力）；资产解析（FileIndex/SHP 阴影段/地图格栅/rulesmd 类型/VXL/HVA）；渲染功能（步兵逆时针朝向块·3 帧/动画帧·idle 段·Buildup 进度·体素光栅确定性）。**测试捕获并修复**：到达终点 frac 未清零（unit_moving 恒真/走路动画停不下来）、`find_nearest_ore` 空矿石格栅越界、`SimWeapon` 默认 25/1 使无武器建筑变成近战武器（防御建筑误开火） |
 
 
 ### M5 战斗系统（6–8 周）
