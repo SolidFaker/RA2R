@@ -209,6 +209,42 @@
   时间基准——放 sim 用确定性 LCG，渲染层只做相位截断；④ 参考实现的"近似"
   （.05 vs .06、3s vs 3.6s）要回游戏 INI 定夺。
 
+### 3.22 Linux 构建与运行（Windows 之外的第一个平台）
+- **背景**：引擎原为 MinGW/Windows 开发；移植 Linux（Arch，g++ 16.2）暴露一批
+  "Windows 掩盖的坑"。修完 `ctest` 51/51 全绿（含资产/渲染用例，0 SKIP），
+  stage 自检输出与 Windows **逐字节一致**（dttd simbuild 240 帧 SHA256 相同）。
+- **改动（按坑归类）**：
+  1. **CMake 平台守卫**：`tools/CMakeLists.txt` 的 `-municode`（wmain 入口）、
+     `-mwindows`（GUI 子系统）、`-static`（MinGW 运行时）与 SDL3.dll 拷贝全部
+     收进 `if(MINGW)`（非 Windows 置空）。源码里 `wmain`/`main` 分支本就有
+     `#ifdef _WIN32` 守卫，无需改。
+  2. **子目录顺序**：`third_party` 必须先于 `engine`——`ra2r_ui` 依赖
+     `RA2R_IMGUI_DIR`（在 third_party 里 `CACHE INTERNAL` 定义）。旧顺序靠
+     本地构建缓存掩盖，干净构建（Linux）直接报 "No SOURCES given to ra2r_ui"。
+  3. **显式头文件**：`lzo1x.h`/`voxel_raster.h` 补 `<cstddef>`、`map_file.cpp`/
+     `sim_world.cpp` 补 `<climits>`——GCC 16 不再间接包含（MinGW 侧恰好有别的
+     头带进来）。
+  4. **同名遮蔽**：`map_file.cpp` 局部 `min_s` 与成员函数 `min_s()` 同名，GCC
+     报 "invalid use of non-static member function"（MSVC/MinGW 不报）→ 改 `min_s_v`。
+  5. **游戏目录发现跨平台**：
+     · 判定"像不像游戏目录"从 `exists(dir/"ra2md.mix")`（Windows 大小写不敏感）
+       改为**遍历目录逐项 `iequals`**（Linux 上文件可能是 `RA2MD.MIX`）；
+     · 新增 `RA2R_GAME_DIR` 环境变量（Linux 无注册表的主要入口）；
+     · 非 Windows 用 `/proc/self/exe` 解析 exe 路径（对应 GetModuleFileNameW）；
+     · 候选路径逐级**大小写不敏感解析**（`yuri/` 目录也能命中 `Yuri` 候选；
+       `resolve_ci` 第一版有个 bug：该级已存在时忘了写回 `out`，小写目录仍失败）；
+     · `name_db.cpp` 的 XCC 名库查找同样补 `/proc/self/exe` 分支。
+  6. **测试基建**：`tests/test_util.h` 原来硬编码 `I:/ai/RA2R/Yuri` → 改用引擎
+     `find_game_dir()`（与工具同一条发现链），Linux 下资产/渲染用例不再 SKIP。
+- **验证**：① Linux `cmake -G Ninja` 干净构建 0 error；② `ctest` 51/51、
+  `--gtest_filter` 过滤正常、SKIPPED=0；③ 交叉确定性：dttd simbuild 240 帧
+  `.sim.bmp` 与 Windows 版 **SHA256 完全一致**；④ 大小写场景：`yuri` 目录 +
+  `RA2MD.MIX` + `--map DTTD.YRM` 全部正常，输出哈希与标准布局一致。
+- **教训**：① "Windows 上能编" 不等于可移植——`-municode/-mwindows`、大小写
+  不敏感文件系统、隐式头包含是三处典型 Windows 特权；② **干净构建**是移植
+  第一道体检（子目录顺序/缓存问题只有它暴露）；③ 路径大小写解析要逐级做，
+  且"已存在"分支别忘写回结果（本次 `resolve_ci` 首版就栽在这）。
+
 ### 3.21 测试基建（GoogleTest）与它抓出的三个真 bug
 - **引入**：GoogleTest v1.15.2 vendored（`third_party/googletest`，`RA2R_BUILD_TESTS=ON`
   时编译）+ `tests/`（51 用例 / 18 套件，`ctest` 或 `build/tests/ra2r_tests.exe`）。

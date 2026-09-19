@@ -24,25 +24,37 @@
 
 ## 构建
 
-工具链：**Windows + MinGW-w64 GCC 13+**（开发用 GCC 16.2）、CMake 3.25+。
+工具链：**Windows + MinGW-w64 GCC 13+**（开发用 GCC 16.2）、**Linux + GCC 13+**（Arch/Debian 均可）、CMake 3.25+、Ninja/Make。
 
 ```powershell
 # 1. 准备依赖
-#    SDL3（3.4.x，MinGW 版）：https://github.com/libsdl-org/SDL/releases ，
+#    SDL3（3.4.x，MinGW 版）：https://github.com/libsdl-org/SDL/releases —
 #    解压后在配置时通过 CMAKE_PREFIX_PATH 指定；
-#    ImGui 已 vendored（third_party/imgui），无需额外安装。
+#    ImGui 与 GoogleTest 为 vendored（third_party/），无需额外安装
 
 # 2. 配置与构建
 cmake -B build -G "MinGW Makefiles" -DCMAKE_PREFIX_PATH=<SDL3 目录>
 cmake --build build -j
 
-# 3.（可选）社区名称库与调研参考（XCC 名库为 GPLv3 数据，不入库）
+# 3.（可选）社区名称库与调研参考（XCC 名库等 GPLv3 数据，不入库）
 powershell -File tools/fetch_references.ps1
 
-# 4.（可选）BIK 视频播放需要 FFmpeg 8.x 运行库
-#    将 avutil-60/avcodec-62/avformat-62/swscale-9/swresample-6.dll
+# 4.（可选）BIK 视频播放需 FFmpeg 8.x 运行时
+#    把 avutil-60/avcodec-62/avformat-62/swscale-9/swresample-6.dll
 #    放到 mixbrowser.exe 同目录（头文件已 vendored，运行时动态加载）。
 ```
+
+Linux（SDL3 用发行版包即可；`-municode/-mwindows/-static` 与 SDL3.dll 拷贝自动禁用）：
+
+```bash
+sudo pacman -S cmake ninja sdl3      # Arch；Debian/Ubuntu: libsdl3-dev
+cmake -B build -G Ninja -DRA2R_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build -j
+```
+
+游戏目录定位（两个平台同一套逻辑，大小写不敏感）：
+注册表（仅 Windows）→ 环境变量 `RA2R_GAME_DIR` → exe 相对路径（`build/tools/../../Yuri` 等）
+→ 当前目录。Linux 上目录名/文件名大小写不限（`yuri/RA2MD.MIX` 也能识别）。
 
 运行各工具：
 
