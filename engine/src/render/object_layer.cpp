@@ -2,6 +2,7 @@
 #include "ra2r/render/object_layer.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <map>
@@ -60,6 +61,20 @@ std::vector<uint8_t> shp_frame_rgba(const ra2r::assets::ShpFile& shp, int frame_
         d[3] = 255;
     }
     return rgba;
+}
+
+// 序列第 4 参数（定向字母，如 Idle1=56,15,0,S）→ 朝向下标 0..7；未给返回 -1。
+// 字母表与引擎朝向帧序一致：N,NE,E,SE,S,SW,W,NW（原版"步兵在该动画中/之后
+// 所指方向"，ModEnc Infantry Animation Sequences）
+int dir_letter_index(const char* s) {
+    if (!s || !s[0]) return -1;
+    char c0 = static_cast<char>(std::toupper(static_cast<unsigned char>(s[0])));
+    char c1 = s[1] ? static_cast<char>(std::toupper(static_cast<unsigned char>(s[1]))) : 0;
+    if (c0 == 'N') return c1 == 'E' ? 1 : (c1 == 'W' ? 7 : 0);
+    if (c0 == 'E') return 2;
+    if (c0 == 'S') return c1 == 'E' ? 3 : (c1 == 'W' ? 5 : 4);
+    if (c0 == 'W') return 6;
+    return -1;
 }
 
 } // namespace
@@ -162,6 +177,8 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
         int build_total;  // 建造总逻辑帧
         uint8_t moving;   // 步兵行进中（Walk 序列）
         uint32_t anim_clock; // 动画时钟（逻辑帧）
+        uint8_t idle_kind;   // 步兵 idle 动作（1=Idle1 2=Idle2 0=无）
+        uint32_t idle_start; // idle 动作触发逻辑帧
     };
     std::vector<Obj> sorted;
     for (size_t i = 0; i < objs.size(); ++i) {
@@ -169,7 +186,7 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
         sorted.push_back({o.cx, o.cy, o.cx + o.cy, o.kind, o.id, o.dir, o.subcell, o.height,
                           o.off_x, o.off_y, o.alpha, o.hp, o.build_p, o.remap,
                           static_cast<int>(i), o.build_ticks, o.build_total, o.moving,
-                          o.anim_clock});
+                          o.anim_clock, o.idle_kind, o.idle_start});
     }
     std::sort(sorted.begin(), sorted.end(), [](const Obj& a, const Obj& b) {
         if (a.cy != b.cy) return a.cy < b.cy; // 砖墙行序（后行盖前行）
@@ -297,12 +314,14 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                 continue;
             }
             int seq_start = 0, seq_stride = 1;
-            // 行走序列（artmd Sequence= → [seq] 节；格式 Start,Length,Stride[,定向]）：
+            // 动画序列（artmd Sequence= → [seq] 节；格式 Start,Length,Stride[,定向]）：
             //   Guard/Ready = 站立（Length=1 的朝向表）；Walk = 行走循环
-            //   （每朝向连续 Length 帧依次播放，Stride = 朝向间帧步长）。
-            // 原版：行进中播 Walk、否则 Guard；4 参数 = 单朝向（Stride=0 时
-            // 朝向偏移恒 0，仅按相位循环）。
+            //   （每朝向连续 Length 帧依次播放，Stride = 朝向间帧步长）；
+            //   Idle1/Idle2 = 静止动作（sim 按 IdleActionFrequency 触发；单朝向
+            //   Stride=0 时第 4 参数给出动画所绘方向）。
             int walk_start = -1, walk_len = 0, walk_stride = 1;
+            int idle1_start = -1, idle1_len = 0, idle1_stride = 0, idle1_dir = -1;
+            int idle2_start = -1, idle2_len = 0, idle2_stride = 0, idle2_dir = -1;
             if (have_art) {
                 // 序列节查找：artmd [id]，缺省回退美术名节（如 E1 → [GI]）
                 const std::string art_sec = art.has_section(o.id) ? o.id : img_name;
@@ -316,17 +335,49 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                     if (!walk.empty())
                         std::sscanf(walk.c_str(), "%d,%d,%d", &walk_start, &walk_len,
                                     &walk_stride);
+                    const auto parse_idle = [&](const char* key, int& start, int& len,
+                                                int& stride, int& dir) {
+                        const std::string v = art.get(seq, key, "");
+                        if (v.empty()) return;
+                        char letter[4] = {0, 0, 0, 0};
+                        std::sscanf(v.c_str(), "%d,%d,%d,%3s", &start, &len, &stride, letter);
+                        dir = dir_letter_index(letter);
+                    };
+                    parse_idle("Idle1", idle1_start, idle1_len, idle1_stride, idle1_dir);
+                    parse_idle("Idle2", idle2_start, idle2_len, idle2_stride, idle2_dir);
                 }
                 // 无 Sequence= 的步兵（动物/平民）默认帧 0..7 为朝向帧（stride 1）
             }
             const int facing = (o.dir + 16) / 32 % 8;
             int frame_i = seq_start + facing * seq_stride;
             if (o.moving && walk_start >= 0 && walk_len > 0) {
-                // 行走相位：约 100ms/帧 @15Hz（OpenRA ra2 步兵默认 Tick:100；
-                // GI 为 120ms），整数运算保持确定性
+                // 行走相位：原版硬编码播放速率 = 每 3 逻辑帧推进 1 动画帧
+                // （ModEnc Infantry Animation Sequences：Walk=3 @15fps 逻辑帧；
+                // 旧实现 2/3 帧/逻辑帧 = 4.5 倍速已修）
                 const uint32_t phase =
-                    (o.anim_clock * 2 / 3) % static_cast<uint32_t>(walk_len);
+                    (o.anim_clock / 3) % static_cast<uint32_t>(walk_len);
                 frame_i = walk_start + facing * walk_stride + static_cast<int>(phase);
+            } else if (o.idle_kind) {
+                // 静止 idle 动作（sim 触发）：Idle1/Idle2 段按同速率 3 播放；
+                // 段内帧播完即回 Guard（busy 期由 sim 控制）
+                const int i_start = o.idle_kind == 2 ? idle2_start : idle1_start;
+                const int i_len = o.idle_kind == 2 ? idle2_len : idle1_len;
+                const int i_stride = o.idle_kind == 2 ? idle2_stride : idle1_stride;
+                const int i_dir = o.idle_kind == 2 ? idle2_dir : idle1_dir;
+                if (i_start >= 0 && i_len > 0) {
+                    const uint32_t t =
+                        o.anim_clock >= o.idle_start ? o.anim_clock - o.idle_start : 0;
+                    if (t < static_cast<uint32_t>(i_len) * 3) {
+                        // Stride>0 = 多朝向段（罕见）：基址 = Start + 朝向·Stride，
+                        // 朝向取第 4 参数字母（缺省 = 单位当前朝向）；
+                        // Stride=0 = 单朝向段，帧序即 Start..Start+Length-1
+                        const int base =
+                            i_stride > 0
+                                ? i_start + (i_dir >= 0 ? i_dir : facing) * i_stride
+                                : i_start;
+                        frame_i = base + static_cast<int>(t / 3);
+                    }
+                }
             }
             frame_i = std::clamp(frame_i, 0, static_cast<int>(shp.frame_count()) - 1);
             // 步兵帧 RGBA 缓存（按 美术名|帧号|阵营色；朝向帧跨帧复用）
@@ -467,19 +518,20 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                 }
             };
             // ── 建造/展开动画：Buildup SHP（前半建造帧、后半同数阴影帧）──
-            // 原版语义（ModEnc BuildupTime）：动画在放置后**固定时长播完一遍**
-            //（[General] BuildupTime 默认 0.05 分钟 = 3s = 45 逻辑帧，与帧数/工期
-            // 无关）；播完后显示建筑本体 make 帧（+阴影）直到工期结束。
-            // 旧实现把帧按 build_p 摊满整个工期（GAPOWR 25 帧动画被拉成 27s），
-            // 不符合原版。GACNSTMK 等 29 帧同理。
+            // 原版语义（ModEnc BuildupTime）：动画在放置后按 [General] BuildupTime
+            // 平均分钟数播完一遍（YR = .06 → 3.6s = 54 逻辑帧；stage 已把该值折算
+            // 为 build_total），与 Buildup 帧数无关；播完后建筑完工（无 Buildup 的
+            // 建筑原版根本不进入建造状态）。旧实现帧按 build_p 摊满工期
+            //（GAPOWR 25 帧动画被拉成 27s）已修；固定 45 帧的近似也已替换。
             const int b_ticks = o.build_ticks;
-            if (have_buildup && (!raw || b_ticks < kBuildupTicks)) {
+            const int b_total = o.build_total > 0 ? o.build_total : kBuildupTicks;
+            if (have_buildup && (!raw || b_ticks < b_total)) {
                 const int bn = static_cast<int>(bshp.frame_count());
                 const int sh = ra2r::assets::shp_shadow_start(bshp);
                 const int make_n = sh > 0 ? sh : bn; // 建造段帧数（无阴影段则全部）
                 const int bf = (!raw) // 无本体 SHP（如 GADUMY）：始终末帧
                                    ? make_n - 1
-                                   : std::clamp(b_ticks * make_n / kBuildupTicks, 0, make_n - 1);
+                                   : std::clamp(b_ticks * make_n / b_total, 0, make_n - 1);
                 ObjectRenderCache::BldEntry bshadow, bsprite;
                 if (sh > 0 && sh + bf < bn &&
                     entry_of(bshp, buildup_name, sh + bf, o.remap, bshadow))

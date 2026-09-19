@@ -765,7 +765,8 @@ static int run(int argc, char** argv) {
                         const int fh = u ? u->fh : 1;
                         const int cost = u ? u->cost : 300;
                         const int power = u ? u->power : 0;
-                        const int total = std::max(30, cost / 2); // M3 工期 ≈ 造价/2 帧
+                        // 现场工期 = [General] BuildupTime（YR 54 帧）；无 Buildup 即完成
+                        const int total = std::max(1, onsite_ticks(a, type));
                         const bool ok = a.sim.issue_build(owner, type, cx, cy, fw, fh, cost,
                                                           total, power);
                         std::fprintf(stderr, "[stage] 建造 %s @(%d,%d) for %s $%d power%+d %s\n",
@@ -1155,8 +1156,9 @@ static int run(int argc, char** argv) {
                         const auto* bu = a.rules.unit("GAPOWR");
                         const int cost = bu ? bu->cost : 300;
                         const int power = bu ? bu->power : 200;
-                        const bool ok = a.sim.issue_build(u0.owner, "GAPOWR", bx, by, 2, 2,
-                                                          cost, std::max(30, cost / 2), power);
+                        const bool ok = a.sim.issue_build(
+                            u0.owner, "GAPOWR", bx, by, 2, 2, cost,
+                            std::max(1, onsite_ticks(a, "GAPOWR")), power);
                         std::printf("sim: build GAPOWR @(%d,%d) for %s $%d power%+d %s\n", bx,
                                     by, u0.owner.c_str(), cost, power, ok ? "ok" : "fail");
                     }
@@ -1212,8 +1214,8 @@ static int run(int argc, char** argv) {
                                 const int cost = u ? u->cost : 300;
                                 const int power = u ? u->power : 0;
                                 const bool ok = a.sim.issue_build(
-                                    owner, type, x, y, fw, fh, cost, std::max(30, cost / 2),
-                                    power);
+                                    owner, type, x, y, fw, fh, cost,
+                                    std::max(1, onsite_ticks(a, type)), power);
                                 std::printf("sim: demo %s build %s @(%d,%d) $%d %s\n",
                                             owner.c_str(), type.c_str(), x, y, cost,
                                             ok ? "ok" : "fail");

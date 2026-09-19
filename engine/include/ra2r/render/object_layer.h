@@ -36,9 +36,10 @@ struct ObjectRenderStats {
     int skipped = 0;
 };
 
-// 建造/展开动画时长（原版 [General] BuildupTime 默认 0.05 分钟 = 3s @15Hz）：
-// Buildup SHP 播完一遍后显示建筑本体 make 帧，与工期/帧数无关（object_layer.cpp）
-constexpr int kBuildupTicks = 45;
+// 建造/展开动画时长（[General] BuildupTime，YR rulesmd = 0.06 分钟 = 3.6s =
+// 54 逻辑帧 @15Hz；ModEnc/Buildup 页）。仅作 build_total 缺失时的兜底；
+// 正常路径由 stage 把 BuildupTime 折算成放置时的 build_total（object_layer.cpp）
+constexpr int kBuildupTicks = 54;
 
 struct ObjectRenderCache; // 定义见下（render_objects 的可选缓存参数）
 
@@ -60,13 +61,17 @@ struct PlacedObject {
     // 阵营色：0 = 不重映射；N = cfg.house_ramps[N-1]（Remap 段 16..31 整段替换）
     uint8_t remap = 0;
     // ── 动画状态（渲染用；默认静态）──
-    // 建造：已用/总逻辑帧。有 Buildup 动画时按固定时长（原版 BuildupTime
-    // 默认 0.05 分钟 = 3s）播完一遍，随后显示 make 帧直到完工（见 object_layer.cpp）
+    // 建造：已用/总逻辑帧。有 Buildup 动画时按 build_total 播完一遍（= 放置时
+    // 传入的 [General] BuildupTime 帧数），随后显示 make 帧直到完工（object_layer.cpp）
     int build_ticks = 0;
     int build_total = 0;
-    // 步兵：moving=行进中（播 Walk 序列）；anim_clock = 逻辑帧时钟（走序列相位）
+    // 步兵：moving=行进中（播 Walk 序列，每 3 逻辑帧 1 帧）；
+    // anim_clock = 逻辑帧时钟（走/idle 序列相位）；idle_kind = sim 触发的 idle
+    // 动作（1=Idle1 2=Idle2，0=无；播放从 idle_start 起的 artmd Idle1/Idle2 段）
     uint8_t moving = 0;
     uint32_t anim_clock = 0;
+    uint8_t idle_kind = 0;
+    uint32_t idle_start = 0;
 };
 
 // 渲染对象到画布（画在地形之后，按 (cx+cy, cx) 深度排序）。

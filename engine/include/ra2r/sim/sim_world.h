@@ -64,7 +64,18 @@ struct SimUnit {
     int cargo = 0;
     int capacity = 20;
     int mine_clock = 0; // 采集节拍（每 5 帧采 1 单位）
+    // 步兵 idle 动作（原版 IdleActionFrequency：静止时按 0.5~2× 均值随机间隔
+    // 播放 Idle1/Idle2；纯渲染表现，sim 只发布"动作已触发"事件，动画长度由
+    // 渲染层按序列帧数截断）。确定性：每单位独立 LCG 流。
+    uint8_t idle_kind = 0;   // 0=无 1=Idle1 2=Idle2
+    uint32_t idle_start = 0; // 触发时逻辑帧（渲染相位基准）
+    int idle_wait = -1;      // 距下次 idle 动作等待逻辑帧（-1 = 静止后重掷）
+    uint32_t idle_rng = 0;   // 确定性伪随机源（spawn 时按 id 播种）
 };
+
+// idle 动作忙期（渲染层最长 idle 序列 26 帧 × Walk/Idle 速率 3 ≈ 78 帧）：
+// sim 在此期间不重复触发，动画实际长度由渲染层按 artmd Length 截断。
+inline constexpr int kIdleAnimBusyTicks = 78;
 
 struct SimBuilding {
     uint32_t id = 0;
@@ -127,6 +138,9 @@ struct SimWorld {
     std::map<std::string, int64_t> credits; // House → 资金
     std::map<std::string, int> power_net;   // House → 净电力（产 − 耗）
     uint64_t logic_ticks = 0; // 全局逻辑帧（低电减半的奇偶节拍用）
+    // 步兵 idle 动作平均间隔（逻辑帧；stage 从 [General] IdleActionFrequency
+    // 折算，YR = .15 分钟 → 135 帧 @15Hz；0 = 禁用 idle 动作）
+    int idle_freq_ticks = 135;
     // 建造队列（每 House 单队列；遭遇战流程）
     std::map<std::string, BuildQueueItem> build_queue;
 

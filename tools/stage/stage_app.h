@@ -170,8 +170,9 @@ std::vector<std::pair<int, int>> map_waypoints(const StageApp& a);
 bool start_skirmish(StageApp& a, std::string* error);
 // 展开选中的基地车（DeploysInto=；播放 Buildup 动画）
 bool deploy_selected_mcv(StageApp& a);
-// 展开（基地车）逻辑帧时长（原版 BuildupTime 3s；无 Buildup 美术返回 0）
-int deploy_ticks(StageApp& a, const std::string& type);
+// 现场建造/展开逻辑帧时长 = [General] BuildupTime（YR .06 分钟 → 54 帧 @15Hz）；
+// 无 Buildup 美术返回 0（原版不进入建造状态，即放即完成）
+int onsite_ticks(StageApp& a, const std::string& type);
 // 侧边栏可造建筑（Owner/Prerequisite/TechLevel/建造厂过滤）
 std::vector<const ra2r::assets::UnitTypeDef*> buildable_for(StageApp& a, const std::string& owner);
 // 按角色取本阵营建筑（owner 的科技树校验必须通过）：

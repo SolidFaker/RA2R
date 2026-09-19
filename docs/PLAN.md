@@ -136,7 +136,7 @@
 | 光照等级管线 | ✅ PaletteLut 32 级 + --light 距离渐变（中心 0/边缘 24 已验证） |
 | 建筑渲染管线（artmd Image/Foundation + SHP 首帧 + 单位盘） | ✅ 战役图 119 建筑实测 |
 | 载具渲染管线（VXL+HVA 体素锚点对齐格中心，dir→yaw） | ✅ 战役图 21 载具实测 |
-| 步兵渲染管线（Image= 链 + Sequence 朝向帧 + subcell） | ✅ 战役图 41 步兵实测；**行走动画** = artmd `Sequence=` 节 `Walk=Start,Length,Stride` 循环段（行进中 `moving` 播 Walk、否则 Guard；相位 ≈100ms/帧 @15Hz = clock·2/3，确定性整数运算；`PlacedObject.moving/anim_clock` 由 sim 注入，见 object_layer.cpp） |
+| 步兵渲染管线（Image= 链 + Sequence 朝向帧 + subcell） | ✅ 战役图 41 步兵实测；**行走/idle 动画** = artmd `Sequence=` 节（`Walk=Start,Length,Stride` 循环段；`Idle1/Idle2=Start,Length,0,定向`）：行进播 Walk、静止由 sim 按 `IdleActionFrequency` 触发 Idle1/Idle2、否则 Guard；**播放速率 = 原版硬编码 3 逻辑帧/动画帧**（ModEnc Infantry Animation Sequences；旧实现 clock·2/3 快 4.5 倍已修），整数运算保确定性；`PlacedObject.moving/anim_clock/idle_kind/idle_start` 由 sim 注入，见 object_layer.cpp 与 DEBUGGING §3.18 |
 | 等距包围盒修复（右极值角 (W-1,0)，此前右半被裁） | ✅ DEBUGGING.md 3.7 |
 | 全单位陈列场景（验收） | ✅ --showcase：218/218 VXL 网格渲染 |
 | 混合过渡（斜坡/水岸边的过渡瓦片选择） | ✅ 编辑器烘焙瓦片天然支持；斜坡高度经 cell.height 抬升 + 悬崖扩展区渲染 |
@@ -159,7 +159,7 @@
 | 攻击/护卫/巡逻指令 | ✅ 右键敌方单位/建筑=攻击（进射程驻停开火，目标移动自动追）、右键友军=护卫跟随、Shift+右键=巡逻点循环；目标死亡/移除后自动清指令（下标重映射） |
 | 基础伤害/血量/死亡 + 爆炸动画 | ✅ rulesmd Primary= → [WeaponTypes] Damage/ROF/Range 解析注入（100 类型）；ROF 冷却、死亡整批结算+目标下标重映射、建筑死亡解除地基阻挡、EXPLOMED 帧序列爆炸、伤血绿/红血条；atwar.yrm 自检：HTNK 90×3 击杀 MGTK（640 帧爆炸可见、660 帧消散，像素聚类验证坦克移位+目标移除+爆炸+血条） |
 | 资源闭环（采矿→精炼→资金） | ✅ rulesmd Harvester=/Capacity= 与 Refinery= 解析（5 采矿车类型/2 精炼厂）；采矿车空闲自动采集（每 5 帧 1 单位）、满载自动找最近精炼厂卸货入 House 资金（曼哈顿邻格；建筑地基阻挡 → 目标格被挡时改选最近可达邻格寻路）；矿石格 = OverlayPack 类型 → rulesmd 名 TIB*/GEM*（每格 50 单位）；各 House 初始资金 $10000（遭遇战标准）；dttd.yrm 自检：4 采矿车 12000 帧 $4720、矿石 26500→21783，两次运行状态与 BMP **逐字节一致**（确定性）；修复追击寻路"段中反复重置进度"冻结 bug（仅驻停时重寻路） |
-| 建造放置与建造动画 | ✅ rulesmd Cost=/Power= 解析（69 造价/84 电力）；stage 建造模式：选中己方单位 → 左键起造（立即扣款、地基矩形阻挡校验、工期 = 造价/2 帧）；工地半透明（alpha 96）+ 黄色进度条，完工补满血并供电；dttd 自检：GAPOWR $800 起造 → 300 帧在建（ticks=300/400、不计电力）→ 450 帧完工（hp=256、电力 +200），像素聚类验证半透明→不透明过渡+进度条 |
+| 建造放置与建造动画 | ✅ rulesmd Cost=/Power= 解析（69 造价/84 电力）；stage 建造模式：选中己方单位 → 左键起造（立即扣款、地基矩形阻挡校验）；工地半透明（alpha 96）+ 黄色进度条，完工补满血并供电；dttd 自检：GAPOWR $800 起造 → 施工（不计电力）→ 完工（hp=256、电力 +200）。**工期语义已修正（M4）**：现场时长 = `[General] BuildupTime`（YR 54 帧）而非 `Cost/2`，且由 Buildup 帧序列承担（见 M4「建造/展开动画」行与 DEBUGGING §3.18） |
 | 电力/资金面板 | ✅ sim.power_net（产−耗，建造中不供电；低电惩罚 M4）；stage 面板显示各 House 资金/电力 |
 | 选择与编队 | ✅ 左键点选、双击同型全选、**拖拽框选**（空地拖框按格范围圈选）、Ctrl+1..9 存队 / 1..9 取队、多选移动环形散开布点 |
 | 触发数据（地图加载全套） | ✅ MapFile::ini() 全节可达（dttd: Triggers/Events/Actions ×184、TeamTypes 104、ScriptTypes 37、TaskForces 74、Houses 14；执行语义归 M7） |
@@ -198,13 +198,13 @@
 |---|---|
 | 遭遇战开局（阵营 / 阵营色 / 开局兵力） | ✅ `engine/sim/skirmish`：国家（`[Countries]` + 国家节 `Side=/Color=/Multiplay=`）、阵营（`[Sides]`）、颜色（`[Colors]` H,S,V）全部解析；开局兵力按 OpenRA `MPStartUnits` **机制**（BaseActor + SupportActors + Inner/OuterSupportRadius 3..5 环带确定性散布），数值表与 `mods/yr/rules/world.yaml` 逐项一致、单位名取 rulesmd；`--country/--color/--ocountry/--ocolor/--skclass/--sktech` 与 GUI 下拉可选；battle1.yrm 实测玩家 7 单位（中装）@(37,56)、对手 8 单位 @(14,53) |
 | 出生点解析（地图 waypoint） | ✅ `StageMap::waypoints`：`[Waypoints]` 值 `ry·1000+rx` → `col=(rx−ry+W−1)/2`、`row=rx+ry−W−1`（OpenRA `ReadWaypoints` 同式；与 MapFile 的 min_d=−(W−1)、min_s=W+1 等价）；battle1 实测 wp0(66,41)→(37,56)、wp1(42,62)→(14,53)，奇偶不齐也按整除截断 |
-| 基地车展开（`DeploysInto` + 展开动画） | ✅ `[AMCV]/[SMCV]/[PCV] DeploysInto=GACNST/NACNST/YACNST`（AMCV 美术 = `Image=MCV`）；地基以车格为中心（4×4 → 左上 = 车格 −1,−1，中心被占按固定邻序试近旁）；展开动画 = artmd `Buildup=`（GACNSTMK 58 帧 = **29 建造帧 + 29 阴影帧**，同建筑本体分段判据），播放帧 = 进度 × 建造段帧数，时长 ≈ 1.9s；`D` 键 / 侧边栏按钮触发展开 |
-| 建造/展开动画（Buildup 帧序列） | ✅ 建筑 `under_construction` 时播放 artmd `Buildup=`（缺省 `<Image>MK`）动画：按原版 **BuildupTime 语义**（ModEnc `[General] BuildupTime` 默认 0.05 分钟 = 3s，与帧数/工期无关）在放置后播完一遍（前半建造帧 + 后半同数阴影帧垫底），之后停在建筑本体 `make` 帧（帧2+阴影帧5）直到工期结束——旧实现把帧按 build_p 摊满工期（GAPOWR 25 帧拖成 27s）已修；无 Buildup 保留 make 帧静态回退 |
+| 基地车展开（`DeploysInto` + 展开动画） | ✅ `[AMCV]/[SMCV]/[PCV] DeploysInto=GACNST/NACNST/YACNST`（AMCV 美术 = `Image=MCV`）；地基以车格为中心（4×4 → 左上 = 车格 −1,−1，中心被占按固定邻序试近旁）；展开 = artmd `Buildup=`（GACNSTMK 58 帧 = **29 建造帧 + 29 阴影帧**）按 `BuildupTime`（54 逻辑帧 = 3.6s）播完一遍即完工；`D` 键 / 侧边栏按钮触发展开 |
+| 建造/展开动画（Buildup 帧序列） | ✅ 建筑 `under_construction` 时播放 artmd `Buildup=`（缺省 `<Image>MK`）动画：**时长 = 放置时传入的 `build_total`**，stage 由 `onsite_ticks()` 读原版 **`[General] BuildupTime`**（YR rulesmd **.06 分钟 → 3.6s = 54 逻辑帧 @15Hz**，ModEnc 默认档 .05）折算——动画播完一遍即**完工**，不再有"停 make 帧等工期"的段落；**无 Buildup 美术 = 原版不进入建造状态（即放即完成）**，不再套用 `Cost/2` 长工期伪建造（GAPOWR 25 帧被 400 帧工期拖成 27s 的旧实现已删）；Buildup SHP = 前半建造帧 + 后半同数阴影帧（阴影索引 1，垫底）；渲染帧 = `build_ticks·建造段帧数/build_total`；simbuild 自检 240 帧 `under=0 ticks=54/54 hp=256`、电力计入，遭遇战 5/5 提前完工 |
 | 科技树（Owner / Prerequisite / TechLevel / ConstructionYard） | ✅ `RulesDB` 解析 `Owner/Prerequisite/TechLevel/Strength/BuildCat/ConstructionYard/Factory/WeaponsFactory/Radar/Powered/DeploysInto/UndeploysInto/DeploySound/Buildup/FreeBuildup`；`[General] Prerequisite<组名>=` 组（POWER/PROC/RADAR/FACTORY/BARRACKS/TECH + ProcAlternate）展开为类型表；判定顺序 = 有 rulesmd 节 → Owner 含国家（空 Owner= 不可建）→ TechLevel → 已建成建造厂 → Prerequisite 全满足；实测盟军链条 GACNST→GAPOWR→GAREFN/GAPILE→GAWEAP→GADEPT（GATECH 仍需 RADAR），苏军 NACNST→NAPOWR→NAREFN→NAHAND→NAWEAP |
 | 建造队列（排队 → 进度 → 落点） | ✅ `SimWorld::build_queue`（每 House 单队列）：`queue_build` 排队即扣款、`tick` 推进、`build_ready/take_ready_build` 就绪取出、`cancel_build` 按 `[General] RefundPercent=50%` 退款；落点校验 `can_place`（矩形地基 + 阻挡表），落点后播放 Buildup 动画；侧边栏显示进度条/就绪提示、地图上绿/红地基预览菱形 |
 | 阵营色重映射（Remap 16..31） | ✅ `PaletteLut::build(pal, remap16)` 与 `VoxelView::remap` 双路径（SHP 用剧场单位盘、VXL 用内嵌盘，同段 16..31）；ramp 按 ModEnc 语义生成（H 恒定、V 最大亮度、越暗越饱和，8 位不经 6 位 ×4）；`PlacedObject.remap` 按 House 索引、帧/体素缓存键含 remap；battle1 实测盟军建筑/载具/步兵蓝、苏军红 |
 | 遭遇战 AI 脚本（自检用） | ✅ `skirmish_ai_tick`：按角色（conyard/power/refinery/barracks/weapon）在 `[BuildingTypes]` 里挑**通过科技树校验**的本阵营建筑（避免把盟军 GAPOWR 挑给苏军），固定节拍展开基地车 + 就近落点建造；仅用于演示/自检，正式 AI 归 M6 |
-| 无头验收 | ✅ `--skirmish --test --simsteps N`：玩家展开 → 电厂 → 矿场 → 兵营 → 重工，AI 同步运营；battle1 实测 4800 帧后 Player 建筑 4/5 完成（$4700、电力 +140）、Opponent 5/5 完成（电力 +65）；截图目视确认两基地布局、展开动画序列与阵营色 |
+| 无头验收 | ✅ `--skirmish --test --simsteps N`：玩家展开 → 电厂 → 矿场 → 兵营 → 重工，AI 同步运营；battle1 实测 4800 帧后 Player 建筑 **5/5** 完成（$4700、电力 +115）、Opponent 5/5 完成（电力 +65）；截图目视确认两基地布局、展开动画序列与阵营色 |
 | 载具炮塔/炮管 + 建筑体素炮塔 | ✅ VXL 节包围盒映射烘焙进投影（索引→模型空间；HTNK 三件天生咬合验证）；建筑炮塔 <Image>TUR.VXL / <Image>.VXL（GTGCAN/YAGGUN）、HVA 帧定位（YAGGUN 双管）生效；**对齐规则修复（DEBUGGING §3.17）**：基准 = 炮塔 VXL **包围盒中心 (x,y)**（美术原点常贴一侧：YAGGUN 主体中心 x=+12、FLAKTUR +8.5）+ **TurretAnimX/Y 像素**偏移相对建筑精灵锚点（ModEnc 语义；非勒普顿/非地基中心）、z 以模型原点；原点锚剔除 HVA 平移（YAGGUN 曾偏 (15.4,−25.2)px）；比例 = 原版 42.4264 体素/格 → **0.35355**；四建筑手绘 MK 接触点误差 |总|≈18px（旧规则 ≈29px）；dttd 全图 A/B 目视修正、nudge 表删除 |
 | 低电惩罚 | ✅ sim.tick：净电力<0 的 House 建造推进与修理均 ×1/2（奇数帧跳过，确定性；正电力场景与旧基线逐项一致）；低电武器 ROF/雷达影响留 M5 |
 | 建筑修理 / 出售 | ✅ `toggle_repair/sell_building`：修理按满修≈300 帧节奏回血并等比扣款（资金耗尽自停、满血自停、低电减半）；出售退款 = Cost·RefundPercent%·残血比，静默移除（无爆炸）并解除地基阻挡；stage 点选建筑（地基格拾取）→ 侧边栏 修理/出售 按钮 |

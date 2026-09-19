@@ -41,6 +41,19 @@ uint8_t dir_toward(int c, int r, int tc, int tr) {
 
 int manhattan(int c, int r, int tc, int tr) { return std::abs(c - tc) + std::abs(r - tr); }
 
+// 每单位确定性伪随机流（步兵 idle 动作选择/间隔；纯整数，跨平台一致）
+uint32_t unit_rand(SimUnit& u) {
+    u.idle_rng = u.idle_rng * 1664525u + 1013904223u;
+    return u.idle_rng >> 16;
+}
+
+// idle 动作等待 = 0.5~2× 平均间隔（原版 IdleActionFrequency 语义），单位逻辑帧
+int idle_wait_ticks(SimUnit& u, int freq) {
+    if (freq < 1) return 1;
+    const uint32_t r = unit_rand(u) % static_cast<uint32_t>(freq + 1); // 0..freq
+    return freq / 2 + static_cast<int>(r) * 3 / 2;                     // 0.5f..2f
+}
+
 // 到建筑任意地基格的最小曼哈顿距离；并给出最近格（out 可空）
 int dist_to_building(const SimBuilding& b, int col, int row, int* out_col = nullptr,
                      int* out_row = nullptr) {
@@ -169,6 +182,7 @@ bool SimWorld::load_map(const assets::MapFile& map,
         su.col = su.next_col = n.cx;
         su.row = su.next_row = n.cy;
         su.dir = n.dir / 32;
+        su.idle_rng = su.id * 1664525u + 12345u; // 步兵 idle 动作随机流播种
         su.hp = n.health;
         su.speed = 51; // 步兵 ≈3 格/秒
         weapon(n.id, su.weapon);
@@ -410,6 +424,38 @@ bool SimWorld::tick() {
             }
         }
         if (advance_segment(u)) changed = true;
+    }
+    // ── 步兵 idle 动作调度（原版 IdleActionFrequency 语义）──
+    // 静止且无指令时，按 0.5~2× 均值间隔随机播放 Idle1/Idle2（sim 只发布触发，
+    // 动画长度由渲染层按 artmd 序列帧数截断）；确定性：每单位独立 LCG 流。
+    for (size_t i = 0; i < units.size(); ++i) {
+        SimUnit& u = units[i];
+        if (u.kind != 2 || !u.alive) continue;
+        if (unit_moving(i)) {
+            if (u.idle_kind) { // 开始移动：打断 idle 动作，停下后重掷等待
+                u.idle_kind = 0;
+                u.idle_wait = -1;
+                changed = true;
+            }
+            continue;
+        }
+        if (u.idle_kind) {
+            if (logic_ticks >= u.idle_start + static_cast<uint32_t>(kIdleAnimBusyTicks)) {
+                u.idle_kind = 0;
+                u.idle_wait = idle_wait_ticks(u, idle_freq_ticks);
+                changed = true;
+            }
+            continue;
+        }
+        if (idle_freq_ticks <= 0) continue; // rules 关闭 idle 动作
+        if (u.idle_wait < 0) u.idle_wait = idle_wait_ticks(u, idle_freq_ticks);
+        if (u.idle_wait > 0) {
+            --u.idle_wait;
+            continue;
+        }
+        u.idle_kind = (unit_rand(u) & 1u) ? 1 : 2;
+        u.idle_start = static_cast<uint32_t>(logic_ticks);
+        changed = true;
     }
     // ── 建造进度（固定序遍历；完成补满血）──
     for (auto& b : buildings) {
@@ -685,6 +731,7 @@ uint32_t SimWorld::spawn_unit(const std::string& owner, const std::string& type,
     if (kind < 1) kind = 1;
     SimUnit u;
     u.id = next_id++;
+    u.idle_rng = u.id * 1664525u + 12345u; // 步兵 idle 动作随机流播种
     u.owner = owner;
     u.type = type;
     u.kind = kind;
@@ -838,6 +885,10 @@ uint64_t SimWorld::visual_hash() const {
         mix(u.alive ? 1ull : 0ull);
         mix(u.order);
         mix(u.cooldown);
+        // 步兵 idle 动作：相位每 3 帧一档（触发/结束/帧推进都需重绘）
+        mix(u.idle_kind ? static_cast<uint64_t>(u.idle_kind) * 65536u +
+                              (logic_ticks - u.idle_start) / 3 + 1
+                        : 0ull);
     }
     for (const auto& b : buildings) {
         mix(b.id);

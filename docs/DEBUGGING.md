@@ -152,26 +152,52 @@
   修复 = `bx = 锚x + frame.x − 画布W/2`（步兵同语义）。教训：**逐建筑不同的偏移
   必来自资产自带元数据**（帧在画布内的位置），别在全局公式里找。
 
-### 3.18 建造动画=BuildupTime 固定时长播一遍；步兵行进=Walk 序列循环
-- **现象**：① 建筑在建动画被按工期摊帧（GAPOWR 25 帧被 400 帧工期拖成 27 秒）；
-  ② SHP 步兵行进时只有 Guard 静态朝向帧，没有行走动作。
-- **正确语义（ModEnc + OpenRA 导入器实证）**：
-  1. **Buildup（建造动画，独立 SHP）**：`[General] BuildupTime` 默认 **0.05 分钟
-     = 3s**（= 45 逻辑帧 @15Hz），动画在放置后**固定时长播完一遍**，与帧数/工期
-     无关；SHP 结构 = 前半建造帧 + 后半同数阴影帧（阴影索引 1，需垫底绘制）。
-     播完后显示建筑本体 **make 帧（帧2 + 阴影帧5）** 直到工期结束。GACNSTMK 29
-     帧、GAPOWRMK 25 帧同理。`Buildup=none`/缺失的建筑不可出售（ModEnc），
-     建造期直接显示 make 帧回退。
-  2. **步兵序列**：artmd `Sequence=<节>` → 节内 `Guard/Walk/FireUp/Prone/...`
-     = `Start,Length,Stride[,定向]`；**3 参数 = 8 朝向**（帧 = Start + 朝向·Stride
-     + 段内相位），**4 参数 = 1 朝向**（Stride 记 0，仅相位；第 4 字段忽略）；
-     `LegacySequenceImporter` 的 `Tick`（OpenRA·ms）步兵默认 100、GI 120 →
-     本引擎取 ≈100ms/帧（clock·2/3 @15Hz，整数运算保确定性）。
-- **手法/验证**：受控探针（`render_objects` 单对象、固定 build_ticks/anim_clock）
-  对比各帧 → 建造动画 0/5/15/30/44/46/200 帧序列正确（45 帧前生长、之后 make 帧）；
-  步兵 6 相位 × 4 朝向行走帧变化；自检（simbuild/simattack 双跑哈希一致）。
-- **教训**：动画时长看**权威默认值**（BuildupTime=3s），别按工期线性摊帧；序列
-  参数格式以 `Sequence=` 节原文为准（3/4 参数 = 8/1 朝向）。
+### 3.18 建造=BuildupTime 时长（YR .06→54 帧）；步兵 Walk/Idle 原版速率 3 帧/动画帧
+- **现象**：① 建筑在建动画被按工期摊帧（GAPOWR 25 帧被 400 帧工期拖成 27 秒），
+  且动画播完后停在 make 帧直到"工期"结束（原版没有这段）；② SHP 步兵行走动画
+  快 4.5 倍（旧 `clock·2/3` ≈ 1.5 帧/逻辑帧），站立时完全没有 Idle1/Idle2 动作。
+- **权威语义（ModEnc + YR 游戏 INI + 参考实现三路交叉）**：
+  1. **BuildupTime**：`[General] BuildupTime` = 建筑建造/展开动画运行的平均分钟数；
+     **YR rulesmd 实测 = .06 → 3.6s = 54 逻辑帧 @15Hz**（ModEnc 默认档 .05，以
+     游戏 INI 为准）。放置后按该时长播完一遍**即完工**（OpenRA yr 每个 `^Building`
+     的 `WithMakeAnimation` 也是"动画播完才可用"，无额外长工期）；**无 Buildup
+     美术的建筑原版不进入建造状态**（即放即完成；ModEnc：无 Buildup 者不可出售）。
+     Buildup SHP = 前半建造帧 + 后半同数阴影帧（阴影索引 1，垫底绘制）。
+  2. **步兵播放速率**（ModEnc"Infantry Animation Sequences"hardcoded playback rates，
+     单位 = 逻辑帧/动画帧）：**Guard/Ready = 0（静态首帧）、Walk = 3、
+     Idle1/Idle2 = 3（RA2/YR；TS/FS 为 1）、Prone = 6、FireUp/Down/Crawl/Up/
+     Die* = 1、Cheer = 3、Panic = 4**。`WalkRate/IdleRate` 是载具/飞行器
+     （体素）的每类型覆盖，步兵不吃这两个键。
+  3. **Idle 动作调度**：`[General] IdleActionFrequency`（**YR = .15 分钟**）= 平均
+     间隔，每次动作后取 **0.5~2×** 的随机等待（ModEnc）；动作本体 = Idle1/Idle2
+     随机二选一。序列第 4 参数（`Idle1=56,15,0,S`）= 该动画所绘朝向/播完所指方向
+     （N/NE/E/SE/S/SW/W/NW 与引擎朝向帧序同序）。
+  4. 朝向公式仍是原版原式（chronoshift `facing.cpp` 反编译：`((dir+16)&255)/32`；
+     游戏罗盘 DirType 0 = N = 屏幕右上、顺时针增大 → 与引擎 dir 0..7 一致；
+     SHP 帧号 = `Start + 朝向·Stride`）。ModEnc 的步兵"逆时针排帧"提示是作者存疑
+     备注（该页自注"someone please check"），不采信。
+- **实现**：
+  - stage `onsite_ticks()` 读 `[General] BuildupTime` 折算逻辑帧（YR 54），作为
+    放置/展开的 `build_total`；无 Buildup → 0 = 即放即完成（`under_construction=false`）。
+    渲染层 Buildup 帧 = `build_ticks·建造段帧数/build_total`，播完即完工显示 idle 帧。
+  - sim：步兵静止且无移动时按 `IdleActionFrequency` 调度 Idle1/Idle2（每单位独立
+    LCG 流，确定性；忙期 `kIdleAnimBusyTicks=78` = 最长 idle 26 帧·速率 3；
+    移动打断并重掷等待）；`idle_kind/idle_start` 随 `PlacedObject` 给渲染层，
+    `visual_hash` 计入 idle 相位（每 3 帧一档 → 重绘节流不吞动画）。
+  - 渲染：Walk 相位 = `(anim_clock/3) % Length`；Idle 相位 = `(anim_clock −
+    idle_start)/3`（`< Length·3` 时播 Idle 段，否则回 Guard 帧）。
+- **验证**：① `tools/probe/probe_infanim.cpp`（`render_objects` 单对象 → 与 GI.SHP 各帧逐像素
+  比对识别实际帧号）：dir=0 行走 t=0..20 帧号 = 8,8,8,9,9,9,…,13,13,13,8（每 3 帧
+  一档）；Idle1 t=0..44 帧 56..70、t=45 起回 Guard 帧 0；Idle2 从帧 71 起。
+  ② `tools/probe/probe_idle.cpp`（SimWorld 直接驱动）：首次触发 t=176（等待 ∈ [67,337] ✓）、
+  忙期 78 帧、之后重掷等待，双跑触发序列逐项一致。③ 回归：simbuild 240 帧
+  `GAPOWR under=0 ticks=54/54 hp=256 电力+4550`、simattack 660 帧 CMIN (51,155)
+  cargo 19/20、遭遇战 4800 帧 Player 5/5（$4700）——三组双跑哈希一致。
+- **教训**：① 播放速率查 ModEnc 的 hardcoded rates 表（单位是**逻辑帧**；OpenRA
+  导入器的 100/120ms 是它自己的 tick 换算，直接套会错 ~1.5 倍）；② 建造时长与
+  帧数解耦：**时长 = BuildupTime，帧数只决定动画帧疏密**；③ idle 是表现但需要
+  时间基准——放 sim 用确定性 LCG，渲染层只做相位截断；④ 参考实现的"近似"
+  （.05 vs .06、3s vs 3.6s）要回游戏 INI 定夺。
 
 ### 3.17 体素炮塔对齐四修：原点锚去 HVA、基准=包围盒中心、偏移=像素、比例 0.35355
 - **现象**：盖特机炮/巨炮/爱国者 VXL 炮塔与 SHP 底座错位（盖特炮管组件漂在底座

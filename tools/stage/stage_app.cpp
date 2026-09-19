@@ -524,9 +524,11 @@ void append_sim_objects(StageApp& a, std::vector<ra2r::render::PlacedObject>& ob
         po.hp = 256;
         po.build_p = -1.0f;
         po.remap = remap_of(u.owner);
-        // 步兵行走动画：moving + 逻辑帧时钟（object_layer 播 Walk 序列）
+        // 步兵行走/idle 动画：moving + 逻辑帧时钟（object_layer 播 Walk/Idle 序列）
         po.moving = (u.kind == 2 && a.sim.unit_moving(i)) ? 1 : 0;
         po.anim_clock = static_cast<uint32_t>(a.sim.logic_ticks);
+        po.idle_kind = u.idle_kind;
+        po.idle_start = u.idle_start;
         objects_out.push_back(po);
     }
 }
@@ -1015,12 +1017,19 @@ void scan_map_files(StageApp& a, const std::filesystem::path& dir) {
 
 std::vector<std::pair<int, int>> map_waypoints(const StageApp& a) { return a.map.waypoints; }
 
-// 展开（基地车）逻辑帧时长：与建造动画同规——原版 BuildupTime 默认 3s
-//（render::kBuildupTicks = 45 @15Hz）；无 Buildup 美术时返回 0（调用方回退）
-int deploy_ticks(StageApp& a, const std::string& type) {
+// 现场建造/展开时长（逻辑帧）：原版 [General] BuildupTime = 建筑建造/展开动画
+// 运行的平均分钟数（YR rulesmd = .06 → 3.6s = 54 逻辑帧 @15Hz；ModEnc）。
+// 无 Buildup 美术 = 原版不进入建造状态（即放即完成），返回 0（调用方按
+// under_construction=false 生成）。
+int onsite_ticks(StageApp& a, const std::string& type) {
+    ensure_rules(a);
     const auto* u = a.rules.unit(type);
     if (!u || u->buildup.empty()) return 0;
-    return load_file(a, u->buildup + ".SHP") ? ra2r::render::kBuildupTicks : 0;
+    if (!load_file(a, u->buildup + ".SHP")) return 0;
+    const double minutes =
+        std::atof(a.rules.rules().get("General", "BuildupTime", ".05").c_str());
+    const int ticks = static_cast<int>(minutes * 60.0 * 15.0 + 0.5);
+    return std::max(1, ticks);
 }
 
 std::vector<const ra2r::assets::UnitTypeDef*> buildable_for(StageApp& a,
@@ -1113,6 +1122,12 @@ bool start_skirmish(StageApp& a, std::string* error) {
     a.queue_sel = -1;
     a.placing = false;
     a.sk.active = false;
+    // 步兵 idle 动作平均间隔（[General] IdleActionFrequency 分钟 → 逻辑帧 @15Hz）
+    {
+        const double freq =
+            std::atof(a.rules.rules().get("General", "IdleActionFrequency", ".083").c_str());
+        a.sim.idle_freq_ticks = static_cast<int>(freq * 60.0 * 15.0 + 0.5);
+    }
     // 地图装载（含地形阻挡/矿石），与加载模式同一条路径
     ra2r::assets::MapFile mf;
     if (!mf.open(a.map_files[a.map_sel], error)) return false;
@@ -1226,11 +1241,11 @@ bool deploy_selected_mcv(StageApp& a) {
         const auto* bt = a.rules.unit(t->deploys_into);
         if (!bt) continue;
         const std::string btype = t->deploys_into;
-        const int bf = deploy_ticks(a, btype);
+        const int ot = onsite_ticks(a, btype); // BuildupTime 逻辑帧；0 = 无动画即完成
         const uint32_t bid = ra2r::sim::deploy_mcv(a.sim, i, btype, bt->fw, bt->fh, bt->cost,
-                                                   bt->power, bf > 0 ? bf : 60, bt->strength);
+                                                   bt->power, ot > 0 ? ot : 1, bt->strength);
         std::printf("[stage] %s(%s) 展开 → %s @(%d,%d) 动画 %d 逻辑帧 %s\n", utype.c_str(),
-                    uowner.c_str(), btype.c_str(), ucol, urow, bf, bid ? "ok" : "fail");
+                    uowner.c_str(), btype.c_str(), ucol, urow, ot, bid ? "ok" : "fail");
         if (bid) {
             any = true;
             a.selection.clear();
@@ -1273,10 +1288,10 @@ bool place_player_build(StageApp& a, int col, int row) {
         std::printf("[stage] %s 无法放置 @(%d,%d)（地基被占）\n", type.c_str(), col, row);
         return false;
     }
+    const int ot = onsite_ticks(a, type); // BuildupTime 逻辑帧；0 = 无动画即完成
     const uint32_t id = a.sim.spawn_building("Player", type, col, row, t->fw, t->fh, t->cost,
-                                             t->power, true, std::max(30, t->cost / 2),
-                                             t->strength);
-    std::printf("[stage] 放置 %s @(%d,%d) id=%u\n", type.c_str(), col, row, id);
+                                             t->power, ot > 0, ot > 0 ? ot : 1, t->strength);
+    std::printf("[stage] 放置 %s @(%d,%d) id=%u 建造 %d 帧\n", type.c_str(), col, row, id, ot);
     a.placing = false;
     a.queue_sel = -1;
     a.dirty = true;
@@ -1306,10 +1321,10 @@ void skirmish_ai_tick(StageApp& a) {
                 const auto* bt = a.rules.unit(t->deploys_into);
                 if (!bt) break;
                 const std::string btype = t->deploys_into;
-                const int bf = deploy_ticks(a, btype);
+                const int ot = onsite_ticks(a, btype); // BuildupTime 逻辑帧
                 const uint32_t id = ra2r::sim::deploy_mcv(a.sim, i, btype, bt->fw, bt->fh,
                                                           bt->cost, bt->power,
-                                                          bf > 0 ? bf : 60, bt->strength);
+                                                          ot > 0 ? ot : 1, bt->strength);
                 std::printf("[stage] AI 展开 %s → %s @(%d,%d) id=%u\n", utype.c_str(),
                             btype.c_str(), ucol, urow, id);
                 a.dirty = true;
@@ -1351,9 +1366,10 @@ void skirmish_ai_tick(StageApp& a) {
                             }
                         }
                 if (bx < 0) continue;
+                const int ot = onsite_ticks(a, wt->name); // BuildupTime 逻辑帧；0 = 即完成
                 const bool ok = a.sim.spawn_building("Opponent", wt->name, bx, by, wt->fw, wt->fh,
-                                                     wt->cost, wt->power, true,
-                                                     std::max(30, wt->cost / 2), wt->strength);
+                                                     wt->cost, wt->power, ot > 0,
+                                                     ot > 0 ? ot : 1, wt->strength);
                 std::printf("[stage] AI 建造 %s @(%d,%d) %s\n", wt->name.c_str(), bx, by,
                             ok ? "ok" : "fail");
                 a.dirty = true;
