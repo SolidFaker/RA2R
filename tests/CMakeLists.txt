@@ -11,14 +11,19 @@
 #   test_assets.cpp   资产解析（需游戏目录）：FileIndex/Shp/Map/RulesDB/VXL/HVA
 #   test_render.cpp   渲染功能（需游戏目录）：步兵朝向块序/走序列速率/idle/
 #                     Buildup 进度/体素光栅确定性
-#   test_fixtures.cpp 合成夹具（tools/gen_fixtures 产出，无需游戏素材）：
-#                     PAL/SHP/VXL/HVA/MIX/地图/INI 解析回归
+#   test_fixtures.cpp / test_fixtures_formats.cpp
+#                     合成夹具（tools/gen_fixtures 产出，无需游戏素材）：
+#                     PAL/SHP/VXL/HVA/MIX/地图/INI/PCX/CSF/FNT/AUD 解析回归
+#   test_codecs.cpp   编解码器：LCW(Format80)/LZO1X/CRC32/MIX 名哈希
+#   test_integration.cpp 夹具地图 → SimWorld → 移动/攻击/确定性（跨模块）
+#   test_engine_modules.cpp CacheManager / ShroudMap(迷雾)
 # 需资产的用例在游戏目录缺失时自动 GTEST_SKIP（可用 RA2R_GAME_DIR 覆盖路径）。
 
 add_executable(ra2r_tests
   test_core.cpp
   test_codecs.cpp
   test_fixtures.cpp
+  test_fixtures_formats.cpp
   test_integration.cpp
   test_engine_modules.cpp
   test_sim.cpp

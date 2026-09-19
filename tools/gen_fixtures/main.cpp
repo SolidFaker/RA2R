@@ -485,6 +485,146 @@ std::string make_art_ini() {
 
 } // namespace
 
+// ── PCX：8 位索引色 4×2（RLE）+ 末尾 769 字节调色板 ──
+std::vector<uint8_t> make_pcx() {
+    const int W = 4, H = 2;
+    std::vector<uint8_t> out(128, 0);
+    out[0] = 0x0A; // manufacturer
+    out[1] = 5;    // version
+    out[2] = 1;    // encoding = RLE
+    out[3] = 8;    // bpp
+    auto put16 = [&](size_t off, uint16_t v) {
+        out[off] = static_cast<uint8_t>(v & 0xFF);
+        out[off + 1] = static_cast<uint8_t>(v >> 8);
+    };
+    put16(0x08, static_cast<uint16_t>(W - 1)); // xmax
+    put16(0x0A, static_cast<uint16_t>(H - 1)); // ymax
+    put16(0x0C, 72);
+    put16(0x0E, 72);
+    out[0x41] = 1;    // planes = 1
+    put16(0x42, W);   // bytes per line
+    put16(0x44, 1);   // palette info
+    // 行 0：像素 1,2,2,3 → 用 RLE：字面 1、游程 2×2、字面 3
+    out.push_back(1);
+    out.push_back(0xC2); // RLE：重复 2 次
+    out.push_back(2);
+    out.push_back(3);
+    // 行 1：全 4（RLE 4×）
+    out.push_back(0xC4);
+    out.push_back(4);
+    // 调色板：0x0C + 256×RGB（索引 2 纯红）
+    out.push_back(0x0C);
+    for (int i = 0; i < 256; ++i) {
+        out.push_back(static_cast<uint8_t>(i % 64 * 4));
+        out.push_back(static_cast<uint8_t>((i * 3) % 64 * 4));
+        out.push_back(static_cast<uint8_t>((i * 7) % 64 * 4));
+    }
+    out[out.size() - 769 + 1 + 2 * 3 + 0] = 255; // 索引 2 R = 255
+    out[out.size() - 769 + 1 + 2 * 3 + 1] = 0;
+    out[out.size() - 769 + 1 + 2 * 3 + 2] = 0;
+    return out;
+}
+
+// ── CSF：2 条目（'RTS ' 普通 + 'WRTS' 带音效引用）──
+std::vector<uint8_t> make_csf() {
+    std::vector<uint8_t> out;
+    auto put32 = [&](uint32_t v) { put_u32(out, v); };
+    put_bytes(out, " FSC");
+    put32(3); // version
+    put32(2); // count
+    put32(2);
+    put32(0);
+    put32(0); // language = 英文
+    // 条目 1：Name:Americans = "America"（RTS，正文逐字节取反 UTF-16LE）
+    {
+        put_bytes(out, " LBL");
+        put32(1); // 值数量
+        const char* key = "Name:Americans";
+        put32(static_cast<uint32_t>(std::strlen(key))); // 名称长度不含 NUL
+        out.insert(out.end(), key, key + std::strlen(key));
+        const std::u16string val = u"America";
+        put_bytes(out, " RTS"); // 真实格式：'RTS ' 的 LE 存储为 " RTS"
+        put32(static_cast<uint32_t>(val.size())); // 长度按 UTF-16 单元数
+        for (char16_t c : val) {
+            const uint16_t inv = static_cast<uint16_t>(~static_cast<uint16_t>(c));
+            put_u16(out, inv);
+        }
+    }
+    // 条目 2：DESC:E31 = "Demo Map"（WRTS + extra 音效名）
+    {
+        put_bytes(out, " LBL");
+        put32(1);
+        const char* key = "DESC:E31";
+        put32(static_cast<uint32_t>(std::strlen(key))); // 名称长度不含 NUL
+        out.insert(out.end(), key, key + std::strlen(key));
+        const std::u16string val = u"Demo Map";
+        put_bytes(out, "WRTS");
+        put32(static_cast<uint32_t>(val.size())); // 单元数
+        for (char16_t c : val) {
+            const uint16_t inv = static_cast<uint16_t>(~static_cast<uint16_t>(c));
+            put_u16(out, inv);
+        }
+        const std::u16string snd = u"SND_DEMO";
+        put32(static_cast<uint32_t>(snd.size() * 2));
+        for (char16_t c : snd) {
+            const uint16_t inv = static_cast<uint16_t>(~static_cast<uint16_t>(c));
+            put_u16(out, inv);
+        }
+    }
+    return out;
+}
+
+// ── FNT（Unicode 'fonT'）：1 字形（'A' = U+0041），3×2 位图 ──
+std::vector<uint8_t> make_fnt() {
+    const uint32_t stride = 1, lines = 2, count = 1;
+    const uint32_t symbol_data_size = 1 + stride * lines;
+    std::vector<uint8_t> out(0x1C + 65536 * 2, 0);
+    std::memcpy(out.data(), "fonT", 4);
+    auto put32_at = [&](size_t off, uint32_t v) {
+        out[off] = static_cast<uint8_t>(v & 0xFF);
+        out[off + 1] = static_cast<uint8_t>((v >> 8) & 0xFF);
+        out[off + 2] = static_cast<uint8_t>((v >> 16) & 0xFF);
+        out[off + 3] = static_cast<uint8_t>((v >> 24) & 0xFF);
+    };
+    put32_at(0x04, 20); // ideograph width
+    put32_at(0x08, stride);
+    put32_at(0x0C, lines);
+    put32_at(0x10, 3); // font height
+    put32_at(0x14, count);
+    put32_at(0x18, symbol_data_size);
+    // UnicodeTable：'A' → 1（字形 0）
+    out[0x1C + 0x41 * 2] = 1;
+    out[0x1C + 0x41 * 2 + 1] = 0;
+    // 字形 0：width=3，位图 2 行（0b11100000 / 0b10100000）
+    out.push_back(3);
+    out.push_back(0xE0);
+    out.push_back(0xA0);
+    return out;
+}
+
+// ── AUD：无压缩（compression=0）16 位单声道，2 块 ──
+std::vector<uint8_t> make_aud() {
+    std::vector<uint8_t> body;
+    // 块：fsize=dsize（magic 非 DEAF → 原样 16 位 PCM 拷贝）
+    auto block = [&](const std::initializer_list<int16_t>& samples) {
+        const uint16_t n = static_cast<uint16_t>(samples.size() * 2);
+        put_u16(body, n);
+        put_u16(body, n);
+        put_u32(body, 0); // magic = 0 → 原样
+        for (int16_t s : samples) put_u16(body, static_cast<uint16_t>(s));
+    };
+    block({1, 2, 3, 4});
+    block({5, 6});
+    std::vector<uint8_t> out;
+    put_u16(out, 22050);                               // rate
+    put_u32(out, static_cast<uint32_t>(body.size()));  // size
+    put_u32(out, static_cast<uint32_t>(body.size()));  // uncompressed size
+    out.push_back(2);                                  // flags：16 位单声道
+    out.push_back(0);                                  // compression = 无压缩
+    out.insert(out.end(), body.begin(), body.end());
+    return out;
+}
+
 static int run_fixtures(const std::vector<std::string>& args) {
     const std::filesystem::path out_dir =
         !args.empty() ? std::filesystem::path(args[0]) : std::filesystem::path("tests/fixtures");
@@ -507,6 +647,10 @@ static int run_fixtures(const std::vector<std::string>& args) {
         {"SAMPLE.PAL", pal},
     };
     const auto mix = make_mix(mix_items);
+    const auto pcx = make_pcx();
+    const auto csf = make_csf();
+    const auto fnt = make_fnt();
+    const auto aud = make_aud();
 
     struct Out {
         const char* name;
@@ -515,9 +659,11 @@ static int run_fixtures(const std::vector<std::string>& args) {
     const std::vector<uint8_t> map_bytes(map_ini.begin(), map_ini.end());
     const std::vector<uint8_t> art_bytes(art.begin(), art.end());
     const Out files[] = {
-        {"sample.pal", &pal}, {"sample.shp", &shp}, {"sample.vxl", &vxl},
-        {"sample.hva", &hva}, {"sample.map", &map_bytes}, {"sample.ini", &art_bytes},
-        {"sample.mix", &mix},
+        {"sample.pal", &pal},   {"sample.shp", &shp}, {"sample.vxl", &vxl},
+        {"sample.hva", &hva},   {"sample.map", &map_bytes},
+        {"sample.ini", &art_bytes}, {"sample.mix", &mix},
+        {"sample.pcx", &pcx},   {"sample.csf", &csf}, {"sample.fnt", &fnt},
+        {"sample.aud", &aud},
     };
     int ok = 0;
     for (const auto& f : files) {
@@ -539,7 +685,7 @@ static int run_fixtures(const std::vector<std::string>& args) {
         }
     }
     std::printf("fixtures: %d files -> %s\n", ok, out_dir.string().c_str());
-    return ok == 8 ? 0 : 1;
+    return ok == 12 ? 0 : 1;
 }
 
 #ifdef _WIN32
