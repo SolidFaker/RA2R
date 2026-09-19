@@ -44,6 +44,7 @@
 #include "ra2r/assets/vxl_file.h"
 #include "ra2r/core/game_dir.h"
 #include "ra2r/core/win_unicode.h"
+#include "ra2r/ui/ui.h"
 
 #include "media_player.h"  // AUD/WAV/BIK 播放（FFmpeg 运行时绑定封装在此模块内）
 #include "ra2r/render/minimap.h"
@@ -1998,16 +1999,11 @@ static SDL_Renderer* g_renderer = nullptr;
 void rebuild_ui_fonts(float scale) {
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->Clear();
-    const char* fonts[] = {
-        "C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/msyh.ttf",
-        "C:/Windows/Fonts/simhei.ttf", "C:/Windows/Fonts/simsun.ttc",
-    };
-    for (const char* f : fonts) {
-        if (fs::exists(f)) {
-            io.Fonts->AddFontFromFileTTF(f, 16.0f * scale, nullptr,
-                                         io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-            break;
-        }
+    // 中文字体走引擎统一引导（Windows 系统字体 + Linux 发行版路径 + fontconfig
+    // 兜底）；字号 16×缩放，字形范围用全量中文（原简化常用集缺字）。
+    const bool ok = ra2r::ui::setup_cjk_font(16.0f * scale);
+    if (!ok) {
+        io.Fonts->AddFontDefault(); // 无 CJK 字体：退回内置字体（中文变占位符）
     }
     io.Fonts->Build();
     // 重置样式再统一缩放（避免累积）

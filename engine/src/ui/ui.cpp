@@ -1,9 +1,13 @@
 // RA2R — GUI 工具统一引导实现（接口见 ui.h）
 #include "ra2r/ui/ui.h"
 
+#include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <string>
+#include <vector>
 
 #include <SDL3/SDL.h>
 #include <imgui.h>
@@ -11,14 +15,16 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <clocale>
 #endif
 
 namespace ra2r::ui {
 
 void enable_dpi_awareness() {
 #ifdef _WIN32
-    // Per-Monitor V2（Win10 1703+）：窗口按物理像素布局，SDL 报告 content scale；
-    // 动态取用 API，旧系统回退 System Aware（位图拉伸）。
+    // Per-Monitor V2（Win10 1703+）：窗口按物理像素布局，SDL 报告 content scale。
+    // 动态取 API，旧系统回退 System Aware（位图拉伸）。
     const HMODULE user32 = ::GetModuleHandleW(L"user32.dll");
     if (user32) {
         const FARPROC fp = ::GetProcAddress(user32, "SetProcessDpiAwarenessContext");
@@ -41,35 +47,94 @@ void console_utf8() {
         ::SetConsoleOutputCP(CP_UTF8);
         ::SetConsoleCP(CP_UTF8);
     }
+#else
+    // Linux 终端默认 UTF-8；仅显式设置 locale（ImGui/printf 均按字节输出）
+    setlocale(LC_ALL, "");
 #endif
 }
 
+namespace {
+// 前向：扫描常见字体目录里名字像 CJK 的字体文件（定义在文件尾；fontconfig 兜底）
+std::vector<std::string> list_cjk_font_files();
+
+// 追加存在的字体文件到候选表
+void add_font(std::vector<std::string>& out, const std::string& path) {
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(path, ec)) out.push_back(path);
+}
+
+#ifdef __linux__
+// fontconfig 查询（Linux 发行版字体路径各不相同：Noto/WQY/思源/文鼎…）：
+// `fc-match -f %{file}` 交给 fontconfig 选一个含中文字形的字体。
+// 不依赖 libfontconfig 链接（只用命令行，缺失时静默跳过）。
+void add_fontconfig_candidates(std::vector<std::string>& out) {
+    static const char* kQueries[] = {
+        "sans-serif:lang=zh-cn", "Noto Sans CJK SC", "Source Han Sans SC",
+        "WenQuanYi Micro Hei",   "WenQuanYi Zen Hei", "AR PL UMing CN",
+    };
+    for (const char* q : kQueries) {
+        std::string cmd = "fc-match -f '%{file}' \"";
+        cmd += q;
+        cmd += "\" 2>/dev/null";
+        FILE* p = popen(cmd.c_str(), "r");
+        if (!p) continue;
+        char buf[1024] = {};
+        const size_t n = fread(buf, 1, sizeof(buf) - 1, p);
+        pclose(p);
+        if (n == 0) continue;
+        std::string path(buf, n);
+        while (!path.empty() && (path.back() == '\n' || path.back() == '\r'))
+            path.pop_back();
+        add_font(out, path);
+    }
+}
+#endif
+} // namespace
+
 bool setup_cjk_font(float pixel_size) {
     ImGuiIO& io = ImGui::GetIO();
-    // 候选顺序：黑体（纯 TTF，加载最稳）→ 雅黑 → 宋体 → 等线 → 楷体。
+    // 候选顺序：Windows 黑体/雅黑/宋体/等线/楷体；Linux 常见发行版路径；
+    // fontconfig 兜底（发行版路径千差万别，交给 fontconfig 最稳）。
     // CJK 字体自带拉丁字形，直接作为唯一默认字体即可。
-    // Linux：Noto Sans CJK（Arch: noto-cjk / Debian: opentype/noto）→ 文泉驿。
-    static const char* kFonts[] = {
-        "C:\\Windows\\Fonts\\simhei.ttf",  "C:\\Windows\\Fonts\\msyh.ttf",
-        "C:\\Windows\\Fonts\\msyh.ttc",    "C:\\Windows\\Fonts\\simsun.ttc",
-        "C:\\Windows\\Fonts\\Deng.ttf",    "C:\\Windows\\Fonts\\simkai.ttf",
-        "C:\\Windows\\Fonts\\msyhl.ttc",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc",
-        "/usr/share/fonts/wenquanyi/wqy-zenhei/wqy-zenhei.ttc",
-        "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
-    };
-    for (const char* f : kFonts) {
-        std::error_code ec;
-        if (!std::filesystem::exists(f, ec)) continue;
+    std::vector<std::string> fonts;
+    add_font(fonts, "C:\\Windows\\Fonts\\simhei.ttf");
+    add_font(fonts, "C:\\Windows\\Fonts\\msyh.ttf");
+    add_font(fonts, "C:\\Windows\\Fonts\\msyh.ttc");
+    add_font(fonts, "C:\\Windows\\Fonts\\simsun.ttc");
+    add_font(fonts, "C:\\Windows\\Fonts\\Deng.ttf");
+    add_font(fonts, "C:\\Windows\\Fonts\\simkai.ttf");
+    add_font(fonts, "C:\\Windows\\Fonts\\msyhl.ttc");
+    // Arch（noto-cjk）/ Debian（opentype/noto）/ Fedora / 文泉驿 / 思源
+    add_font(fonts, "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc");
+    add_font(fonts, "/usr/share/fonts/noto-cjk/NotoSansCJKsc-Regular.otf");
+    add_font(fonts, "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc");
+    add_font(fonts, "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf");
+    add_font(fonts, "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc");
+    add_font(fonts, "/usr/share/fonts/noto-cjk/NotoSerifCJK-Regular.ttc");
+    add_font(fonts, "/usr/share/fonts/adobe-source-han-sans/SourceHanSansSC-Regular.otf");
+    add_font(fonts, "/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf");
+    add_font(fonts, "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc");
+    add_font(fonts, "/usr/share/fonts/wenquanyi/wqy-zenhei/wqy-zenhei.ttc");
+    add_font(fonts, "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc");
+    add_font(fonts, "/usr/share/fonts/truetype/arphic/uming.ttc");
+    add_font(fonts, "/usr/share/fonts/truetype/arphic/ukai.ttc");
+#ifdef __linux__
+    add_fontconfig_candidates(fonts);
+    if (fonts.empty()) {
+        // fontconfig 也不可用（极简容器）：扫描常见字体目录里名字像 CJK 的字体
+        for (const auto& f : list_cjk_font_files()) fonts.push_back(f);
+    }
+#endif
+    for (const auto& f : fonts) {
         ImFont* font = io.Fonts->AddFontFromFileTTF(
-            f, pixel_size, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+            f.c_str(), pixel_size, nullptr, io.Fonts->GetGlyphRangesChineseFull());
         if (font) {
             io.FontDefault = font;
+            std::printf("[ui] CJK font: %s\n", f.c_str());
             return true;
         }
     }
+    std::fprintf(stderr, "[ui] 未找到中文字体（安装 noto-cjk 或 wqy-microhei）\n");
     return false;
 }
 
@@ -82,6 +147,49 @@ float scale_window_to_dpi(SDL_Window* window, int logical_w, int logical_h) {
         return s;
     }
     return 1.0f;
+}
+
+// 列出系统里所有"看起来像 CJK"的字体文件（fontconfig 不可用时的兜底扫描）。
+// 非 Linux 返回空表。
+std::vector<std::string> list_cjk_font_files() {
+    std::vector<std::string> out;
+#ifndef __linux__
+    return out;
+#else
+    static const char* kDirs[] = {"/usr/share/fonts", "/usr/local/share/fonts",
+                                  "/run/host/fonts", "/var/lib/flatpak/exports/share/fonts"};
+    for (const char* root : kDirs) {
+        std::error_code ec;
+        if (!std::filesystem::is_directory(root, ec)) continue;
+        for (auto it = std::filesystem::recursive_directory_iterator(
+                 root, std::filesystem::directory_options::skip_permission_denied, ec);
+             it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+            if (ec) break;
+            if (!it->is_regular_file()) continue;
+            const std::string name = it->path().filename().string();
+            std::string low;
+            low.reserve(name.size());
+            for (char c : name)
+                low.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+            const bool ext = low.size() > 4 &&
+                             (low.compare(low.size() - 4, 4, ".ttf") == 0 ||
+                              low.compare(low.size() - 4, 4, ".ttc") == 0 ||
+                              low.compare(low.size() - 4, 4, ".otf") == 0);
+            if (!ext) continue;
+            static const char* kKeys[] = {"cjk", "han",   "hei",   "ming",
+                                          "song", "kai",  "wqy",   "noto",
+                                          "droid", "uming", "ukai"};
+            bool hit = false;
+            for (const char* k : kKeys)
+                if (low.find(k) != std::string::npos) {
+                    hit = true;
+                    break;
+                }
+            if (hit) out.push_back(it->path().string());
+        }
+    }
+    return out;
+#endif
 }
 
 } // namespace ra2r::ui
