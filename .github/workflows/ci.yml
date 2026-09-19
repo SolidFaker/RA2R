@@ -20,13 +20,34 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++ libsdl3-dev
+          sudo apt-get install -y cmake ninja-build g++ libgl1-mesa-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
+            libxfixes-dev libxss-dev libwayland-dev libdecor-0-dev \
+            libegl1-mesa-dev libudev-dev libdbus-1-dev
+
+      # Ubuntu 24.04 仓库无 SDL3：源码构建并缓存（版本可调）
+      - name: Cache SDL3
+        id: cache-sdl3
+        uses: actions/cache@v4
+        with:
+          path: ~/sdl3
+          key: sdl3-${{ runner.os }}-3.4.14
+
+      - name: Build SDL3
+        if: steps.cache-sdl3.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch release-3.4.14 https://github.com/libsdl-org/SDL.git /tmp/SDL
+          cmake -S /tmp/SDL -B /tmp/SDL/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/sdl3"
+          cmake --build /tmp/SDL/build -j "$(nproc)"
+          cmake --install /tmp/SDL/build
 
       - name: Configure
         run: >
           cmake -B build -G Ninja
           -DRA2R_BUILD_TESTS=ON
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_PREFIX_PATH="$HOME/sdl3"
 
       - name: Build
         run: cmake --build build -j "$(nproc)"

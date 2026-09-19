@@ -33,7 +33,27 @@ jobs:
         if: matrix.name == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++ libsdl3-dev
+          sudo apt-get install -y cmake ninja-build g++ libgl1-mesa-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
+            libxfixes-dev libxss-dev libwayland-dev libdecor-0-dev \
+            libegl1-mesa-dev libudev-dev libdbus-1-dev
+
+      - name: Cache SDL3
+        if: matrix.name == 'linux'
+        id: cache-sdl3
+        uses: actions/cache@v4
+        with:
+          path: ~/sdl3
+          key: sdl3-${{ runner.os }}-3.4.14
+
+      - name: Build SDL3
+        if: matrix.name == 'linux' && steps.cache-sdl3.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch release-3.4.14 https://github.com/libsdl-org/SDL.git /tmp/SDL
+          cmake -S /tmp/SDL -B /tmp/SDL/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/sdl3"
+          cmake --build /tmp/SDL/build -j "$(nproc)"
+          cmake --install /tmp/SDL/build
 
       - name: Install dependencies (Windows)
         if: matrix.name == 'windows'
@@ -46,6 +66,7 @@ jobs:
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-sdl3
+            zip
 
       - name: Configure (Linux)
         if: matrix.name == 'linux'
@@ -53,6 +74,7 @@ jobs:
           cmake -B build -G Ninja
           -DRA2R_BUILD_TESTS=ON
           -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH="$HOME/sdl3"
 
       - name: Configure (Windows)
         if: matrix.name == 'windows'
@@ -100,7 +122,7 @@ jobs:
           cp build/tools/{stage,mapview,mixbrowser,mixdump,shpview,vxlview,assetcheck,cachebuild,smoketest,gen_fixtures}.exe dist/ra2r/
           cp "$(cygpath -u "$MINGW_PREFIX")/bin/SDL3.dll" dist/ra2r/
           cp LICENSE README.md dist/ra2r/
-          7z a "${{ matrix.archive }}" ./dist/ra2r
+          zip -r "${{ matrix.archive }}" dist/ra2r
 
       - uses: actions/upload-artifact@v4
         with:
