@@ -209,8 +209,7 @@
   时间基准——放 sim 用确定性 LCG，渲染层只做相位截断；④ 参考实现的"近似"
   （.05 vs .06、3s vs 3.6s）要回游戏 INI 定夺。
 
-### 3.22 Linux 构建与运行（Windows 之外的第一个平台）
-- **背景**：引擎原为 MinGW/Windows 开发；移植 Linux（Arch，g++ 16.2）暴露一批
+### 3.22 Linux 构建与运行（Windows 之外的第一个平台）- **背景**：引擎原为 MinGW/Windows 开发；移植 Linux（Arch，g++ 16.2）暴露一批
   "Windows 掩盖的坑"。修完 `ctest` 51/51 全绿（含资产/渲染用例，0 SKIP），
   stage 自检输出与 Windows **逐字节一致**（dttd simbuild 240 帧 SHA256 相同）。
 - **改动（按坑归类）**：
@@ -244,6 +243,29 @@
   不敏感文件系统、隐式头包含是三处典型 Windows 特权；② **干净构建**是移植
   第一道体检（子目录顺序/缓存问题只有它暴露）；③ 路径大小写解析要逐级做，
   且"已存在"分支别忘写回结果（本次 `resolve_ci` 首版就栽在这）。
+
+### 3.23 Linux 中文字体（mixbrowser / stage 的 CJK 支持）
+- **现象**：Linux 上 GUI 全是"豆腐块"（缺中文字形）。原因：mixbrowser 自己
+  维护字体列表（只有 `C:/Windows/Fonts/*`），stage 走 `ui::setup_cjk_font`
+  但候选表也以 Windows 为主；Linux 发行版字体路径千差万别。
+- **实现（engine/src/ui/ui.cpp `setup_cjk_font`）**：三级候选——
+  1. Windows 系统字体（黑体/雅黑/宋体/等线/楷体，行为不变）；
+  2. 常见 Linux 发行版绝对路径（Arch `noto-cjk`、Debian `opentype/noto`、
+     Fedora `google-noto-cjk`、思源、文泉驿、文鼎）；
+  3. **fontconfig 兜底**：`fc-match -f '%{file}' "sans-serif:lang=zh-cn"` 等
+     查询（命令行调用，不引入链接依赖）；fontconfig 也无结果时**递归扫描**
+     `/usr/share/fonts` 等目录，按文件名关键字（cjk/han/hei/wqy/noto/…）挑。
+  字形范围从 `GetGlyphRangesChineseSimplifiedCommon`（常用 2500 字，生僻字
+  缺字）换成 **`GetGlyphRangesChineseFull`**（全量 CJK）。mixbrowser 不再自带
+  字体表，直接调用引擎 `ra2r::ui::setup_cjk_font`（与 stage 同一条链）。
+- **验证**（Linux 无显示器，用 ImGui 图集探针 `font_check`）：加载
+  `NotoSansCJK-Regular.ttc`，图集 2048×4096，**8 个测试汉字（中文游戏建造
+  影像）字形全部存在且图集内有实际墨迹**；stage/mixbrowser 无头启动日志
+  `cjk_font=1 font=NotoSansCJK-Regular.ttc`。
+- **教训**：① 字体发现不要写死路径——Linux 上 fontconfig 是标准答案，
+  绝对路径只作快速命中；② 字体"加载成功"不等于"有字形"，验证要看**图集里
+  有没有墨迹**（`FindGlyphNoFallback` + alpha 扫描）；③ 工具间共享字体逻辑
+  （mixbrowser 抄了一份 Windows-only 列表 → 收编到 `ui::setup_cjk_font`）。
 
 ### 3.21 测试基建（GoogleTest）与它抓出的三个真 bug
 - **引入**：GoogleTest v1.15.2 vendored（`third_party/googletest`，`RA2R_BUILD_TESTS=ON`
