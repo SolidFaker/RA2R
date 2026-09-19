@@ -48,11 +48,17 @@ bool setup_cjk_font(float pixel_size) {
     ImGuiIO& io = ImGui::GetIO();
     // 候选顺序：黑体（纯 TTF，加载最稳）→ 雅黑 → 宋体 → 等线 → 楷体。
     // CJK 字体自带拉丁字形，直接作为唯一默认字体即可。
+    // Linux：Noto Sans CJK（Arch: noto-cjk / Debian: opentype/noto）→ 文泉驿。
     static const char* kFonts[] = {
         "C:\\Windows\\Fonts\\simhei.ttf",  "C:\\Windows\\Fonts\\msyh.ttf",
         "C:\\Windows\\Fonts\\msyh.ttc",    "C:\\Windows\\Fonts\\simsun.ttc",
         "C:\\Windows\\Fonts\\Deng.ttf",    "C:\\Windows\\Fonts\\simkai.ttf",
         "C:\\Windows\\Fonts\\msyhl.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc",
+        "/usr/share/fonts/wenquanyi/wqy-zenhei/wqy-zenhei.ttc",
+        "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
     };
     for (const char* f : kFonts) {
         std::error_code ec;
