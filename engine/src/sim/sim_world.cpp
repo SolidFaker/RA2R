@@ -150,6 +150,9 @@ bool SimWorld::load_map(const assets::MapFile& map,
         sb.fh = fh;
         sb.is_refinery = refinery(b.id);
         sb.power = power_of(b.id);
+        sb.weapon = {};
+        weapon(b.id, sb.weapon); // 防御建筑 Primary= 武器（无武器 = 空）
+        sb.turret_dir = sb.dir;
         seed_credits(b.owner);
         for (int j = 0; j < fh; ++j) {
             for (int i = 0; i < fw; ++i) {
@@ -576,6 +579,57 @@ bool SimWorld::tick() {
         }
         changed = true;
     }
+    // ── 防御建筑攻击（Primary= 有武器者）：手动目标 + 自动索敌 + 炮塔转向开火 ──
+    // 目标失效即清；无目标每 15 帧扫射程内最近敌单位（确定性固定序遍历）；
+    // 炮塔每帧最多转 16/256 圈（≈16°），大致对准（±16）且射程内才开火；
+    // 开火 = 扣血 + ROF 冷却（单位死亡沿用后面的死亡整批结算）。
+    for (auto& b : buildings) {
+        if (!b.alive || b.weapon.damage <= 0 || b.under_construction) continue;
+        if (b.cooldown > 0) --b.cooldown;
+        const auto target_alive = [&]() -> bool {
+            if (b.target < 0 || b.target >= static_cast<int>(units.size())) return false;
+            const SimUnit& t = units[static_cast<size_t>(b.target)];
+            return t.alive && t.owner != b.owner;
+        };
+        if (!target_alive()) {
+            b.target = -1;
+            // 自动索敌：非玩家 House（地图上的 Neutral/Special 陈设）不自动开火
+            const bool neutral_house = b.owner == "Neutral" || b.owner == "Special";
+            if (!neutral_house && --b.acquire_clock <= 0) {
+                b.acquire_clock = 15;
+                int best = -1, best_d = INT_MAX;
+                for (size_t i = 0; i < units.size(); ++i) {
+                    if (!units[i].alive || units[i].owner == b.owner) continue;
+                    const int d = manhattan(b.col, b.row, units[i].col, units[i].row);
+                    if (d <= b.weapon.range && d < best_d) {
+                        best_d = d;
+                        best = static_cast<int>(i);
+                    }
+                }
+                if (best >= 0) {
+                    b.target = best;
+                    changed = true;
+                }
+            }
+        }
+        if (b.target < 0) continue;
+        const SimUnit& t = units[static_cast<size_t>(b.target)];
+        const int want = static_cast<int>(dir_toward(b.col, b.row, t.col, t.row)) * 32;
+        int diff = want - static_cast<int>(b.turret_dir);
+        while (diff > 128) diff -= 256;
+        while (diff < -128) diff += 256;
+        if (diff != 0) {
+            const int step = std::clamp(diff, -16, 16);
+            b.turret_dir = static_cast<uint8_t>((static_cast<int>(b.turret_dir) + step) & 255);
+            changed = true;
+        }
+        const bool in_range = manhattan(b.col, b.row, t.col, t.row) <= b.weapon.range;
+        if (in_range && std::abs(diff) <= 16 && b.cooldown == 0) {
+            units[static_cast<size_t>(b.target)].hp -= b.weapon.damage;
+            b.cooldown = b.weapon.rof > 0 ? b.weapon.rof : 1;
+            changed = true;
+        }
+    }
     // ── 死亡结算（固定序：先标记，后整批移除并重映射目标下标）──
     bool any_death = false;
     for (auto& u : units) {
@@ -905,6 +959,36 @@ bool SimWorld::build_ready(const std::string& owner) const {
     return it != build_queue.end() && it->second.ready;
 }
 
+// ── 建筑配置 / 防御攻击（M4）──
+
+bool SimWorld::configure_building(uint32_t id, int dir, const SimWeapon& w) {
+    for (auto& b : buildings) {
+        if (b.id != id) continue;
+        b.dir = static_cast<uint8_t>(dir & 255);
+        b.turret_dir = b.dir;
+        b.weapon = w;
+        return true;
+    }
+    return false;
+}
+
+bool SimWorld::issue_build_attack(size_t building_idx, size_t unit_idx) {
+    if (building_idx >= buildings.size() || unit_idx >= units.size()) return false;
+    SimBuilding& b = buildings[building_idx];
+    const SimUnit& t = units[unit_idx];
+    if (!b.alive || b.weapon.damage <= 0) return false;
+    if (!t.alive || t.owner == b.owner) return false; // 只能打敌方
+    b.target = static_cast<int>(unit_idx);
+    return true;
+}
+
+bool SimWorld::stop_build_attack(size_t building_idx) {
+    if (building_idx >= buildings.size()) return false;
+    buildings[building_idx].target = -1;
+    buildings[building_idx].acquire_clock = 0;
+    return true;
+}
+
 bool SimWorld::take_ready_build(const std::string& owner, std::string* type) {
     const auto it = build_queue.find(owner);
     if (it == build_queue.end() || !it->second.ready) return false;
@@ -953,6 +1037,11 @@ uint64_t SimWorld::visual_hash() const {
         mix(b.under_construction ? 1ull : 0ull);
         mix(b.build_ticks);
         if (b.has_anim) mix(b.anim_clock); // 配件动画帧变化触发重绘
+        if (b.weapon.damage > 0) {        // 防御建筑炮塔转向/开火需重绘
+            mix(b.turret_dir);
+            mix(b.target < 0 ? 0ull : 1ull);
+            mix(b.cooldown);
+        }
     }
     mix(explosions.size());
     for (const auto& e : explosions) mix(static_cast<uint64_t>(e.elapsed));

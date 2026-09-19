@@ -208,6 +208,8 @@
 | 载具炮塔/炮管 + 建筑体素炮塔 | ✅ VXL 节包围盒映射烘焙进投影（索引→模型空间；HTNK 三件天生咬合验证）；建筑炮塔 <Image>TUR.VXL / <Image>.VXL（GTGCAN/YAGGUN）、HVA 帧定位（YAGGUN 双管）生效；**对齐规则修复（DEBUGGING §3.17）**：基准 = 炮塔 VXL **包围盒中心 (x,y)**（美术原点常贴一侧：YAGGUN 主体中心 x=+12、FLAKTUR +8.5）+ **TurretAnimX/Y 像素**偏移相对建筑精灵锚点（ModEnc 语义；非勒普顿/非地基中心）、z 以模型原点；原点锚剔除 HVA 平移（YAGGUN 曾偏 (15.4,−25.2)px）；比例 = 原版 42.4264 体素/格 → **0.35355**；四建筑手绘 MK 接触点误差 |总|≈18px（旧规则 ≈29px）；dttd 全图 A/B 目视修正、nudge 表删除 |
 | 低电惩罚 | ✅ sim.tick：净电力<0 的 House 建造推进与修理均 ×1/2（奇数帧跳过，确定性；正电力场景与旧基线逐项一致）；低电武器 ROF/雷达影响留 M5 |
 | 建筑修理 / 出售 | ✅ `toggle_repair/sell_building`：修理按满修≈300 帧节奏回血并等比扣款（资金耗尽自停、满血自停、低电减半）；出售退款 = Cost·RefundPercent%·残血比，静默移除（无爆炸）并解除地基阻挡；stage 点选建筑（地基格拾取）→ 侧边栏 修理/出售 按钮 |
+| 落成建筑动画（新落成建筑收编） | ✅ `stage adopt_building`：基地车展开/建造放置/AI 建造的建筑统一走"收编"——注入 Primary 武器与朝向（`configure_building`）、按与地图装载同判据标记 `SimBuilding.has_anim`（ActiveAnim/SpecialAnim/体素炮塔）。此前 `has_anim` 只在地图装载时设置，遭遇战里自己造的建筑**没有任何配件动画/炮塔时钟**（bmpdiff 修前/修后：差异仅落在两基地建筑带 9318 px = 补上的 ActiveAnim）。 |
+| 建筑选中 / 血条 / 防御建筑攻击 | ✅ 左键点地基格选中建筑 → 地基格绿框 + 血条（受损常显、选中必显，宽度随地基尺寸）；`SimBuilding.weapon/target/cooldown/turret_dir`：rulesmd `Primary=` 注入（`configure_building`，地图装载同路径）；**手动指定**：选中防御建筑后右键敌方单位（`issue_build_attack`，右键空地/按钮 `stop_build_attack`）→ 炮塔每帧转向 ≤16/256、对准（±16）且射程内按 ROF 开火扣血（沿用死亡整批结算）；**自动索敌**：无目标每 15 帧扫射程内最近敌单位（Neutral/Special 陈设不自动开火）；炮塔渲染改用 `turret_dir`（SHP 面向帧 / 体素 yaw）；`probe_bdef` 验证：手动射程内命中扣血、射程外只转向不开火、自动索敌生效、Neutral 不开火 |
 
 
 ### M5 战斗系统（6–8 周）

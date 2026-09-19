@@ -616,6 +616,21 @@ static int run(int argc, char** argv) {
                         ImGui::Separator();
                         ImGui::Text("建筑: %s (%s)  hp %d/%d", b.type.c_str(), b.owner.c_str(),
                                     b.hp, b.max_hp);
+                        // 防御建筑：显示武器并可手动指定/停止攻击（右键敌人也可）
+                        if (b.weapon.damage > 0) {
+                            ImGui::Text("防御武器: 伤害 %d / ROF %d / 射程 %d%s",
+                                        b.weapon.damage, b.weapon.rof, b.weapon.range,
+                                        b.target >= 0 ? "（交战中）" : "");
+                            ImGui::SameLine();
+                            ImGui::BeginDisabled(b.target < 0);
+                            if (ImGui::Button("停止攻击")) {
+                                a.sim.stop_build_attack(static_cast<size_t>(bidx));
+                                a.dirty = true;
+                            }
+                            ImGui::EndDisabled();
+                            if (b.target < 0)
+                                ImGui::TextDisabled("右键敌人 → 指定炮塔攻击方向");
+                        }
                         if (b.under_construction) {
                             ImGui::TextDisabled("建造中（%.0f%%）",
                                                 b.build_total > 0
@@ -850,8 +865,41 @@ static int run(int argc, char** argv) {
                     a.placing = false;
                     a.dirty = true;
                     std::fprintf(stderr, "[stage] 取消放置\n");
+                } else if (a.selection.empty() && a.sel_building_id != 0 &&
+                           cx >= 0 && cy >= 0 && cx < a.map.w && cy < a.map.h) {
+                    // 选中防御建筑（无单位选中）：右键敌方单位 → 命令炮塔攻击该
+                    // 方向；右键空地 → 停止攻击（恢复自动索敌）
+                    int sbi = -1;
+                    for (int i = 0; i < static_cast<int>(a.sim.buildings.size()); ++i)
+                        if (a.sim.buildings[i].id == a.sel_building_id) {
+                            sbi = i;
+                            break;
+                        }
+                    if (sbi >= 0 && a.sim.buildings[sbi].alive) {
+                        int hu = -1;
+                        for (int i = 0; i < static_cast<int>(a.sim.units.size()); ++i)
+                            if (a.sim.units[i].alive && a.sim.units[i].col == cx &&
+                                a.sim.units[i].row == cy) {
+                                hu = i;
+                                break;
+                            }
+                        if (hu >= 0 && a.sim.units[hu].owner != a.sim.buildings[sbi].owner) {
+                            if (a.sim.issue_build_attack(static_cast<size_t>(sbi),
+                                                         static_cast<size_t>(hu)))
+                                std::fprintf(stderr, "[stage] %s 攻击 %s\n",
+                                             a.sim.buildings[sbi].type.c_str(),
+                                             a.sim.units[hu].type.c_str());
+                            else
+                                std::fprintf(stderr, "[stage] 该建筑无武器（非防御建筑）\n");
+                        } else {
+                            a.sim.stop_build_attack(static_cast<size_t>(sbi));
+                            std::fprintf(stderr, "[stage] %s 停止攻击（自动索敌）\n",
+                                         a.sim.buildings[sbi].type.c_str());
+                        }
+                        a.dirty = true;
+                    }
                 } else if (a.selection.empty() || cx < 0 || cy < 0 || cx >= a.map.w ||
-                    cy >= a.map.h) {
+                           cy >= a.map.h) {
                     // 无选中/出界：忽略
                 } else {
                     // id → 单位下标

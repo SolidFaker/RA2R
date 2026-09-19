@@ -280,6 +280,12 @@ void build_ramp_index(StageApp& a, RampFrame index[16][5]) {
 
 } // namespace
 
+// 前向声明（定义在下方匿名命名空间：建筑血条，画在本体上方）
+namespace {
+void draw_building_hp_bars(StageApp& a, const ra2r::render::IsometricGrid& grid, int bw, int bh,
+                           int ox, int oy, std::vector<uint8_t>& canvas);
+} // namespace
+
 void assign_slopes(StageApp& a) {
     RampFrame index[16][5] = {};
     build_ramp_index(a, index);
@@ -377,8 +383,10 @@ void render_all(StageApp& a, std::string* error) {
     // 身前类配件动画（门/火焰）画在对象之上
     if (a.sim_active) draw_building_anims(a, grid, bw, bh, ox, oy, canvas, false);
     if (a.sim_active) {
-        if (!a.selection.empty()) draw_selection_markers(a, grid, bw, bh, ox, oy, canvas);
+        if (!a.selection.empty() || a.sel_building_id != 0)
+            draw_selection_markers(a, grid, bw, bh, ox, oy, canvas);
         draw_sim_fx(a, grid, bw, bh, ox, oy, canvas);
+        draw_building_hp_bars(a, grid, bw, bh, ox, oy, canvas);
     }
     // 建造落点预览（待放置建筑的地基格：绿色可放 / 红色被占）
     if (a.placing && a.hover_cx >= 0 && a.hover_cy >= 0) {
@@ -616,6 +624,25 @@ void draw_selection_markers(StageApp& a, const IsometricGrid& grid, int bw, int 
         line(cx0, cy0 + 15, cx0 - 30, cy0);
         line(cx0 - 30, cy0, cx0, cy0 - 15);
     }
+    // 选中建筑：地基格菱形描边（与单位同款绿框；防御建筑选中后可用右键指定目标）
+    if (a.sel_building_id != 0) {
+        for (const auto& b : a.sim.buildings) {
+            if (b.id != a.sel_building_id || !b.alive) continue;
+            const int hgt = static_cast<int>(a.map.cell(b.col, b.row).height);
+            for (int j = 0; j < b.fh; ++j)
+                for (int i = 0; i < b.fw; ++i) {
+                    int px, py;
+                    grid.cell_to_pixel(b.col + i, b.row + j, px, py);
+                    const int cx0 = ox + px + grid.tile_w / 2;
+                    const int cy0 = oy + py + grid.tile_h / 2 - hgt * 15;
+                    line(cx0, cy0 - 15, cx0 + 30, cy0);
+                    line(cx0 + 30, cy0, cx0, cy0 + 15);
+                    line(cx0, cy0 + 15, cx0 - 30, cy0);
+                    line(cx0 - 30, cy0, cx0, cy0 - 15);
+                }
+            break;
+        }
+    }
 }
 
 void draw_sim_fx(StageApp& a, const IsometricGrid& grid, int bw, int bh, int ox, int oy,
@@ -697,6 +724,41 @@ const ra2r::assets::ShpLayout& anim_layout(StageApp& a, const std::string& art,
     const auto it = a.obj_cache.anim_layouts.find(art);
     if (it != a.obj_cache.anim_layouts.end()) return it->second;
     return a.obj_cache.anim_layouts.emplace(art, ra2r::assets::shp_layout(shp)).first->second;
+}
+
+// 建筑血条：受损建筑常显、选中建筑必显；画在本体精灵上方（顶格锚点 − 本体帧高）
+void draw_building_hp_bars(StageApp& a, const ra2r::render::IsometricGrid& grid, int bw, int bh,
+                           int ox, int oy, std::vector<uint8_t>& canvas) {
+    const auto put = [&](int x, int y, uint8_t r, uint8_t g, uint8_t b) {
+        if (x < 0 || y < 0 || x >= bw || y >= bh) return;
+        uint8_t* d = canvas.data() + (static_cast<size_t>(y) * bw + x) * 4;
+        d[0] = r;
+        d[1] = g;
+        d[2] = b;
+        d[3] = 255;
+    };
+    for (const auto& b : a.sim.buildings) {
+        if (!b.alive || b.under_construction) continue;
+        if (b.col < 0 || b.row < 0 || b.col >= a.map.w || b.row >= a.map.h) continue;
+        const bool sel = b.id == a.sel_building_id;
+        if (b.hp >= b.max_hp && !sel) continue; // 满血且未选中 → 不画
+        const int ax = ox + b.col * 60 + (b.row & 1) * 30 + 30;
+        const int ay = oy + b.row * 15 - static_cast<int>(a.map.cell(b.col, b.row).height) * 15;
+        int top = ay - 70; // 兜底：本体精灵高 ≈60~120px
+        if (const auto* u = a.rules.unit(b.type)) {
+            const std::string art = resolve_art(a, u->image, ".SHP");
+            if (const auto* raw = load_file(a, art + ".SHP")) {
+                ra2r::assets::ShpFile shp;
+                std::string err;
+                if (shp.open(raw->data(), raw->size(), &err) && shp.frame_count() > 0)
+                    top = ay - static_cast<int>(shp.frame(0).cy) - 6;
+            }
+        }
+        const int w = 16 + (b.fw + b.fh) * 4; // 2×2 → 32px，4×4 → 48px
+        for (int i = 0; i < w; ++i) put(ax - w / 2 + i, top, 220, 40, 40);
+        const int fill = std::max(1, b.hp * w / std::max(1, b.max_hp));
+        for (int i = 0; i < fill; ++i) put(ax - w / 2 + i, top, 60, 220, 60);
+    }
 }
 
 // 体素节包围盒经 HVA 帧变换（旋转 3×3 + 平移×det）后的 AABB 角点。
@@ -845,7 +907,7 @@ void draw_bld_turret_shp(StageApp& a, const ra2r::assets::UnitTypeDef& u,
     ra2r::assets::ShpFile shp;
     std::string err;
     if (!shp.open(raw->data(), raw->size(), &err) || shp.frame_count() == 0) return;
-    const int fi = static_cast<int>((b.dir * shp.frame_count()) / 256);
+    const int fi = static_cast<int>((b.turret_dir * shp.frame_count()) / 256);
     const int ax = ox + b.col * 60 + (b.row & 1) * 30 + 30;
     const int ay = oy + b.row * 15 - hgt * ra2r::render::kHeightLevelPx;
     blit_bld_shp_frame(a, u.turret_anim, fi, ax, ay, bw, bh, canvas);
@@ -915,12 +977,12 @@ void draw_bld_turret_voxel(StageApp& a, const ra2r::assets::UnitTypeDef& u,
     const int bhva_frame = 0;
     const int scale16 = static_cast<int>(kBldTurretScale * 16.0f);
     const std::string vkey = turret_art + '+' + (have_barrel ? barrel_art : std::string("-")) + '|' +
-                             std::to_string(b.dir) + '|' + std::to_string(scale16) + '|' +
+                             std::to_string(b.turret_dir) + '|' + std::to_string(scale16) + '|' +
                              std::to_string(hva_frame) + '|' + std::to_string(bhva_frame);
     ra2r::render::ObjectRenderCache::VoxelEntry ent;
     if (!a.obj_cache.voxels.count(vkey)) {
         ra2r::render::VoxelView view;
-        view.yaw = b.dir / 256.0f * 6.2831853f - 1.5707963f;
+        view.yaw = b.turret_dir / 256.0f * 6.2831853f - 1.5707963f;
         view.pitch = 0.0f;
         view.scale = kBldTurretScale;
         float ax = 0, ay = 0, body_ax = 0, body_ay = 0, orig_ax = 0, orig_ay = 0;
@@ -953,7 +1015,7 @@ void draw_bld_turret_voxel(StageApp& a, const ra2r::assets::UnitTypeDef& u,
     //   ox = [cx(cy−sy) − cy(sy+cy)]·2s, oy = [cx(cy+sy) + cy(cy−sy)]·s（pitch=0）。
     // ZAdjust 是深度遮挡修正（正=朝观察者），非屏幕位移，本渲染器炮塔后画于
     // 底座之上，无需应用。
-    const float yaw = b.dir / 256.0f * 6.2831853f - 1.5707963f;
+    const float yaw = b.turret_dir / 256.0f * 6.2831853f - 1.5707963f;
     const float cyw = std::cos(yaw), syw = std::sin(yaw);
     const float projx = (bcx * (cyw - syw) - bcy * (syw + cyw)) * (2.0f * kBldTurretScale);
     const float projy = (bcx * (cyw + syw) + bcy * (cyw - syw)) * kBldTurretScale;
@@ -1049,6 +1111,27 @@ void scan_map_files(StageApp& a, const std::filesystem::path& dir) {
 }
 
 // ── M4 遭遇战流程 ──
+
+// 落成建筑的收编：注入朝向 + Primary 武器（防御建筑炮塔转向/攻击用），并按
+// 与地图装载相同的判据标记动画时钟（ActiveAnim/SpecialAnim/体素炮塔旋转）。
+// 新落成的建筑必须调用，否则建造出来的建筑没有任何配件动画（只画静态本体）。
+void adopt_building(StageApp& a, uint32_t id, int dir) {
+    ensure_rules(a);
+    for (auto& b : a.sim.buildings) {
+        if (b.id != id) continue;
+        const auto* u = a.rules.unit(b.type);
+        ra2r::sim::SimWeapon w;
+        if (u) {
+            if (const auto* wp = a.rules.weapon(u->primary))
+                w = {wp->damage, wp->rof, wp->range};
+        }
+        a.sim.configure_building(id, dir, w);
+        if (u && (!u->anim.empty() || !u->anim_two.empty() || !u->anim_three.empty() ||
+                  !u->special.empty() || (u->turret && u->turret_voxel)))
+            b.has_anim = true;
+        return;
+    }
+}
 
 std::vector<std::pair<int, int>> map_waypoints(const StageApp& a) { return a.map.waypoints; }
 
@@ -1277,8 +1360,10 @@ bool deploy_selected_mcv(StageApp& a) {
         if (!bt) continue;
         const std::string btype = t->deploys_into;
         const int ot = onsite_ticks(a, btype); // BuildupTime 逻辑帧；0 = 无动画即完成
+        const int udir = static_cast<int>(a.sim.units[i].dir) * 32; // 展开保留车体朝向
         const uint32_t bid = ra2r::sim::deploy_mcv(a.sim, i, btype, bt->fw, bt->fh, bt->cost,
                                                    bt->power, ot > 0 ? ot : 1, bt->strength);
+        if (bid) adopt_building(a, bid, udir);
         std::printf("[stage] %s(%s) 展开 → %s @(%d,%d) 动画 %d 逻辑帧 %s\n", utype.c_str(),
                     uowner.c_str(), btype.c_str(), ucol, urow, ot, bid ? "ok" : "fail");
         if (bid) {
@@ -1326,6 +1411,7 @@ bool place_player_build(StageApp& a, int col, int row) {
     const int ot = onsite_ticks(a, type); // BuildupTime 逻辑帧；0 = 无动画即完成
     const uint32_t id = a.sim.spawn_building("Player", type, col, row, t->fw, t->fh, t->cost,
                                              t->power, ot > 0, ot > 0 ? ot : 1, t->strength);
+    if (id) adopt_building(a, id, 0);
     std::printf("[stage] 放置 %s @(%d,%d) id=%u 建造 %d 帧\n", type.c_str(), col, row, id, ot);
     a.placing = false;
     a.queue_sel = -1;
@@ -1357,9 +1443,11 @@ void skirmish_ai_tick(StageApp& a) {
                 if (!bt) break;
                 const std::string btype = t->deploys_into;
                 const int ot = onsite_ticks(a, btype); // BuildupTime 逻辑帧
+                const int udir = static_cast<int>(a.sim.units[i].dir) * 32;
                 const uint32_t id = ra2r::sim::deploy_mcv(a.sim, i, btype, bt->fw, bt->fh,
                                                           bt->cost, bt->power,
                                                           ot > 0 ? ot : 1, bt->strength);
+                if (id) adopt_building(a, id, udir);
                 std::printf("[stage] AI 展开 %s → %s @(%d,%d) id=%u\n", utype.c_str(),
                             btype.c_str(), ucol, urow, id);
                 a.dirty = true;
@@ -1405,6 +1493,7 @@ void skirmish_ai_tick(StageApp& a) {
                 const bool ok = a.sim.spawn_building("Opponent", wt->name, bx, by, wt->fw, wt->fh,
                                                      wt->cost, wt->power, ot > 0,
                                                      ot > 0 ? ot : 1, wt->strength);
+                if (ok) adopt_building(a, a.sim.buildings.back().id, 0);
                 std::printf("[stage] AI 建造 %s @(%d,%d) %s\n", wt->name.c_str(), bx, by,
                             ok ? "ok" : "fail");
                 a.dirty = true;

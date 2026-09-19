@@ -107,6 +107,14 @@ struct SimBuilding {
     bool repairing = false;
     int repair_step_hp = 1; // 每次结算回血量（调用方按 max_hp/工期换算传入）
     bool sold = false;      // 出售移除（死亡结算跳过爆炸）
+    // ── 防御建筑攻击（rulesmd Primary= 有武器者；stage 落成时注入）──
+    // 手动指定目标（issue_build_attack）+ 无目标时自动索敌（每 15 帧扫最近敌
+    // 单位）；炮塔按 turn rate 转向目标后再开火；单位死亡沿用死亡整批结算。
+    SimWeapon weapon;
+    int target = -1;        // 攻击目标单位下标（-1 = 无）
+    int cooldown = 0;       // ROF 冷却（逻辑帧）
+    int acquire_clock = 0;  // 自动索敌节拍（0 → 复位为 15）
+    uint8_t turret_dir = 0; // 炮塔朝向字节 0..255（渲染；初始 = 建筑朝向）
 };
 
 // 爆炸（渲染事件：格 + 持续逻辑帧；stage 用 EXPLOMED 帧序列播放）
@@ -210,6 +218,15 @@ struct SimWorld {
     // 出售：立即移除建筑并退款（满血按 [General] RefundPercent；打折率随残血线性），
     // 解除地基阻挡。返回退款额（失败 = -1）。
     int64_t sell_building(size_t building_idx, int refund_percent = 50);
+
+    // ── 建筑配置 / 防御攻击（M4）──
+    // 落成后由 stage 按 rulesmd 注入：朝向 dir（0..255，也作为炮塔初始朝向）与
+    // Primary 武器（无武器传空 = 纯建筑）。返回是否找到该建筑。
+    bool configure_building(uint32_t id, int dir, const SimWeapon& w);
+    // 命令建筑攻击单位（防御建筑；仅同/敌我校验，射程外会先转向等待）。
+    bool issue_build_attack(size_t building_idx, size_t unit_idx);
+    // 停止建筑攻击（清目标，恢复自动索敌）
+    bool stop_build_attack(size_t building_idx);
 
     // 已完成建筑查询（科技树前置条件判定；completed_only = 只算建成建筑）
     bool has_building(const std::string& owner, const std::string& type,
