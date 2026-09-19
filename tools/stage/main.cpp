@@ -39,14 +39,22 @@
 namespace fs = std::filesystem;
 using ra2r::render::IsometricGrid;
 using stage::StageApp;
+using stage::buildable_for;
+using stage::deploy_selected_mcv;
+using stage::ensure_rules;
+using stage::faction_building;
 using stage::generate_map;
 using stage::kCatNames;
 using stage::kModeNames;
 using stage::kTheaters;
 using stage::load_type_lists;
+using stage::place_player_build;
+using stage::queue_player_build;
 using stage::rebuild_resources;
 using stage::render_all;
 using stage::scan_map_files;
+using stage::skirmish_ai_tick;
+using stage::start_skirmish;
 using stage::write_bmp;
 
 namespace {
@@ -86,6 +94,11 @@ static int run(int argc, char** argv) {
     bool sim_demo_arg = false;   // --simdemo：M3 验收演示
     bool perf_arg = false;       // --perf：渲染耗时打印
     int backend_arg = 0;         // --backend：0=OpenGL(默认) 1=SDLRenderer
+    // M4 遭遇战
+    bool sk_arg = false;         // --skirmish：加载地图后自动开局
+    bool sk_noai = false;        // --noai：对手不自动展开/建造
+    std::string sk_country, sk_color, sk_ocountry, sk_ocolor;
+    int sk_class = 2, sk_tech = 10;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--gamedir") == 0 && i + 1 < argc)
             gamedir_arg = argv[++i];
@@ -123,6 +136,17 @@ static int run(int argc, char** argv) {
         else if (std::strcmp(argv[i], "--simbuild") == 0) sim_build_arg = true;
         else if (std::strcmp(argv[i], "--simdemo") == 0) sim_demo_arg = true;
         else if (std::strcmp(argv[i], "--perf") == 0) perf_arg = true;
+        else if (std::strcmp(argv[i], "--skirmish") == 0) sk_arg = true;
+        else if (std::strcmp(argv[i], "--noai") == 0) sk_noai = true;
+        else if (std::strcmp(argv[i], "--country") == 0 && i + 1 < argc) sk_country = argv[++i];
+        else if (std::strcmp(argv[i], "--color") == 0 && i + 1 < argc) sk_color = argv[++i];
+        else if (std::strcmp(argv[i], "--ocountry") == 0 && i + 1 < argc)
+            sk_ocountry = argv[++i];
+        else if (std::strcmp(argv[i], "--ocolor") == 0 && i + 1 < argc) sk_ocolor = argv[++i];
+        else if (std::strcmp(argv[i], "--skclass") == 0 && i + 1 < argc)
+            sk_class = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--sktech") == 0 && i + 1 < argc)
+            sk_tech = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
             const std::string b = argv[++i];
             if (b == "sdl" || b == "sdgpu" || b == "sdlrenderer") backend_arg = 1;
@@ -136,6 +160,8 @@ static int run(int argc, char** argv) {
             std::printf(
                 "usage: stage [--gamedir <dir>] [--cache <root>] [--shot <bmp>] [--test] "
                 "[--noobj] [--dpi <f>] [--backend gl|sdl]\n"
+                "       stage --map battle1.yrm --skirmish [--country <c>] [--color <c>] "
+                "[--ocountry <c>] [--ocolor <c>] [--skclass 0..3] [--sktech 1..10] [--noai]\n"
                 "  双击运行（无参数）时自动发现游戏目录；找不到则弹出目录选择窗口。\n");
             return 1;
         }
@@ -194,6 +220,14 @@ static int run(int argc, char** argv) {
     a.sim_build = sim_build_arg;
     a.sim_demo = sim_demo_arg;
     a.perf_log = perf_arg;
+    a.sk_autostart = sk_arg;
+    a.sk_ai = !sk_noai;
+    a.sk.class_sel = sk_class;
+    a.sk.tech_level = sk_tech;
+    if (!sk_country.empty()) a.sk.cfg.player.country = sk_country;
+    if (!sk_color.empty()) a.sk.cfg.player.color = sk_color;
+    if (!sk_ocountry.empty()) a.sk.cfg.opponent.country = sk_ocountry;
+    if (!sk_ocolor.empty()) a.sk.cfg.opponent.color = sk_ocolor;
     a.host = &host;
     std::string err, init_err;
     const auto try_init = [&](const std::string& dir) -> bool {
@@ -245,6 +279,12 @@ static int run(int argc, char** argv) {
         } else {
             std::fprintf(stderr, "--map %s not found in scanned maps\n", map_arg.c_str());
         }
+    }
+    // --skirmish：地图就绪后直接开局（玩家/对手按 waypoint 出生）
+    if (a.sk_autostart && a.map_sel >= 0) {
+        std::string skerr;
+        if (!start_skirmish(a, &skerr))
+            std::fprintf(stderr, "skirmish start failed: %s\n", skerr.c_str());
     }
     char dir_buf[512] = {};
     if (!gamedir.empty()) std::snprintf(dir_buf, sizeof(dir_buf), "%s", gamedir.c_str());
@@ -345,6 +385,11 @@ static int run(int argc, char** argv) {
             host.process_event(&ev);
             if (ev.type == SDL_EVENT_QUIT) running = false;
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_ESCAPE) running = false;
+            // 展开基地车（D）/ 取消放置（Esc 之外的右键）
+            if (ev.type == SDL_EVENT_KEY_DOWN && (ev.key.key == SDLK_D) && a.sim_active &&
+                a.sk.active) {
+                deploy_selected_mcv(a);
+            }
             // 编队：Ctrl+1..9 存队，1..9 取队（模拟模式）
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key >= SDLK_1 && ev.key.key <= SDLK_9 &&
                 a.sim_active) {
@@ -374,6 +419,7 @@ static int run(int argc, char** argv) {
         if (a.sim_active && !test_mode) {
             const uint64_t now = SDL_GetTicks();
             while (sim_clock + 66 <= now) {
+                if (a.sk.active) skirmish_ai_tick(a);
                 if (a.sim.tick()) a.dirty = true;
                 sim_clock += 66;
                 if (now - sim_clock > 2000) sim_clock = now; // 窗口阻塞后不追帧
@@ -445,6 +491,34 @@ static int run(int argc, char** argv) {
                 ImGui::EndCombo();
             }
             if (ImGui::Button("加载")) generate_map(a, &err);
+            // ── 遭遇战设置（加载地图模式）──
+            ImGui::Separator();
+            ImGui::TextUnformatted("遭遇战");
+            ensure_rules(a);
+            const auto combo_str = [&](const char* label, std::string& value,
+                                       const std::vector<std::string>& items) {
+                if (items.empty()) {
+                    ImGui::Text("%s: %s", label, value.c_str());
+                    return;
+                }
+                if (ImGui::BeginCombo(label, value.empty() ? items[0].c_str() : value.c_str())) {
+                    for (const auto& s : items)
+                        if (ImGui::Selectable(s.c_str(), s == value)) value = s;
+                    ImGui::EndCombo();
+                }
+            };
+            combo_str("玩家国家", a.sk.cfg.player.country, a.sk.player_countries);
+            combo_str("玩家颜色", a.sk.cfg.player.color, a.sk.color_names);
+            combo_str("对手国家", a.sk.cfg.opponent.country, a.sk.player_countries);
+            combo_str("对手颜色", a.sk.cfg.opponent.color, a.sk.color_names);
+            static const char* kClassNames[4] = {"仅基地车", "轻装", "中装", "重装"};
+            ImGui::Combo("开局兵力", &a.sk.class_sel, kClassNames, 4);
+            ImGui::SliderInt("科技等级", &a.sk.tech_level, 1, 10);
+            if (ImGui::Button("开始遭遇战")) {
+                std::string skerr;
+                if (!start_skirmish(a, &skerr))
+                    std::fprintf(stderr, "[stage] 遭遇战启动失败: %s\n", skerr.c_str());
+            }
         }
         ImGui::Separator();
         ImGui::TextUnformatted("放置对象（左键放置 / 右键删除）");
@@ -474,6 +548,110 @@ static int run(int argc, char** argv) {
                     a.obj_stats.units, a.obj_stats.infantry, a.obj_stats.skipped);
         if (a.sim_active) {
             ImGui::Separator();
+            // ── 遭遇战侧边栏：资金/电力 + 建造队列 + 科技树建筑列表 ──
+            if (a.sk.active) {
+                const auto cit = a.sim.credits.find("Player");
+                const auto pit = a.sim.power_net.find("Player");
+                ImGui::Text("玩家 %s / %s   $%lld   电力 %+d", a.sk.cfg.player.country.c_str(),
+                            a.sk.cfg.player.color.c_str(),
+                            static_cast<long long>(cit != a.sim.credits.end() ? cit->second : 0),
+                            pit != a.sim.power_net.end() ? pit->second : 0);
+                const auto qit = a.sim.build_queue.find("Player");
+                if (qit != a.sim.build_queue.end()) {
+                    const auto& item = qit->second;
+                    const float p = item.total > 0
+                                        ? static_cast<float>(item.ticks) / item.total
+                                        : 0.0f;
+                    ImGui::ProgressBar(std::min(1.0f, p), ImVec2(-1, 0), item.type.c_str());
+                    if (item.ready) {
+                        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "建造完成：点击放置");
+                        if (ImGui::Button("放置##ready")) a.placing = true;
+                        ImGui::SameLine();
+                        if (ImGui::Button("取消##ready")) {
+                            a.sim.cancel_build("Player");
+                            a.placing = false;
+                        }
+                    }
+                }
+                if (a.placing) ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
+                                                  "左键落点（红色=地基被占）");
+                ImGui::TextUnformatted("可造建筑（科技树）");
+                if (ImGui::BeginListBox("##buildable", ImVec2(300.0f * S, 200.0f * S))) {
+                    const auto list = buildable_for(a, "Player");
+                    for (const auto* t : list) {
+                        char label[160];
+                        std::snprintf(label, sizeof label, "%s  $%d  %+d", t->name.c_str(),
+                                      t->cost, t->power);
+                        if (ImGui::Selectable(label, false)) queue_player_build(a, t->name);
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("%s  地基 %dx%d  科技 %d  前置 %s",
+                                              a.rules.rules().get(t->name, "Name", t->name.c_str())
+                                                  .c_str(),
+                                              t->fw, t->fh, t->tech_level,
+                                              t->prereq.empty() ? "无" : t->prereq[0].c_str());
+                    }
+                    ImGui::EndListBox();
+                }
+                // 选中基地车 → 展开按钮
+                bool mcv_sel = false;
+                for (const uint32_t sid : a.selection)
+                    for (const auto& u : a.sim.units)
+                        if (u.id == sid) {
+                            const auto* t = a.rules.unit(u.type);
+                            if (t && !t->deploys_into.empty()) mcv_sel = true;
+                        }
+                ImGui::BeginDisabled(!mcv_sel);
+                if (ImGui::Button("展开基地车 (D)")) deploy_selected_mcv(a);
+                ImGui::EndDisabled();
+                // ── 选中建筑：修理 / 出售（M4）──
+                if (a.sel_building_id != 0) {
+                    int bidx = -1;
+                    for (int i = 0; i < static_cast<int>(a.sim.buildings.size()); ++i)
+                        if (a.sim.buildings[i].id == a.sel_building_id) {
+                            bidx = i;
+                            break;
+                        }
+                    if (bidx >= 0 && a.sim.buildings[bidx].alive) {
+                        const auto& b = a.sim.buildings[bidx];
+                        ImGui::Separator();
+                        ImGui::Text("建筑: %s (%s)  hp %d/%d", b.type.c_str(), b.owner.c_str(),
+                                    b.hp, b.max_hp);
+                        if (b.under_construction) {
+                            ImGui::TextDisabled("建造中（%.0f%%）",
+                                                b.build_total > 0
+                                                    ? 100.0 * b.build_ticks / b.build_total
+                                                    : 0.0);
+                        } else if (b.owner == "Player") {
+                            ImGui::BeginDisabled(b.hp >= b.max_hp);
+                            if (ImGui::Button(b.repairing ? "停止修理" : "修理")) {
+                                a.sim.toggle_repair(static_cast<size_t>(bidx));
+                                a.dirty = true;
+                            }
+                            ImGui::EndDisabled();
+                            ImGui::SameLine();
+                            if (ImGui::Button("出售")) {
+                                const int refund_pct = std::atoi(
+                                    a.rules.rules().get("General", "RefundPercent", "50")
+                                        .c_str());
+                                const int64_t refund =
+                                    a.sim.sell_building(static_cast<size_t>(bidx), refund_pct);
+                                a.sel_building_id = 0;
+                                a.dirty = true;
+                                std::fprintf(stderr, "[stage] 出售 %s 退款 $%lld\n",
+                                             b.type.c_str(), static_cast<long long>(refund));
+                            }
+                            if (b.repairing)
+                                ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f),
+                                                   "修理中…");
+                        } else {
+                            ImGui::TextDisabled("敌方建筑（战斗系统 M5）");
+                        }
+                    } else {
+                        a.sel_building_id = 0;
+                    }
+                }
+                ImGui::Separator();
+            }
             ImGui::Checkbox("建造模式（左键起造，先选中己方单位）", &a.build_mode);
             if (a.build_mode) {
                 if (ImGui::BeginListBox("##blds", ImVec2(300.0f * S, 110.0f * S))) {
@@ -500,6 +678,21 @@ static int run(int argc, char** argv) {
         // ── 右面板：视口 ──
         ImGui::SameLine();
         ImGui::BeginChild("viewport", ImVec2(0, 0), ImGuiChildFlags_Borders);
+        // 放置模式：鼠标所在格 = 地基预览（在重渲染前更新，保证预览不滞后）
+        if (a.sim_active && a.sk.active && a.placing && a.bw > 0) {
+            const ImVec2 mp = ImGui::GetIO().MousePos;
+            const ImVec2 pos0 = ImGui::GetCursorScreenPos();
+            const int lx = static_cast<int>((mp.x - pos0.x - a.pan_x) / a.zoom);
+            const int ly = static_cast<int>((mp.y - pos0.y - a.pan_y) / a.zoom);
+            const IsometricGrid grid;
+            int hcx, hcy;
+            grid.pixel_to_cell(lx - a.ox, ly - a.oy, hcx, hcy);
+            if (hcx != a.hover_cx || hcy != a.hover_cy) {
+                a.hover_cx = hcx;
+                a.hover_cy = hcy;
+                a.dirty = true;
+            }
+        }
         if (a.dirty) {
             // 重渲染节流（≤30Hz）：模拟高频变化时按需渲染，UI 保持响应；
             // dirty 保持，节流窗口过后自动补渲染。
@@ -544,7 +737,10 @@ static int run(int argc, char** argv) {
             const IsometricGrid grid;
             int cx, cy;
             grid.pixel_to_cell(lx - a.ox, ly - a.oy, cx, cy);
-            if (a.sim_active && a.build_mode) {
+            if (a.sim_active && a.sk.active && a.placing) {
+                // 放置模式：左键落点（地基校验在 place_player_build 内）
+                place_player_build(a, cx, cy);
+            } else if (a.sim_active && a.build_mode) {
                 // 建造模式：以选中单位的 House 起造（立即扣款，工地半透明+进度条）
                 if (cx < 0 || cy < 0 || cx >= a.map.w || cy >= a.map.h) {
                 } else if (a.build_sel < 0 ||
@@ -602,12 +798,31 @@ static int run(int argc, char** argv) {
                         a.selection.assign(1, a.sim.units[hit].id);
                     }
                     a.last_click_unit = hit;
+                    a.sel_building_id = 0;
                     a.box_active = false;
                 } else {
-                    // 空地按下：开始框选（松开时结算；微小位移视为点空清除）
-                    a.box_active = true;
-                    a.box_x0 = mp.x;
-                    a.box_y0 = mp.y;
+                    // 单位未命中：建筑拾取（点击地基格选中；修理/出售目标）
+                    int bhit = -1;
+                    for (int i = 0; i < static_cast<int>(a.sim.buildings.size()); ++i) {
+                        const auto& b = a.sim.buildings[i];
+                        if (!b.alive) continue;
+                        if (cx >= b.col && cx < b.col + b.fw && cy >= b.row &&
+                            cy < b.row + b.fh) {
+                            bhit = i;
+                            break;
+                        }
+                    }
+                    if (bhit >= 0) {
+                        a.selection.clear();
+                        a.sel_building_id = a.sim.buildings[bhit].id;
+                        a.last_click_unit = -1;
+                        a.box_active = false;
+                    } else {
+                        // 空地按下：开始框选（松开时结算；微小位移视为点空清除）
+                        a.box_active = true;
+                        a.box_x0 = mp.x;
+                        a.box_y0 = mp.y;
+                    }
                 }
                 a.dirty = true;
             } else if (cx >= 0 && cy >= 0 && cx < a.map.w && cy < a.map.h &&
@@ -629,7 +844,12 @@ static int run(int argc, char** argv) {
             int cx, cy;
             grid.pixel_to_cell(lx - a.ox, ly - a.oy, cx, cy);
             if (a.sim_active) {
-                if (a.selection.empty() || cx < 0 || cy < 0 || cx >= a.map.w ||
+                if (a.sk.active && a.placing) {
+                    // 放置模式：右键取消（原版行为）
+                    a.placing = false;
+                    a.dirty = true;
+                    std::fprintf(stderr, "[stage] 取消放置\n");
+                } else if (a.selection.empty() || cx < 0 || cy < 0 || cx >= a.map.w ||
                     cy >= a.map.h) {
                     // 无选中/出界：忽略
                 } else {
@@ -809,6 +1029,12 @@ static int run(int argc, char** argv) {
             a.mode = 2;
             if (map_arg.empty()) a.map_sel = 0;
             generate_map(a, &err);
+            // 遭遇战模式：地图重载后重新开局（generate_map 会清空 sim）
+            if (a.sk_autostart && a.map_sel >= 0) {
+                std::string skerr;
+                if (!start_skirmish(a, &skerr))
+                    std::fprintf(stderr, "skirmish start failed: %s\n", skerr.c_str());
+            }
             if (no_obj) a.objects.clear(); // --noobj：纯地形基线（与对象版逐像素对照）
             render_all(a, &err);
             a.dirty = false;
@@ -1016,6 +1242,121 @@ static int run(int argc, char** argv) {
                                         base_b.second);
                         }
                     }
+                } else if (a.sk.active) {
+                    // ── 遭遇战自检脚本：展开基地车 → 排队建造 → 落点（AI 同步推进）──
+                    int mcv_i = -1;
+                    for (int i = 0; i < static_cast<int>(a.sim.units.size()); ++i) {
+                        const auto& u = a.sim.units[i];
+                        if (u.owner != "Player") continue;
+                        const auto* t = a.rules.unit(u.type);
+                        if (t && !t->deploys_into.empty()) {
+                            mcv_i = i;
+                            break;
+                        }
+                    }
+                    if (mcv_i >= 0) {
+                        a.selection.assign(1, a.sim.units[mcv_i].id);
+                        std::printf("sim: 玩家基地车 %s @(%d,%d) 已选中\n",
+                                    a.sim.units[mcv_i].type.c_str(), a.sim.units[mcv_i].col,
+                                    a.sim.units[mcv_i].row);
+                    }
+                    // 玩家建造序列按角色取本阵营建筑（盟/苏/尤里通用）
+                    const auto pbuild = [&](const char* role) -> std::string {
+                        const auto* t = faction_building(a, "Player", a.sk.cfg.player.country, role);
+                        return t ? t->name : std::string();
+                    };
+                    for (int s = 0; s < a.sim_steps; ++s) {
+                        if (s == 30) deploy_selected_mcv(a);
+                        if (s == 120) queue_player_build(a, pbuild("power"));
+                        if (s == 1000) queue_player_build(a, pbuild("refinery"));
+                        if (s == 3100) queue_player_build(a, pbuild("barracks"));
+                        if (s == 3700) queue_player_build(a, pbuild("weapon"));
+                        if (a.sim.build_ready("Player")) {
+                            const auto qit = a.sim.build_queue.find("Player");
+                            const auto* bt = qit != a.sim.build_queue.end()
+                                                 ? a.rules.unit(qit->second.type)
+                                                 : nullptr;
+                            int cc = -1, cr = -1;
+                            for (const auto& b : a.sim.buildings) {
+                                const auto* t2 = a.rules.unit(b.type);
+                                if (b.owner == "Player" && t2 && t2->construction_yard) {
+                                    cc = b.col;
+                                    cr = b.row;
+                                    break;
+                                }
+                            }
+                            if (bt && cc >= 0) {
+                                int bx = -1, by = -1;
+                                for (int rad = 0; rad < 24 && bx < 0; ++rad)
+                                    for (int dy = -rad; dy <= rad && bx < 0; ++dy)
+                                        for (int dx = -rad; dx <= rad && bx < 0; ++dx) {
+                                            if (rad > 0 && std::abs(dx) != rad &&
+                                                std::abs(dy) != rad)
+                                                continue;
+                                            if (a.sim.can_place(cc + dx, cr + dy, bt->fw,
+                                                                bt->fh)) {
+                                                bx = cc + dx;
+                                                by = cr + dy;
+                                            }
+                                        }
+                                if (bx >= 0) place_player_build(a, bx, by);
+                            }
+                        }
+                        skirmish_ai_tick(a);
+                        a.sim.tick();
+                    }
+                    // 放置预览自检：有就绪建筑时进入放置模式（截图应出现地基菱形）
+                    if (!a.sim.build_ready("Player")) {
+                        // 自检注入：合成一个"就绪"项用于预览渲染（不占资金）
+                        const std::string pw = pbuild("power");
+                        if (!pw.empty())
+                            a.sim.build_queue["Player"] = {pw, 1, 1, 0, true};
+                    }
+                    if (a.sim.build_ready("Player")) {
+                        const auto qit = a.sim.build_queue.find("Player");
+                        const auto* bt = qit != a.sim.build_queue.end()
+                                             ? a.rules.unit(qit->second.type)
+                                             : nullptr;
+                        int cc = -1, cr = -1;
+                        for (const auto& b : a.sim.buildings)
+                            if (b.owner == "Player") {
+                                cc = b.col;
+                                cr = b.row;
+                                break;
+                            }
+                        if (bt && cc >= 0) {
+                            for (int rad = 0; rad < 24 && !a.placing; ++rad)
+                                for (int dy = -rad; dy <= rad && !a.placing; ++dy)
+                                    for (int dx = -rad; dx <= rad && !a.placing; ++dx) {
+                                        if (a.sim.can_place(cc + dx, cr + dy, bt->fw, bt->fh)) {
+                                            a.placing = true;
+                                            a.hover_cx = cc + dx;
+                                            a.hover_cy = cr + dy;
+                                        }
+                                    }
+                        }
+                        std::printf("sim: 放置预览 %s（格 %d,%d）\n",
+                                    a.placing ? "已开启" : "未找到落点", a.hover_cx, a.hover_cy);
+                    }
+                    for (const char* p : {"Player", "Opponent"}) {
+                        int blds = 0, done = 0, nunit = 0;
+                        for (const auto& b : a.sim.buildings)
+                            if (b.owner == p) {
+                                ++blds;
+                                if (!b.under_construction) ++done;
+                            }
+                        for (const auto& u : a.sim.units)
+                            if (u.owner == p) ++nunit;
+                        std::printf(
+                            "sim: 遭遇战 %s 建筑 %d/%d 完成 单位 %d 资金 $%lld 电力 %+d\n", p,
+                            done, blds, nunit,
+                            static_cast<long long>(a.sim.credits.count(p) ? a.sim.credits[p] : 0),
+                            a.sim.power_net.count(p) ? a.sim.power_net[p] : 0);
+                    }
+                    for (const auto& b : a.sim.buildings)
+                        std::printf("sim: 建筑 %-7s %-9s @(%2d,%2d) %dx%d %s hp=%d/%d\n",
+                                    b.type.c_str(), b.owner.c_str(), b.col, b.row, b.fw, b.fh,
+                                    b.under_construction ? "建造中" : "完成", b.hp, b.max_hp);
                 } else {
                     ra2r::sim::SimUnit& u0 = a.sim.units[0];
                     const int tc = std::min(u0.col + 10, a.map.w - 1);

@@ -5,16 +5,15 @@
 #include <cstring>
 
 #include "ra2r/assets/shp_file.h"
+#include "ra2r/assets/theater.h"
 #include "ra2r/render/terrain_tile.h"
 
 namespace ra2r::render {
 
 char wall_theater_letter(const std::string& theater) {
-    if (theater == "TEMPERATE") return 'T';
-    if (theater == "SNOW") return 'N';
-    if (theater == "DESERT") return 'D';
-    if (theater == "LUNAR") return 'L';
-    return 'U'; // URBAN / NEWURBAN
+    // 围墙/沙袋/栅栏的前缀字母与 NewTheater 同一张表
+    // （GAWALL=雪、GTWALL=温和、GUSAND=城市、GDSAND=沙漠、GLSAND=月球、GNSAND=新城市）
+    return ra2r::assets::theater_code(theater);
 }
 
 std::string overlay_art_name(const std::string& overlay_type_name, const std::string& ext,
@@ -123,13 +122,22 @@ bool is_unit_palette_art(const std::string& art) {
 
 namespace {
 
-// 通用像素写入（带边界检查）
+// 通用像素写入（带边界检查；src alpha < 255 时按 alpha 混合——索引 1 = 阴影）
 void put_px(std::vector<uint8_t>& canvas, int bw, int bh, int x, int y, const uint8_t* src) {
     if (x < 0 || y < 0 || x >= bw || y >= bh || src[3] == 0) return;
     uint8_t* d = canvas.data() + (static_cast<size_t>(y) * bw + x) * 4;
-    d[0] = src[0];
-    d[1] = src[1];
-    d[2] = src[2];
+    if (src[3] >= 255) {
+        d[0] = src[0];
+        d[1] = src[1];
+        d[2] = src[2];
+        d[3] = 255;
+        return;
+    }
+    const uint8_t a = src[3];
+    const uint8_t ia = static_cast<uint8_t>(255 - a);
+    d[0] = static_cast<uint8_t>((src[0] * a + d[0] * ia) / 255);
+    d[1] = static_cast<uint8_t>((src[1] * a + d[1] * ia) / 255);
+    d[2] = static_cast<uint8_t>((src[2] * a + d[2] * ia) / 255);
     d[3] = 255;
 }
 

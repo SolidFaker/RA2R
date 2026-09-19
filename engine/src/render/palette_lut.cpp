@@ -13,17 +13,30 @@ inline float level_brightness(int level) {
 }
 } // namespace
 
-void PaletteLut::build(const uint8_t* pal_768) {
+void PaletteLut::build(const uint8_t* pal_768, const uint8_t* remap16) {
     for (int idx = 0; idx < kColors; ++idx) {
-        const int r8 = pal_768[idx * 3] * 4;       // 6 位 → 8 位
-        const int g8 = pal_768[idx * 3 + 1] * 4;
-        const int b8 = pal_768[idx * 3 + 2] * 4;
+        int r8, g8, b8;
+        if (remap16 && idx >= 16 && idx <= 31) {
+            // 阵营色重映射段：remap16 已是 8 位 RGB（[Colors] H,S,V 生成），不再 ×4
+            r8 = remap16[(idx - 16) * 3];
+            g8 = remap16[(idx - 16) * 3 + 1];
+            b8 = remap16[(idx - 16) * 3 + 2];
+        } else {
+            r8 = pal_768[idx * 3] * 4;       // 6 位 → 8 位
+            g8 = pal_768[idx * 3 + 1] * 4;
+            b8 = pal_768[idx * 3 + 2] * 4;
+        }
+        // 索引 1 = 原版阴影索引（SHP 阴影帧只用索引 1）：映射为半透明黑
+        // ARGB(140,0,0,0) —— 与 OpenRA PaletteFromFile ShadowIndex=1 的
+        // 重映射（ImmutablePalette: colors[i] = 140u << 24）一致。
+        // 原调色盘该索引是深蓝（UNITURB.PAL idx1=(0,0,49)），直接用会画成蓝影。
+        const bool shadow = (idx == 1);
         for (int level = 0; level < kLevels; ++level) {
             const float f = level_brightness(level);
-            const uint8_t r = idx == 0 ? 0 : static_cast<uint8_t>(r8 * f);
-            const uint8_t g = idx == 0 ? 0 : static_cast<uint8_t>(g8 * f);
-            const uint8_t b = idx == 0 ? 0 : static_cast<uint8_t>(b8 * f);
-            const uint8_t a = idx == 0 ? 0 : 255; // 索引 0 = 透明
+            const uint8_t r = (idx == 0 || shadow) ? 0 : static_cast<uint8_t>(r8 * f);
+            const uint8_t g = (idx == 0 || shadow) ? 0 : static_cast<uint8_t>(g8 * f);
+            const uint8_t b = (idx == 0 || shadow) ? 0 : static_cast<uint8_t>(b8 * f);
+            const uint8_t a = idx == 0 ? 0 : (shadow ? 140 : 255);
             lut_[idx + kColors * level] = static_cast<uint32_t>(a) << 24 |
                                           static_cast<uint32_t>(r) << 16 |
                                           static_cast<uint32_t>(g) << 8 | b;

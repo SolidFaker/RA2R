@@ -8,8 +8,11 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "ra2r/assets/rules_db.h"
+#include "ra2r/assets/shp_layout.h"
 #include "ra2r/render/isometric.h"
 
 namespace ra2r::render {
@@ -20,6 +23,10 @@ using FileLoader = std::function<const std::vector<uint8_t>*(const std::string&)
 // 剧场单位调色盘名（建筑/步兵共用；载具用 VXL 内嵌盘）
 struct UnitPaletteCfg {
     const char* unit_pal; // 如 "UNITSNO.PAL"
+    std::string theater;  // 剧场名（NewTheater 美术名回退用；空 = TEMPERATE）
+    // 阵营色重映射表（[Colors] H,S,V → 16 色 ramp）。对象用 remap = 下标+1 引用；
+    // 空表 = 全部按原调色盘（Remap 段仍是红渐变）
+    const std::vector<ra2r::assets::HouseRamp>* house_ramps = nullptr;
 };
 
 struct ObjectRenderStats {
@@ -46,6 +53,8 @@ struct PlacedObject {
     //   按 build_p 0..1 缩放表现建造动画)；hp<128 → 受损帧；build_p<0 = 建成
     int hp = 256;
     float build_p = -1.0f;
+    // 阵营色：0 = 不重映射；N = cfg.house_ramps[N-1]（Remap 段 16..31 整段替换）
+    uint8_t remap = 0;
 };
 
 // 渲染对象到画布（画在地形之后，按 (cx+cy, cx) 深度排序）。
@@ -57,6 +66,13 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                                  const FileLoader& load, int bw, int bh, int ox, int oy,
                                  std::vector<uint8_t>& canvas, float obj_scale = 0.3f,
                                  ObjectRenderCache* cache = nullptr);
+
+// 建筑美术名解析（NewTheater 回退链，artmd NewTheater=yes 的建筑）：
+//   第 2 字母换剧场代号（见 assets::theater_code）→ 换 'G'（通用）→ 原名
+// 实测：类型名第 2 字母是 'A'（雪地代号），按原名加载会拿到雪地美术
+// （GAPOWR 底座覆雪）；GTGCAN 的底座则只有 GAGCAN(雪)/GGGCAN(通用) 变体。
+std::string resolve_art_name(const std::string& image, const std::string& theater,
+                             const FileLoader& load);
 
 // 全单位陈列场景：把名库中全部 .VXL 单位渲染成网格（验收用）。
 // vxl_names 为大写 .VXL 名列表（由调用方从名称索引收集）。
@@ -74,7 +90,8 @@ ShowcaseResult run_showcase(const std::vector<std::string>& vxl_names, const Fil
 struct ObjectRenderCache {
     struct VoxelEntry {
         int w = 0, h = 0;
-        int ax = 0, ay = 0; // 锚点（底盘中心相对图像左上）
+        int ax = 0, ay = 0; // 锚点（模型原点相对图像左上）
+        int bx = 0, by = 0; // 主体节基座中心锚点（建筑炮塔落点/车体顶心用）
         std::vector<uint8_t> rgba;
     };
     struct BldEntry {
@@ -87,12 +104,17 @@ struct ObjectRenderCache {
     std::map<std::string, BldEntry> buildings;  // 键：美术名#透明度
     std::map<std::string, BldEntry> shp_frames; // 通用 SHP 帧缓存：美术名|帧号
                                                //（步兵朝向帧 + 建筑配件动画帧共用）
+    // 分段布局缓存（按美术名；帧内容判定较贵，跨帧复用）
+    std::map<std::string, ra2r::assets::ShpLayout> anim_layouts; // 配件动画 SHP
+    std::map<std::string, int> body_shadow;                      // 建筑本体阴影段起点
     bool art_ready = false;                     // artmd/rulesmd Image 表已解析
     std::map<std::string, std::string> art_images;
     void clear() {
         voxels.clear();
         buildings.clear();
         shp_frames.clear();
+        anim_layouts.clear();
+        body_shadow.clear();
         art_ready = false;
         art_images.clear();
     }

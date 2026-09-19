@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 namespace ra2r::render {
@@ -27,6 +28,13 @@ const DirectionalLight kLight = [] {
     return DirectionalLight{0.35f * inv, -0.35f * inv, 0.87f * inv};
 }();
 
+// HVA 平移分量单位换算：文件里的平移量是"1/16 体素"尺度。实测依据：
+//   YAGGUN 炮管 t=(111.5,164.5,479.6) → /16 = (7.0,10.3,30.0)，z=30 恰为炮塔枢轴高度；
+//   YTNKTUR 炮塔 t_z=256.7 → 16.0，而 YTNK 车体高 15 体素（炮塔正落在车体顶）；
+//   1TNKBARL 炮管 t_z=139.3 → 8.7，1TNK 车体高 11（炮管在炮塔高度）。
+// 全库 139 个非零平移 section 按此换算均落在模型尺寸内。
+constexpr float kHvaTranslationScale = 1.0f / 16.0f;
+
 // 取 HVA 矩阵（按 section 名匹配；无 HVA/无同名 → 单位矩阵）
 void load_hva_matrix(const assets::HvaFile* hva, const assets::VxlSection& section,
                      int hva_frame, float m[12]) {
@@ -40,6 +48,14 @@ void load_hva_matrix(const assets::HvaFile* hva, const assets::VxlSection& secti
         if (hva->section_names()[i] != section.name) continue;
         const float* hm = hva->matrix(static_cast<uint32_t>(hva_frame), i);
         std::memcpy(m, hm, 12 * sizeof(float));
+        // 平移换算用**节自身 det**（limb footer Scale；恒定 1/16 只是 0.083≈1/12
+        // 文件的巧合值）：实测 YAGGUN det=0.056 时炮管平移 z=479.6×0.056=26.9
+        // 恰落进座圈 z 22.6..39.7；按 1/16 换算则浮空（26.9→30 偏差尚可，
+        // 但 det 相差 1.5 倍的文件会明显错位——单位语义即 det）
+        const float det = section.det > 0.0f ? section.det : kHvaTranslationScale;
+        m[3] *= det;
+        m[7] *= det;
+        m[11] *= det;
         return;
     }
 }
@@ -85,6 +101,40 @@ Projection make_projection(const float m[12], float yaw, float pitch, float scal
     proj_vec(0, 1, 0, p.eyx, p.eyy, p.eyd);
     proj_vec(0, 0, 1, p.ezx, p.ezy, p.ezd);
     proj_vec(m[3], m[7], m[11], p.tx, p.ty, p.td); // 平移分量经同一线性部分
+    return p;
+}
+
+// 同上，但把节的包围盒映射烘焙进基向量：体素【索引】i 的模型坐标 =
+//   min + (i + 0.5)·(max − min)/size（XCC 语义；各轴步长不同也正确）。
+// 不做该映射时三件（底盘/炮塔/炮管）都会叠在原点——炮塔埋进底盘。
+// 烘焙后 project() 仍吃索引，底盘观感与旧行为一致（步长 ≈ 1）。
+Projection make_section_projection(const assets::VxlSection& s, const float m[12], float yaw,
+                                   float pitch, float scale) {
+    Projection p = make_projection(m, yaw, pitch, scale);
+    const float* mn = s.min;
+    const float* mx = s.max;
+    const float step[3] = {
+        s.sx > 0 ? (mx[0] - mn[0]) / s.sx : 1.0f,
+        s.sy > 0 ? (mx[1] - mn[1]) / s.sy : 1.0f,
+        s.sz > 0 ? (mx[2] - mn[2]) / s.sz : 1.0f,
+    };
+    const float org[3] = {mn[0] + 0.5f * step[0], mn[1] + 0.5f * step[1],
+                          mn[2] + 0.5f * step[2]};
+    // 基向量 ×步长；原点偏移并入平移（保持线性投影不变式）
+    const float b[3][3] = {{p.exx, p.exy, p.exd}, {p.eyx, p.eyy, p.eyd},
+                           {p.ezx, p.ezy, p.ezd}};
+    p.exx = b[0][0] * step[0];
+    p.exy = b[0][1] * step[0];
+    p.exd = b[0][2] * step[0];
+    p.eyx = b[1][0] * step[1];
+    p.eyy = b[1][1] * step[1];
+    p.eyd = b[1][2] * step[1];
+    p.ezx = b[2][0] * step[2];
+    p.ezy = b[2][1] * step[2];
+    p.ezd = b[2][2] * step[2];
+    p.tx += b[0][0] * org[0] + b[1][0] * org[1] + b[2][0] * org[2];
+    p.ty += b[0][1] * org[0] + b[1][1] * org[1] + b[2][1] * org[2];
+    p.td += b[0][2] * org[0] + b[1][2] * org[1] + b[2][2] * org[2];
     return p;
 }
 
@@ -138,7 +188,8 @@ class VoxelRasterizer {
 public:
     VoxelRasterizer(const assets::VxlSection& section, const Projection& proj,
                     const assets::VxlFile& vxl, const float hva[12], float yaw, float pitch,
-                    RasterImage& out, std::vector<float>* shared_zbuf = nullptr);
+                    RasterImage& out, std::vector<float>* shared_zbuf = nullptr,
+                    const uint8_t* remap = nullptr);
 
     void run(const std::vector<Voxel>& voxels, float off_x, float off_y);
 
@@ -154,6 +205,7 @@ private:
     const assets::VxlSection& section_;
     const Projection& proj_;
     const std::array<uint8_t, 768>& pal_;
+    const uint8_t* remap_; // 阵营色重映射段（16×RGB；nullptr = 原样）
     const float* hva_;
     float cy_, sy_, cp_, sp_; // yaw/pitch 三角函数缓存
     int w_, h_;
@@ -164,8 +216,9 @@ private:
 
 VoxelRasterizer::VoxelRasterizer(const assets::VxlSection& section, const Projection& proj,
                                  const assets::VxlFile& vxl, const float hva[12], float yaw,
-                                 float pitch, RasterImage& out, std::vector<float>* shared_zbuf)
-    : section_(section), proj_(proj), pal_(vxl.palette()), hva_(hva),
+                                 float pitch, RasterImage& out, std::vector<float>* shared_zbuf,
+                                 const uint8_t* remap)
+    : section_(section), proj_(proj), pal_(vxl.palette()), remap_(remap), hva_(hva),
       cy_(std::cos(yaw)), sy_(std::sin(yaw)), cp_(std::cos(pitch)), sp_(std::sin(pitch)),
       w_(out.w), h_(out.h), out_(out), zbuf_(shared_zbuf),
       zbuf_own_(shared_zbuf ? std::vector<float>()
@@ -187,9 +240,15 @@ float VoxelRasterizer::face_shade(float n0, float n1, float n2) const {
 }
 
 std::array<int, 3> VoxelRasterizer::face_rgb(uint8_t color, float shade) const {
-    int r = static_cast<int>(pal_[color * 3] * 4 * shade);
-    int g = static_cast<int>(pal_[color * 3 + 1] * 4 * shade);
-    int b = static_cast<int>(pal_[color * 3 + 2] * 4 * shade);
+    // VXL 内嵌调色板是 **8 位** RGB（实测 YAGGUN：索引 15 = 255、20 = 195、13 = 87；
+    // 同索引在 UNITURB.PAL 里是 252/192/84 的 6 位值 ×4）。早期版本按 .PAL 的
+    // 6 位约定再 ×4，导致体素整体过曝（炮管发白、暗部丢层次）。
+    // 索引 16..31 = 原版 Remap 段：有阵营色时整段替换（VXL 内嵌盘同为 8 位）
+    const uint8_t* src = pal_.data() + color * 3;
+    if (remap_ && color >= 16 && color <= 31) src = remap_ + (color - 16) * 3;
+    const int r = static_cast<int>(src[0] * shade);
+    const int g = static_cast<int>(src[1] * shade);
+    const int b = static_cast<int>(src[2] * shade);
     return {std::min(255, r), std::min(255, g), std::min(255, b)};
 }
 
@@ -295,7 +354,8 @@ RasterImage rasterize_voxel_section(const assets::VxlFile& vxl, const assets::Hv
 
     float hva_m[12];
     load_hva_matrix(hva, section, hva_frame, hva_m);
-    const Projection proj = make_projection(hva_m, view.yaw, view.pitch, view.scale);
+    const Projection proj =
+        make_section_projection(section, hva_m, view.yaw, view.pitch, view.scale);
 
     std::vector<Voxel> voxels;
     float min_x, max_x, min_y, max_y;
@@ -306,73 +366,115 @@ RasterImage rasterize_voxel_section(const assets::VxlFile& vxl, const assets::Hv
     out.w = static_cast<int>(max_x - min_x) + margin * 2;
     out.h = static_cast<int>(max_y - min_y) + margin * 2;
     out.rgba.assign(static_cast<size_t>(out.w) * out.h * 4, 0);
-    // 底盘中心（体素盒 (sx/2, sy/2, 0) 经 HVA+旋转+投影）在光栅中的位置 = 世界锚点。
-    // 以底盘中心为锚：单位绕自身中心转向，放置时贴合所在格中心（载具贴地语义）。
-    if (anchor_x || anchor_y) {
-        float ax, ay, ad;
-        proj.project(static_cast<float>(section.sx) * 0.5f,
-                     static_cast<float>(section.sy) * 0.5f, 0.0f, ax, ay, ad);
-        if (anchor_x) *anchor_x = ax - min_x + margin;
-        if (anchor_y) *anchor_y = ay - min_y + margin;
-    }
+    // 锚点 = 模型原点 (0,0,0) 在光栅中的位置（与整模版本同语义）
+    if (anchor_x) *anchor_x = static_cast<float>(margin) - min_x;
+    if (anchor_y) *anchor_y = static_cast<float>(margin) - min_y;
 
-    VoxelRasterizer rasterizer(section, proj, vxl, hva_m, view.yaw, view.pitch, out);
+    VoxelRasterizer rasterizer(section, proj, vxl, hva_m, view.yaw, view.pitch, out, nullptr,
+                               view.remap);
     rasterizer.run(voxels, -min_x + margin, -min_y + margin);
     return out;
 }
 
-RasterImage rasterize_voxel_model(const assets::VxlFile& vxl, const assets::HvaFile* hva,
-                                  int hva_frame, const VoxelView& view, float* anchor_x,
-                                  float* anchor_y) {
+RasterImage rasterize_voxel_parts(const VoxelPart* parts, size_t count, const VoxelView& view,
+                                  float* anchor_x, float* anchor_y, float* body_x,
+                                  float* body_y, float* origin_x, float* origin_y) {
     RasterImage out;
-    if (vxl.sections().empty()) return out;
-    // 1) 各节投影/收集体素，求全局包围盒
+    if (!parts || count == 0) return out;
+    // 1) 各部件各节投影/收集体素，求全局包围盒
     struct Sec {
         const assets::VxlSection* s;
+        const assets::VxlFile* vxl;
         Projection proj;
         std::vector<Voxel> vx;
         float hva_m[12];
     };
     std::vector<Sec> secs;
-    secs.reserve(vxl.sections().size());
     float min_x = 1e9f, max_x = -1e9f, min_y = 1e9f, max_y = -1e9f;
-    for (const auto& section : vxl.sections()) {
-        Sec sd;
-        sd.s = &section;
-        load_hva_matrix(hva, section, hva_frame, sd.hva_m);
-        sd.proj = make_projection(sd.hva_m, view.yaw, view.pitch, view.scale);
-        float a, b, c, d;
-        collect_voxels(section, sd.proj, sd.vx, a, b, c, d);
-        if (sd.vx.empty()) continue;
-        min_x = std::min(min_x, a);
-        max_x = std::max(max_x, b);
-        min_y = std::min(min_y, c);
-        max_y = std::max(max_y, d);
-        secs.push_back(std::move(sd));
+    for (size_t pi = 0; pi < count; ++pi) {
+        const VoxelPart& p = parts[pi];
+        if (!p.vxl) continue;
+        for (const auto& section : p.vxl->sections()) {
+            Sec sd;
+            sd.s = &section;
+            sd.vxl = p.vxl;
+            load_hva_matrix(p.hva, section, p.hva_frame, sd.hva_m);
+            sd.proj = make_section_projection(section, sd.hva_m, view.yaw, view.pitch,
+                                              view.scale);
+            float a, b, c, d;
+            collect_voxels(section, sd.proj, sd.vx, a, b, c, d);
+            if (sd.vx.empty()) continue;
+            min_x = std::min(min_x, a);
+            max_x = std::max(max_x, b);
+            min_y = std::min(min_y, c);
+            max_y = std::max(max_y, d);
+            secs.push_back(std::move(sd));
+        }
     }
     if (secs.empty()) return out;
     const int margin = static_cast<int>(view.scale * 4.0f);
     out.w = static_cast<int>(max_x - min_x) + margin * 2;
     out.h = static_cast<int>(max_y - min_y) + margin * 2;
     out.rgba.assign(static_cast<size_t>(out.w) * out.h * 4, 0);
-    // 锚点 = 主体节（体素最多，通常为模型本体）包围盒底中心经 HVA+旋转+投影
-    const Sec* body = &secs[0];
-    for (const auto& s : secs)
-        if (s.vx.size() > body->vx.size()) body = &s;
-    if (anchor_x || anchor_y) {
-        float ax, ay, ad;
-        body->proj.project(static_cast<float>(body->s->sx) * 0.5f,
-                           static_cast<float>(body->s->sy) * 0.5f, 0.0f, ax, ay, ad);
-        if (anchor_x) *anchor_x = ax - min_x + margin;
-        if (anchor_y) *anchor_y = ay - min_y + margin;
+    // 锚点 = 模型原点 (0,0,0) 在光栅中的像素位置（模型空间原点经视角变换
+    // 落在屏幕 (0,0)，光栅整体偏移 (-min_x+margin, -min_y+margin)）。
+    if (anchor_x) *anchor_x = static_cast<float>(margin) - min_x;
+    if (anchor_y) *anchor_y = static_cast<float>(margin) - min_y;
+    // 主体节"炮塔座锚点"：主体节（体素最多）包围盒中心 (x,y) + 该节最低 z
+    // （即炮塔坐在底座上的那个点）。取主体节而非整模包围盒，保证朝向变化时
+    // 锚点稳定（炮管旋转会让整模 AABB 中心摆动 ±27px）。
+    if (body_x || body_y) {
+        const Sec* body = &secs[0];
+        for (const auto& s : secs)
+            if (s.vx.size() > body->vx.size()) body = &s;
+        float bx, by, bd;
+        // 包围盒中心/底 → 索引空间：i = ((mn+mx)/2 − mn − 0.5·step)/step
+        const auto idx_c = [](float mn, float mx, int n) {
+            const float step = n > 0 ? (mx - mn) / n : 1.0f;
+            return (mx - mn) * 0.5f / step - 0.5f;
+        };
+        body->proj.project(idx_c(body->s->min[0], body->s->max[0], body->s->sx),
+                           idx_c(body->s->min[1], body->s->max[1], body->s->sy), 0.0f, bx, by,
+                           bd);
+        if (body_x) *body_x = bx - min_x + margin;
+        if (body_y) *body_y = by - min_y + margin;
     }
-    // 2) 共享深度缓冲顺序绘制各节（跨节遮挡正确）
+    // 模型原点 (0,0,0)【模型空间】在光栅中的位置：rules TurretAnimX/Y 等
+    // 游戏内偏移都以模型原点为参照（炮塔枢轴）。索引 → 模型：
+    // i = (0 − mn − 0.5·step)/step，用首个节的投影换算（各节线性一致或仅差平移）
+    if (origin_x || origin_y) {
+        if (!secs.empty()) {
+            const auto& s0 = *secs[0].s;
+            const auto idx_of = [](float mn, float mx, int n) {
+                const float step = n > 0 ? (mx - mn) / n : 1.0f;
+                return step > 0 ? (0.0f - mn - 0.5f * step) / step : 0.0f;
+            };
+            float ox, oy, od;
+            secs[0].proj.project(idx_of(s0.min[0], s0.max[0], s0.sx),
+                                 idx_of(s0.min[1], s0.max[1], s0.sy),
+                                 idx_of(s0.min[2], s0.max[2], s0.sz), ox, oy, od);
+            if (origin_x) *origin_x = ox - min_x + margin;
+            if (origin_y) *origin_y = oy - min_y + margin;
+        } else {
+            if (origin_x) *origin_x = margin - min_x;
+            if (origin_y) *origin_y = margin - min_y;
+        }
+    }
+    // 2) 共享深度缓冲顺序绘制各节（跨节、跨部件遮挡正确）
     std::vector<float> zbuf(static_cast<size_t>(out.w) * out.h, -1e30f);
     for (const auto& s : secs) {
-        VoxelRasterizer rz(*s.s, s.proj, vxl, s.hva_m, view.yaw, view.pitch, out, &zbuf);
+        VoxelRasterizer rz(*s.s, s.proj, *s.vxl, s.hva_m, view.yaw, view.pitch, out, &zbuf,
+                       view.remap);
         rz.run(s.vx, -min_x + margin, -min_y + margin);
     }
     return out;
+}
+
+RasterImage rasterize_voxel_model(const assets::VxlFile& vxl, const assets::HvaFile* hva,
+                                  int hva_frame, const VoxelView& view, float* anchor_x,
+                                  float* anchor_y, float* body_x, float* body_y) {
+    const VoxelPart part{&vxl, hva, hva_frame};
+    return rasterize_voxel_parts(&part, 1, view, anchor_x, anchor_y, body_x, body_y);
 }
 
 } // namespace ra2r::render

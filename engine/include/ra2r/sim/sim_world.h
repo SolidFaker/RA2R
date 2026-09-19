@@ -84,10 +84,16 @@ struct SimBuilding {
     int build_ticks = 0;   // 已建造帧
     int build_total = 150; // 总建造帧
     int cost = 300;
+    int max_hp = 256; // 建造完成血量（rulesmd Strength=）
     int power = 0; // >0 产电、<0 耗电（rulesmd Power=）
     // 配件动画（油井摇臂/工厂门等 ActiveAnim）：逻辑帧时钟，1 帧/逻辑帧
     bool has_anim = false;
     uint32_t anim_clock = 0;
+    // 修理（M4）：true = 逐帧回血并扣款（修理速率 = Cost·0.02/秒@15fps，
+    // rulesmd [General] RepairRate 缺省档；满血自动关）
+    bool repairing = false;
+    int repair_step_hp = 1; // 每次结算回血量（调用方按 max_hp/工期换算传入）
+    bool sold = false;      // 出售移除（死亡结算跳过爆炸）
 };
 
 // 爆炸（渲染事件：格 + 持续逻辑帧；stage 用 EXPLOMED 帧序列播放）
@@ -95,6 +101,17 @@ struct SimExplosion {
     int col = 0, row = 0;
     int total = 30;
     int elapsed = 0;
+};
+
+// 建造队列项（RA2 侧边栏：排队 → 进度 → 待放置）。
+// 遭遇战流程：选中建筑 → queue_build（立即扣款）→ tick 推进 → ready →
+// 玩家在地图放置（spawn_building）后清空。
+struct BuildQueueItem {
+    std::string type;   // rulesmd 类型名
+    int ticks = 0;      // 已用逻辑帧
+    int total = 1;      // 总逻辑帧
+    int cost = 0;       // 已扣款
+    bool ready = false; // 建造完成，等待放置
 };
 
 struct SimWorld {
@@ -109,6 +126,9 @@ struct SimWorld {
     std::vector<int16_t> ore; // 引擎格矿石量（0=无矿）
     std::map<std::string, int64_t> credits; // House → 资金
     std::map<std::string, int> power_net;   // House → 净电力（产 − 耗）
+    uint64_t logic_ticks = 0; // 全局逻辑帧（低电减半的奇偶节拍用）
+    // 建造队列（每 House 单队列；遭遇战流程）
+    std::map<std::string, BuildQueueItem> build_queue;
 
     // 从地图装载：建筑/载具/步兵进入 buildings/units；建筑地基格标记 blocked。
     // footprint 回调给出建筑的地基尺寸（地图格空间 fw×fh；stage 从 rulesmd
@@ -141,6 +161,47 @@ struct SimWorld {
 
     // 变更单位所属 House（1v1 演示脚本用）；新 House 无资金条目时按 $10000 补种
     void set_unit_owner(size_t idx, const std::string& owner);
+
+    // ── 遭遇战流程（M4：开局生成 / 基地车展开 / 建造队列）──
+    // 生成单位（不走地图加载路径）：返回新单位 id（0 = 失败）。owner 无资金条目时
+    // 按 $10000 补种；格被占/出界不拒绝（调用方负责选点）。
+    uint32_t spawn_unit(const std::string& owner, const std::string& type, int kind, int col,
+                        int row, uint8_t dir, const SimWeapon& w, bool is_miner, int capacity,
+                        int speed);
+    // 移除单位（基地车展开消耗车体）；返回是否移除
+    bool remove_unit(size_t idx);
+    // 生成建筑（基地车展开 / 建造队列放置）：地基矩形校验 + 阻挡标记。
+    // under_construction = true 时进入建造/展开动画（build_total = 动画帧数）；
+    // 完成后血量 = max_hp（rulesmd Strength=）。
+    uint32_t spawn_building(const std::string& owner, const std::string& type, int col, int row,
+                            int fw, int fh, int cost, int power, bool under_construction,
+                            int build_total, int max_hp);
+    // 地基是否可放置（矩形、全图内、无阻挡）
+    bool can_place(int col, int row, int fw, int fh) const;
+
+    // 建造队列（立即扣款；同一 House 单队列）
+    bool queue_build(const std::string& owner, const std::string& type, int cost, int total_ticks);
+    // 取消排队（按 rulesmd [General] RefundPercent 默认 50% 退款）
+    bool cancel_build(const std::string& owner, int refund_percent = 50);
+    bool build_ready(const std::string& owner) const;
+    // 取出待放置项（放置成功后调用）；无待放置项返回 false
+    bool take_ready_build(const std::string& owner, std::string* type);
+
+    // ── 修理 / 出售（M4）──
+    // 修理切换：repairing = true 时建筑按 RepairRate（rulesmd [General] 缺省 0.02·Cost
+    // 每秒）逐帧回血并等比扣款，满血自动停。返回当前修理态（切换后）。
+    bool toggle_repair(size_t building_idx);
+    // 出售：立即移除建筑并退款（满血按 [General] RefundPercent；打折率随残血线性），
+    // 解除地基阻挡。返回退款额（失败 = -1）。
+    int64_t sell_building(size_t building_idx, int refund_percent = 50);
+
+    // 已完成建筑查询（科技树前置条件判定；completed_only = 只算建成建筑）
+    bool has_building(const std::string& owner, const std::string& type,
+                      bool completed_only = true) const;
+    // 建造厂（ConstructionYard=yes 由 stage 判定并传类型名）
+    bool has_conyard(const std::string& owner, const std::string& conyard_type) const {
+        return has_building(owner, conyard_type, true);
+    }
 
     // 建造：为 House 在顶格 (col,row) 起造建筑（地基 = 引擎空间 fw×fh 矩形，
     // M3 基础档近似，原版菱形地基换算待 M4）。校验：格内无阻挡、资金足够

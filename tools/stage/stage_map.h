@@ -6,7 +6,9 @@
 //   算法       随机水域湖泊 + 高斯团块高度（种子可复现）
 //   加载地图   从 MapFile 提取格数据（含对象/装饰列表）
 #include <cstdint>
+#include <cstdlib>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ra2r/assets/map_file.h"
@@ -29,6 +31,8 @@ public:
     // 装饰元素（树木/岩石/覆盖物）—— 与 mapview 共享 build_scene_decor 产出，
     // art = 最终文件名（含剧场后缀/墙前缀），渲染时直接用
     std::vector<ra2r::render::MapDecorObject> decor;
+    // 出生点（[Waypoints] 节 → 引擎格；遭遇战开局用）
+    std::vector<std::pair<int, int>> waypoints;
     uint16_t water_tile() const { return water_tile_; } // 算法图水域瓦片号（0xFFFF=无水）
 
     void set_size(int w, int h);

@@ -135,6 +135,15 @@ bool StageMap::load(const ra2r::assets::MapFile& map, const ra2r::render::FileLo
     decor.clear();
     const ra2r::assets::TheaterConfig cfg = ra2r::assets::theater_config(theater);
     ra2r::render::build_scene_decor(map, cfg, load, false, decor);
+    // 出生点（[Waypoints]）：值 = ry·1000 + rx（原版地图空间）→ 引擎格。
+    // 公式与 OpenRA ImportRA2MapCommand.ReadWaypoints 一致（W = [Map] Size 宽）。
+    waypoints.clear();
+    for (const auto& [k, v] : map.ini().section("Waypoints")) {
+        (void)k;
+        const int pos = std::atoi(v.c_str());
+        const int ry = pos / 1000, rx = pos - ry * 1000;
+        waypoints.emplace_back((rx - ry + w - 1) / 2, rx + ry - w - 1);
+    }
     return true;
 }
 

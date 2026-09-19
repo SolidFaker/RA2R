@@ -18,4 +18,16 @@ TheaterConfig theater_config(const std::string& theater) {
     return {"tem", "TEMPERATMD.INI", "ISOTEM.PAL", "UNITTEM.PAL"};
 }
 
+char theater_code(const std::string& theater) {
+    std::string u = theater;
+    std::transform(u.begin(), u.end(), u.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    if (u == "SNOW") return 'A';
+    if (u == "URBAN") return 'U';
+    if (u == "DESERT") return 'D';
+    if (u == "LUNAR") return 'L';
+    if (u == "NEWURBAN") return 'N';
+    return 'T'; // TEMPERATE（及未知）
+}
+
 } // namespace ra2r::assets

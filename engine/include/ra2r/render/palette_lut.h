@@ -15,8 +15,10 @@ public:
     static constexpr int kColors = 256;
     static constexpr int kLevels = 32;
 
-    // pal_768: 256 × RGB（每通道 6 位）；内部展开为 256×32 RGBA 查找表
-    void build(const uint8_t* pal_768);
+    // pal_768: 256 × RGB（每通道 6 位）；内部展开为 256×32 RGBA 查找表。
+    // remap16（可选）：48 字节 = 16 × RGB，替换调色盘索引 16..31（阵营色重映射，
+    // 原版 Remap 段；见 assets::HouseRamp）。
+    void build(const uint8_t* pal_768, const uint8_t* remap16 = nullptr);
 
     // 取色：idx 为调色板索引（0 输出全透明），level 为光照等级 0..31
     void rgba(uint8_t idx, int level, uint8_t& r, uint8_t& g, uint8_t& b, uint8_t& a) const;

@@ -453,6 +453,55 @@ void MapFile::overlay_draw_cell(int cx, int cy, int& dx_, int& dy_) const {
     if (!c.present) return;
     const uint8_t t = overlay_type(c.x, c.y);
     if (!is_low_bridge_piece(t) || overlay_data_at(c.x, c.y) != 0) return;
+    // 注意：相邻件可能同类型（成组时按"直线上 3 格"区分，非按类型唯一）。
+    // 如 atwar.yrm 桥连续 2 件同为 215/216，前者的中格会被后者的 ±1 扫描
+    // 抢先命中 → 后件画到前件位，自身 3 格缺画。正确判据：件 = 屏幕直线
+    // 上等步进的 3 格（origin→middle→tail 屏幕矢量一致；地图坐标因隔行
+    // 奇偶交替会记成 (0,+1)/(+1,+1) 交替，不能直接等步进比较）。
+    const int opx = cx * 60 + (cy & 1) * 30, opy = cy * 15;
+    int best_x = -1, best_y = -1;
+    for (int ddy = -1; ddy <= 1; ++ddy) {
+        for (int ddx = -1; ddx <= 1; ++ddx) {
+            if (!ddx && !ddy) continue;
+            const int nx = cx + ddx, ny = cy + ddy;
+            if (nx < 0 || ny < 0 || nx >= cell_w() || ny >= cell_h()) continue;
+            const MapCell& nc = cells_[static_cast<size_t>(ny) * cell_w() + nx];
+            if (!nc.present) continue;
+            if (overlay_type(nc.x, nc.y) != t || overlay_data_at(nc.x, nc.y) != 1) continue;
+            const int mpx = nx * 60 + (ny & 1) * 30, mpy = ny * 15;
+            const int stx = mpx - opx, sty = mpy - opy;
+            // 件步进必须是短对角（±30,±15）：地图上隔行列交替记成 (0,+1)/(+1,+1)，
+            // 屏幕上恒为沿等距轴一格；水平（±60,0）或长对角（±90,±15）不属于同件
+            // （那些是邻件中格/尾格，按类型+data 会误配成"水平直线件"）。
+            if (stx != 30 && stx != -30) continue;
+            if (sty != 15 && sty != -15) continue;
+            for (int tdy = -1; tdy <= 1; ++tdy) {
+                for (int tdx = -1; tdx <= 1; ++tdx) {
+                    if (!tdx && !tdy) continue;
+                    const int tx = nx + tdx, ty = ny + tdy;
+                    if (tx < 0 || ty < 0 || tx >= cell_w() || ty >= cell_h()) continue;
+                    const MapCell& tc = cells_[static_cast<size_t>(ty) * cell_w() + tx];
+                    if (!tc.present) continue;
+                    if (overlay_type(tc.x, tc.y) != t || overlay_data_at(tc.x, tc.y) != 2) continue;
+                    const int tpx = tx * 60 + (ty & 1) * 30, tpy = ty * 15;
+                    if (tpx - mpx == stx && tpy - mpy == sty) {
+                        best_x = nx;
+                        best_y = ny;
+                        break;
+                    }
+                }
+                if (best_x >= 0) break;
+            }
+            if (best_x >= 0) break;
+        }
+        if (best_x >= 0) break;
+    }
+    if (best_x >= 0) {
+        dx_ = best_x;
+        dy_ = best_y;
+        return;
+    }
+    // 退化：尾格缺失（截断数据）时退回首个同类型 data=1 邻格
     for (int ddy = -1; ddy <= 1; ++ddy) {
         for (int ddx = -1; ddx <= 1; ++ddx) {
             if (!ddx && !ddy) continue;

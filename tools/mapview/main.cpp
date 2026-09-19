@@ -351,8 +351,9 @@ static int run(int argc, char** argv) {
                 const int rx = static_cast<int>(i % 512), ry = static_cast<int>(i / 512);
                 const auto it = lat.find((static_cast<uint64_t>(rx) << 32) | ry);
                 if (it != lat.end())
-                    std::printf("ovldiag idx=%zu rx=%d ry=%d type=%d cell=(%d,%d)\n", i, rx, ry,
-                                ov[i], it->second.first, it->second.second);
+                    std::printf("ovldiag idx=%zu rx=%d ry=%d type=%d data=%d cell=(%d,%d)\n",
+                                i, rx, ry, ov[i], map.overlay_data_at(rx, ry),
+                                it->second.first, it->second.second);
                 else
                     std::printf("ovldiag idx=%zu rx=%d ry=%d type=%d cell=NONE\n", i, rx, ry,
                                 ov[i]);
@@ -393,7 +394,8 @@ static int run(int argc, char** argv) {
         placed.push_back({2, n.id, transpose ? n.cy : n.cx, transpose ? n.cx : n.cy, n.dir,
                           n.subcell, cell_h(n.cx, n.cy)});
     const ra2r::render::ObjectRenderStats ostats = ra2r::render::render_objects(
-        placed, ra2r::render::UnitPaletteCfg{cfg.unit_pal}, grid, load_file, bw, bh, ox, oy, canvas);
+        placed, ra2r::render::UnitPaletteCfg{cfg.unit_pal, map.theater()}, grid, load_file, bw,
+        bh, ox, oy, canvas);
     std::printf("objects: buildings=%d units=%d infantry=%d skipped=%d\n", ostats.buildings,
                 ostats.units, ostats.infantry, ostats.skipped);
 

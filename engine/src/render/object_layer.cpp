@@ -8,6 +8,7 @@
 
 #include "ra2r/assets/hva_file.h"
 #include "ra2r/assets/shp_file.h"
+#include "ra2r/assets/theater.h"
 #include "ra2r/assets/vxl_file.h"
 #include "ra2r/core/ini_file.h"
 #include "ra2r/render/palette_lut.h"
@@ -17,22 +18,25 @@ namespace ra2r::render {
 
 namespace {
 
-// 通用像素写入（带边界检查；alpha<255 时半透明混合——建造中建筑用）
+// 通用像素写入（带边界检查；alpha<255 时半透明混合——建造中建筑 + 阴影索引 1）
 void put_px(std::vector<uint8_t>& canvas, int bw, int bh, int x, int y, const uint8_t* src,
             uint8_t alpha = 255) {
     if (x < 0 || y < 0 || x >= bw || y >= bh || src[3] == 0) return;
+    // 源 alpha（索引 1 = 阴影 140）与调用方 alpha（建造中淡入）相乘
+    const int ea = static_cast<int>(src[3]) * alpha / 255;
+    if (ea == 0) return;
     uint8_t* d = canvas.data() + (static_cast<size_t>(y) * bw + x) * 4;
-    if (alpha >= 255) {
+    if (ea >= 255) {
         d[0] = src[0];
         d[1] = src[1];
         d[2] = src[2];
         d[3] = 255;
         return;
     }
-    const uint8_t ia = static_cast<uint8_t>(255 - alpha);
-    d[0] = static_cast<uint8_t>((src[0] * alpha + d[0] * ia) / 255);
-    d[1] = static_cast<uint8_t>((src[1] * alpha + d[1] * ia) / 255);
-    d[2] = static_cast<uint8_t>((src[2] * alpha + d[2] * ia) / 255);
+    const uint8_t ia = static_cast<uint8_t>(255 - ea);
+    d[0] = static_cast<uint8_t>((src[0] * ea + d[0] * ia) / 255);
+    d[1] = static_cast<uint8_t>((src[1] * ea + d[1] * ia) / 255);
+    d[2] = static_cast<uint8_t>((src[2] * ea + d[2] * ia) / 255);
     d[3] = 255;
 }
 
@@ -59,6 +63,21 @@ std::vector<uint8_t> shp_frame_rgba(const ra2r::assets::ShpFile& shp, int frame_
 }
 
 } // namespace
+
+std::string resolve_art_name(const std::string& image, const std::string& theater,
+                             const FileLoader& load) {
+    if (image.size() < 2 || !load) return image;
+    const auto has = [&](const std::string& n) { return load(n + ".SHP") != nullptr; };
+    // 先换剧场代号（类型名第 2 字母是雪 'A'，直接按原名加载会拿到雪地美术），
+    // 再回退通用 'G'，最后才用原名。
+    const char codes[2] = {ra2r::assets::theater_code(theater), 'G'};
+    for (char c : codes) {
+        std::string v = image;
+        v[1] = c;
+        if (v != image && has(v)) return v;
+    }
+    return image;
+}
 
 ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                                  const UnitPaletteCfg& cfg,
@@ -104,16 +123,27 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
             cache->art_ready = true;
         }
     }
-    // 单位调色盘（剧场单位盘；建筑/步兵共用）
-    ra2r::render::PaletteLut ulut;
-    bool have_upal = false;
-    {
-        const auto* upal = load(cfg.unit_pal);
-        if (upal && upal->size() >= 768) {
-            ulut.build(upal->data());
-            have_upal = true;
-        }
-    }
+    // 单位调色盘（剧场单位盘；建筑/步兵共用）+ 阵营色重映射 LUT（按 remap 下标缓存）
+    const std::vector<uint8_t>* upal = load(cfg.unit_pal);
+    const bool have_upal = upal && upal->size() >= 768;
+    std::map<int, ra2r::render::PaletteLut> luts;
+    const auto lut_for = [&](int remap) -> const ra2r::render::PaletteLut* {
+        if (!have_upal) return nullptr;
+        const auto it = luts.find(remap);
+        if (it != luts.end()) return &it->second;
+        const uint8_t* rm = nullptr;
+        if (remap > 0 && cfg.house_ramps && remap <= static_cast<int>(cfg.house_ramps->size()))
+            rm = (*cfg.house_ramps)[static_cast<size_t>(remap - 1)].rgb[0];
+        ra2r::render::PaletteLut& l = luts[remap];
+        l.build(upal->data(), rm);
+        return &l;
+    };
+    const auto ramp_ptr = [&](int remap) -> const uint8_t* {
+        if (remap <= 0 || !cfg.house_ramps ||
+            remap > static_cast<int>(cfg.house_ramps->size()))
+            return nullptr;
+        return (*cfg.house_ramps)[static_cast<size_t>(remap - 1)].rgb[0];
+    };
     // 对象列表统一按 (cx+cy, cx) 排序
     struct Obj {
         int cx, cy, depth;
@@ -126,13 +156,15 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
         uint8_t alpha;    // 透明度（建造中建筑半透明）
         int hp;           // 建筑血量（受损帧切换）
         float build_p;    // 建筑建造进度（<0 = 建成）
+        int remap;        // 阵营色重映射下标（0 = 无）
         int seq;          // 原始序号（确定性决胜：同格对象稳定排序）
     };
     std::vector<Obj> sorted;
     for (size_t i = 0; i < objs.size(); ++i) {
         const auto& o = objs[i];
         sorted.push_back({o.cx, o.cy, o.cx + o.cy, o.kind, o.id, o.dir, o.subcell, o.height,
-                          o.off_x, o.off_y, o.alpha, o.hp, o.build_p, static_cast<int>(i)});
+                          o.off_x, o.off_y, o.alpha, o.hp, o.build_p, o.remap,
+                          static_cast<int>(i)});
     }
     std::sort(sorted.begin(), sorted.end(), [](const Obj& a, const Obj& b) {
         if (a.cy != b.cy) return a.cy < b.cy; // 砖墙行序（后行盖前行）
@@ -149,10 +181,10 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
             // 投影为 RA2 斜投影（pitch=0：体素 z 轴垂直屏幕，载具贴地不倾倒）
             // 美术名 = artmd/rulesmd Image=（如 AMCV → MCV），缺省用 id
             const auto& img_name = art_images.count(o.id) ? art_images[o.id] : o.id;
-            // 体素光栅缓存（按 美术名|朝向|比例16；跨帧复用）
+            // 体素光栅缓存（按 美术名|朝向|比例16|阵营色；跨帧复用）
             const int scale16 = static_cast<int>(std::clamp(obj_scale, 0.1f, 4.0f) * 16.0f);
             const std::string vkey = img_name + '|' + std::to_string(o.dir) + '|' +
-                                     std::to_string(scale16);
+                                     std::to_string(scale16) + '|' + std::to_string(o.remap);
             const ObjectRenderCache::VoxelEntry* vent = nullptr;
             if (cache && cache->voxels.count(vkey)) {
                 vent = &cache->voxels[vkey];
@@ -173,6 +205,24 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                 if (const auto* hraw = load(img_name + ".HVA")) {
                     have_hva = hva.open(hraw->data(), hraw->size());
                 }
+                // 炮塔/炮管是独立体素模型（原版命名：<Image>TUR.VXL、<Image>BARL.VXL，
+                // 如 GTNK + GTNKTUR + GTNKBARL），三件同坐标系，必须一起深度合成，
+                // 否则坦克只剩底盘、炮塔悬空缺失。
+                ra2r::assets::VxlFile tvxl, bvxl;
+                ra2r::assets::HvaFile thva, bhva;
+                bool have_tur = false, have_barl = false, have_thva = false, have_bhva = false;
+                if (const auto* traw = load(img_name + "TUR.VXL")) {
+                    have_tur = tvxl.open(traw->data(), traw->size(), &err);
+                    if (have_tur)
+                        if (const auto* thraw = load(img_name + "TUR.HVA"))
+                            have_thva = thva.open(thraw->data(), thraw->size());
+                }
+                if (const auto* braw = load(img_name + "BARL.VXL")) {
+                    have_barl = bvxl.open(braw->data(), braw->size(), &err);
+                    if (have_barl)
+                        if (const auto* bhraw = load(img_name + "BARL.HVA"))
+                            have_bhva = bhva.open(bhraw->data(), bhraw->size());
+                }
                 ra2r::render::VoxelView view;
                 // 朝向：RA2 dir 0=右上(与格平行) 32=右(与水平线平行) 64=右下…，
                 // 体素模型车头 = +x 轴（实测 TNKD 炮管向 +x 延伸：x+ 35.5 vs x− 21.5）
@@ -180,14 +230,23 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                 view.yaw = o.dir / 256.0f * 6.2831853f - 1.5707963f;
                 view.pitch = 0.0f;
                 view.scale = std::clamp(obj_scale, 0.1f, 4.0f);
+                view.remap = ramp_ptr(o.remap);
                 float ax = 0, ay = 0;
-                const auto img = ra2r::render::rasterize_voxel_model(
-                    vxl, have_hva ? &hva : nullptr, 0, view, &ax, &ay);
+                const ra2r::render::VoxelPart parts[3] = {
+                    {&vxl, have_hva ? &hva : nullptr, 0},
+                    {have_tur ? &tvxl : nullptr, have_thva ? &thva : nullptr, 0},
+                    {have_barl ? &bvxl : nullptr, have_bhva ? &bhva : nullptr, 0}};
+                float bx = 0, by = 0;
+                const auto img = ra2r::render::rasterize_voxel_parts(
+                    parts, 1 + (have_tur ? 1u : 0u) + (have_barl ? 1u : 0u), view, &ax, &ay,
+                    &bx, &by);
                 ObjectRenderCache::VoxelEntry ent;
                 ent.w = img.w;
                 ent.h = img.h;
                 ent.ax = static_cast<int>(ax);
                 ent.ay = static_cast<int>(ay);
+                ent.bx = static_cast<int>(bx);
+                ent.by = static_cast<int>(by);
                 ent.rgba = img.rgba;
                 if (cache) {
                     vent = &cache->voxels.emplace(vkey, std::move(ent)).first->second;
@@ -248,15 +307,16 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
             const int facing = (o.dir + 16) / 32 % 8;
             const int frame_i =
                 std::min<int>(shp.frame_count() - 1, seq_start + facing * seq_stride);
-            // 步兵帧 RGBA 缓存（按 美术名|帧号；朝向帧跨帧复用）
-            const std::string ikey = img_name + '|' + std::to_string(frame_i);
+            // 步兵帧 RGBA 缓存（按 美术名|帧号|阵营色；朝向帧跨帧复用）
+            const std::string ikey =
+                img_name + '|' + std::to_string(frame_i) + '|' + std::to_string(o.remap);
             ObjectRenderCache::BldEntry ient;
             bool have_ient = false;
             if (cache && cache->shp_frames.count(ikey)) {
                 ient = cache->shp_frames[ikey];
                 have_ient = true;
             } else {
-                const auto rgba = shp_frame_rgba(shp, frame_i, ulut);
+                const auto rgba = shp_frame_rgba(shp, frame_i, *lut_for(o.remap));
                 if (rgba.empty()) {
                     ++stats.skipped;
                     continue;
@@ -298,42 +358,66 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
             //   （原版"建筑生长"观感）；hp<128 → 受损帧。
             // 原版规则（ra2diy 实测）：本体位置 = 地基"最顶上尖的那一格" =
             // 地图存储的顶格 (cx,cy)，锚点 = 该格中心；精灵以画布中心对齐。
-            const auto& img_name = art_images.count(o.id) ? art_images[o.id] : o.id;
+            // 美术名经 NewTheater 回退链解析（GTGCAN → GAGCAN.SHP 等）。
+            const auto& img_name = resolve_art_name(
+                art_images.count(o.id) ? art_images[o.id] : o.id, cfg.theater, load);
+            // 建造/展开动画（artmd Buildup=，如 GACNSTMK/YACNSTMK）：建造中优先播放
+            // 该 SHP 的逐帧序列（原版"建筑拔地而起"），无 Buildup 才退回 make 帧缩放。
+            const std::string art_sec = have_art && art.has_section(o.id) ? o.id : img_name;
+            const std::string buildup_name =
+                have_art ? art.get(art_sec, "Buildup", "") : std::string();
+            const bool constructing = o.build_p >= 0.0f;
+            ra2r::assets::ShpFile bshp;
+            bool have_buildup = false;
+            if (constructing && !buildup_name.empty()) {
+                if (const auto* braw = load(buildup_name + ".SHP")) {
+                    std::string berr;
+                    have_buildup = bshp.open(braw->data(), braw->size(), &berr) &&
+                                   bshp.frame_count() > 0;
+                }
+            }
             const auto* raw = load(img_name + ".SHP");
-            if (!raw || !have_upal) {
+            if (!have_upal || (!raw && !have_buildup)) {
                 ++stats.skipped;
                 continue;
             }
             ra2r::assets::ShpFile shp;
             std::string err;
-            if (!shp.open(raw->data(), raw->size(), &err) || shp.frame_count() == 0) {
-                ++stats.skipped;
-                continue;
+            if (raw && (!shp.open(raw->data(), raw->size(), &err) || shp.frame_count() == 0)) {
+                if (!have_buildup) {
+                    ++stats.skipped;
+                    continue;
+                }
             }
             const int n = static_cast<int>(shp.frame_count());
-            const bool constructing = o.build_p >= 0.0f;
             const int fi = constructing ? std::min(2, n - 1)
                                         : (o.hp < 128 && n > 1 ? std::min(1, n - 1) : 0);
-            // 帧 RGBA 缓存（通用 SHP 帧缓存：美术名|帧号）
-            const auto get_entry = [&](int f, ObjectRenderCache::BldEntry& ent) -> bool {
-                const std::string key = img_name + '|' + std::to_string(f);
+            // 帧 RGBA 缓存（通用 SHP 帧缓存：美术名|帧号|阵营色）
+            const auto entry_of = [&](const ra2r::assets::ShpFile& s, const std::string& sname,
+                                      int f, int remap, ObjectRenderCache::BldEntry& ent) -> bool {
+                const std::string key =
+                    sname + '|' + std::to_string(f) + '|' + std::to_string(remap);
                 if (cache && cache->shp_frames.count(key)) {
                     ent = cache->shp_frames[key];
                     return true;
                 }
-                const auto& frame = shp.frame(f);
+                if (f < 0 || f >= static_cast<int>(s.frame_count())) return false;
+                const auto& frame = s.frame(f);
                 if (frame.cx == 0 || frame.cy == 0) return false;
-                const auto rgba = shp_frame_rgba(shp, f, ulut);
+                const auto rgba = shp_frame_rgba(s, f, *lut_for(remap));
                 if (rgba.empty()) return false;
                 ent.rgba = rgba;
                 ent.cx = frame.cx;
                 ent.cy = frame.cy;
                 ent.fx = frame.x;
                 ent.fy = frame.y;
-                ent.canvas_w = shp.width();
-                ent.canvas_h = shp.height();
+                ent.canvas_w = s.width();
+                ent.canvas_h = s.height();
                 if (cache) cache->shp_frames.emplace(key, ent);
                 return true;
+            };
+            const auto get_entry = [&](int f, ObjectRenderCache::BldEntry& ent) -> bool {
+                return entry_of(shp, img_name, f, o.remap, ent);
             };
             const float ax = ox + o.cx * 60.0f + (o.cy & 1) * 30.0f + 30.0f;
             // y 锚点 = 顶格顶顶点（格中心再上移半格 15px，原版观感实测）
@@ -360,8 +444,36 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                     }
                 }
             };
+            // ── 建造/展开动画：按进度取 Buildup 的**建造段**帧（原版 Buildup SHP 与
+            //    建筑本体同构：前半为建造帧、后半为同数阴影帧），画完即完成 ──
+            if (have_buildup) {
+                const int bn = static_cast<int>(bshp.frame_count());
+                const int sh = ra2r::assets::shp_shadow_start(bshp);
+                const int make_n = sh > 0 ? sh : bn; // 建造段帧数（无阴影段则全部）
+                const int bf = std::clamp(static_cast<int>(o.build_p * make_n), 0, make_n - 1);
+                ObjectRenderCache::BldEntry bent;
+                if (entry_of(bshp, buildup_name, bf, o.remap, bent))
+                    blit_entry(bent, 1.0f, o.alpha);
+                ++stats.buildings;
+                continue;
+            }
             ObjectRenderCache::BldEntry shadow, sprite;
-            if (n > fi + 3 && get_entry(fi + 3, shadow)) {
+            // 阴影帧起点：本体后半全为阴影/空帧时 = n/2（6 帧建筑 = 3、8 帧 = 4，
+            // 如 CAOILD/CAHOSP 的 8 帧本体）；不再用固定 +3——8 帧本体 +3 会取到
+            // 建造（彩色脚手架）帧，画成建筑下方的彩色乱图。
+            int sh_start = -1;
+            if (cache) {
+                const auto it = cache->body_shadow.find(img_name);
+                if (it != cache->body_shadow.end()) {
+                    sh_start = it->second;
+                } else {
+                    sh_start = ra2r::assets::shp_shadow_start(shp);
+                    cache->body_shadow.emplace(img_name, sh_start);
+                }
+            } else {
+                sh_start = ra2r::assets::shp_shadow_start(shp);
+            }
+            if (sh_start >= 0 && sh_start + fi < n && get_entry(sh_start + fi, shadow)) {
                 const float s0 = constructing ? std::clamp(0.25f + 0.75f * o.build_p, 0.25f,
                                                           1.0f)
                                               : 1.0f;
@@ -373,6 +485,8 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                                               : 1.0f;
                 blit_entry(sprite, s0, o.alpha);
             }
+            // 建筑体素炮塔：由 stage 侧 draw_bld_turret_voxel 统一绘制
+            // （rulesmd Turret=/TurretAnim=/TurretAnimX/Y 驱动 + HVA 动画时钟）。
             ++stats.buildings;
         }
     }
@@ -415,11 +529,32 @@ ShowcaseResult run_showcase(const std::vector<std::string>& vxl_names, const Fil
         if (const auto* hraw = load(base + ".HVA")) {
             have_hva = hva.open(hraw->data(), hraw->size());
         }
+        // 炮塔/炮管独立体素（<Image>TUR.VXL / <Image>BARL.VXL）一并合成，
+        // 否则陈列里只有车体
+        ra2r::assets::VxlFile tvxl, bvxl;
+        ra2r::assets::HvaFile thva, bhva;
+        bool have_tur = false, have_barl = false, have_thva = false, have_bhva = false;
+        if (const auto* traw = load(base + "TUR.VXL")) {
+            have_tur = tvxl.open(traw->data(), traw->size(), &err);
+            if (have_tur)
+                if (const auto* thraw = load(base + "TUR.HVA"))
+                    have_thva = thva.open(thraw->data(), thraw->size());
+        }
+        if (const auto* braw = load(base + "BARL.VXL")) {
+            have_barl = bvxl.open(braw->data(), braw->size(), &err);
+            if (have_barl)
+                if (const auto* bhraw = load(base + "BARL.HVA"))
+                    have_bhva = bhva.open(bhraw->data(), bhraw->size());
+        }
         ra2r::render::VoxelView view;
         view.scale = std::clamp(scale, 1, 3);
         float ax = 0, ay = 0;
-        const auto img = ra2r::render::rasterize_voxel_section(
-            vxl, have_hva ? &hva : nullptr, 0, 0, view, &ax, &ay);
+        const ra2r::render::VoxelPart parts[3] = {
+            {&vxl, have_hva ? &hva : nullptr, 0},
+            {have_tur ? &tvxl : nullptr, have_thva ? &thva : nullptr, 0},
+            {have_barl ? &bvxl : nullptr, have_bhva ? &bhva : nullptr, 0}};
+        const auto img = ra2r::render::rasterize_voxel_parts(
+            parts, 1 + (have_tur ? 1u : 0u) + (have_barl ? 1u : 0u), view, &ax, &ay);
         const int gx = (idx % cols) * cell_w + (cell_w - img.w) / 2;
         const int gy = (idx / cols) * cell_h + (cell_h - img.h) / 2;
         for (int y = 0; y < img.h; ++y) {

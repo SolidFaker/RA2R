@@ -416,7 +416,7 @@ bool SimWorld::tick() {
         if (b.alive && b.under_construction) {
             if (++b.build_ticks >= b.build_total) {
                 b.under_construction = false;
-                b.hp = 256;
+                b.hp = b.max_hp;
                 changed = true;
             }
         }
@@ -426,10 +426,53 @@ bool SimWorld::tick() {
             changed = true;
         }
     }
-    // ── 电力净值（产 − 耗；建造中不供电；低电惩罚 M4）──
+    // ── 电力净值（产 − 耗；建造中不供电）+ 低电惩罚 ──
+    // RA2 语义：净电力 < 0 时该 House 生产减速（此处取建造推进 ×1/2，
+    // 奇数帧不推进，确定性）；低电影响武器 ROF/雷达留 M5。
     power_net.clear();
     for (const auto& b : buildings) {
         if (b.alive && !b.under_construction) power_net[b.owner] += b.power;
+    }
+    ++logic_ticks;
+    // ── 建造队列推进（遭遇战：排队 → 进度 → 待放置；低电 ×1/2）──
+    for (auto& [owner, item] : build_queue) {
+        (void)owner;
+        if (item.ready) continue;
+        const auto pit = power_net.find(owner);
+        const bool low_power = pit != power_net.end() && pit->second < 0;
+        if (low_power && (logic_ticks & 1)) continue; // 低电：隔帧推进
+        if (++item.ticks >= item.total) {
+            item.ready = true;
+            changed = true;
+        }
+    }
+    // ── 修理推进（M4）：回血 + 等比扣款；满血自动停 ──
+    // 修理经济：RepairRate = Cost 的 2%/秒（rulesmd [General] 缺省档），
+    // 即回满全程花费 ≈ Cost·(1−hp/max)/1；每帧回血 repair_step_hp
+    // （stage 按 max_hp/总修理帧换算），扣款 = Cost/max_hp·step（亚元累计由
+    // 整数除法天然截断，确定性）。低电时修理同样减半（RA2 原版语义）。
+    for (auto& b : buildings) {
+        if (!b.alive || !b.repairing || b.under_construction) continue;
+        if (b.hp >= b.max_hp) {
+            b.repairing = false;
+            continue;
+        }
+        const auto pit = power_net.find(b.owner);
+        const bool low_power = pit != power_net.end() && pit->second < 0;
+        if (low_power && (logic_ticks & 1)) continue;
+        b.hp = std::min(b.max_hp, b.hp + b.repair_step_hp);
+        if (b.max_hp > 0 && b.cost > 0) {
+            const int64_t step_cost =
+                (static_cast<int64_t>(b.cost) * b.repair_step_hp + b.max_hp - 1) / b.max_hp;
+            auto cit = credits.find(b.owner);
+            if (cit != credits.end() && cit->second >= step_cost) {
+                cit->second -= step_cost;
+            } else if (cit != credits.end()) {
+                cit->second = 0;
+                b.repairing = false; // 资金耗尽停修
+            }
+        }
+        changed = true;
     }
     // ── 死亡结算（固定序：先标记，后整批移除并重映射目标下标）──
     bool any_death = false;
@@ -443,8 +486,10 @@ bool SimWorld::tick() {
     for (auto& b : buildings) {
         if (b.alive && b.hp <= 0) {
             b.alive = false;
-            explosions.push_back({b.col, b.row, 45, 0});
+            if (!b.sold) explosions.push_back({b.col, b.row, 45, 0}); // 出售无爆炸
             any_death = true;
+        } else if (!b.alive) {
+            any_death = true; // 出售等已置 dead 的也要进清扫（解除阻挡）
         }
     }
     if (any_death) {
@@ -613,19 +658,71 @@ void SimWorld::set_unit_owner(size_t idx, const std::string& owner) {
 
 bool SimWorld::issue_build(const std::string& owner, const std::string& type, int col, int row,
                            int fw, int fh, int cost, int build_total, int power) {
+    if (!can_place(col, row, fw, fh)) return false;
+    auto it = credits.find(owner);
+    if (it == credits.end() || it->second < cost) return false;
+    it->second -= cost; // 立即扣款
+    return spawn_building(owner, type, col, row, fw, fh, cost, power, true, build_total, 256) != 0;
+}
+
+// ── 遭遇战流程（M4）──
+
+bool SimWorld::can_place(int col, int row, int fw, int fh) const {
     if (fw < 1) fw = 1;
     if (fh < 1) fh = 1;
-    // 地基校验（引擎空间矩形近似；原版菱形地基换算待 M4）
-    for (int j = 0; j < fh; ++j) {
+    for (int j = 0; j < fh; ++j)
         for (int i = 0; i < fw; ++i) {
             const int x = col + i, y = row + j;
             if (x < 0 || y < 0 || x >= w || y >= h) return false;
             if (blocked[static_cast<size_t>(y) * w + x]) return false;
         }
+    return true;
+}
+
+uint32_t SimWorld::spawn_unit(const std::string& owner, const std::string& type, int kind,
+                              int col, int row, uint8_t dir, const SimWeapon& w, bool is_miner,
+                              int capacity, int speed) {
+    if (kind < 1) kind = 1;
+    SimUnit u;
+    u.id = next_id++;
+    u.owner = owner;
+    u.type = type;
+    u.kind = kind;
+    u.col = u.next_col = col;
+    u.row = u.next_row = row;
+    u.dir = dir;
+    u.weapon = w;
+    u.is_miner = is_miner;
+    u.capacity = capacity > 0 ? capacity : 20;
+    u.speed = speed > 0 ? speed : (kind == 2 ? 51 : 68);
+    if (!credits.count(owner)) credits[owner] = 10000;
+    units.push_back(std::move(u));
+    return units.back().id;
+}
+
+bool SimWorld::remove_unit(size_t idx) {
+    if (idx >= units.size()) return false;
+    units.erase(units.begin() + static_cast<std::ptrdiff_t>(idx));
+    // 目标下标重映射（与死亡结算同规则：指向被移除单位的指令清空）
+    for (auto& u : units) {
+        if (u.target < 0) continue;
+        if (u.order == kOrderAttackUnit || u.order == kOrderGuard) {
+            if (u.target == static_cast<int>(idx)) {
+                u.order = kOrderNone;
+                u.target = -1;
+                u.path.clear();
+            } else if (u.target > static_cast<int>(idx)) {
+                --u.target;
+            }
+        }
     }
-    auto it = credits.find(owner);
-    if (it == credits.end() || it->second < cost) return false;
-    it->second -= cost; // 立即扣款
+    return true;
+}
+
+uint32_t SimWorld::spawn_building(const std::string& owner, const std::string& type, int col,
+                                  int row, int fw, int fh, int cost, int power,
+                                  bool under_construction, int build_total, int max_hp) {
+    if (!can_place(col, row, fw, fh)) return 0;
     SimBuilding b;
     b.id = next_id++;
     b.owner = owner;
@@ -635,18 +732,92 @@ bool SimWorld::issue_build(const std::string& owner, const std::string& type, in
     b.fw = fw;
     b.fh = fh;
     b.rect_footprint = true;
-    b.under_construction = true;
-    b.build_total = build_total > 0 ? build_total : 1;
     b.cost = cost;
     b.power = power;
-    b.hp = 1; // 建造中 1 血，完成补满
+    b.max_hp = max_hp > 0 ? max_hp : 256;
+    b.under_construction = under_construction;
+    b.build_total = build_total > 0 ? build_total : 1;
+    b.build_ticks = 0;
+    b.hp = under_construction ? 1 : b.max_hp;
     for (int j = 0; j < fh; ++j)
         for (int i = 0; i < fw; ++i) {
             blocked[static_cast<size_t>(row + j) * w + (col + i)] = 1;
             b.footprint_cells.emplace_back(col + i, row + j);
         }
+    if (!credits.count(owner)) credits[owner] = 10000;
     buildings.push_back(std::move(b));
+    return buildings.back().id;
+}
+
+bool SimWorld::queue_build(const std::string& owner, const std::string& type, int cost,
+                           int total_ticks) {
+    if (build_queue.count(owner)) return false; // 单队列：已有在建项
+    auto it = credits.find(owner);
+    if (it == credits.end() || it->second < cost) return false;
+    it->second -= cost; // RA2 在排队时扣款
+    BuildQueueItem item;
+    item.type = type;
+    item.cost = cost;
+    item.total = total_ticks > 0 ? total_ticks : 1;
+    build_queue[owner] = std::move(item);
     return true;
+}
+
+bool SimWorld::cancel_build(const std::string& owner, int refund_percent) {
+    const auto it = build_queue.find(owner);
+    if (it == build_queue.end()) return false;
+    const int64_t refund = static_cast<int64_t>(it->second.cost) * refund_percent / 100;
+    credits[owner] += refund;
+    build_queue.erase(it);
+    return true;
+}
+
+bool SimWorld::toggle_repair(size_t building_idx) {
+    if (building_idx >= buildings.size()) return false;
+    SimBuilding& b = buildings[building_idx];
+    if (!b.alive || b.under_construction || b.hp >= b.max_hp) return false;
+    b.repairing = !b.repairing;
+    // 步长 ≈ 满修 300 逻辑帧（15fps ≈ 20s，接近原版修理节奏）
+    b.repair_step_hp = std::max(1, b.max_hp / 300);
+    return b.repairing;
+}
+
+int64_t SimWorld::sell_building(size_t building_idx, int refund_percent) {
+    if (building_idx >= buildings.size()) return -1;
+    SimBuilding& b = buildings[building_idx];
+    if (!b.alive || b.under_construction) return -1;
+    // 退款 = Cost × RefundPercent% × 残血比（原版打折语义的近似：卖伤楼折价）
+    const int64_t hp_frac = b.max_hp > 0 ? (b.hp * 100 / b.max_hp) : 0;
+    const int64_t refund =
+        static_cast<int64_t>(b.cost) * refund_percent / 100 * hp_frac / 100;
+    credits[b.owner] += refund;
+    b.alive = false; // 死亡结算统一解除阻挡并整批移除
+    b.sold = true;   // 静默移除（无爆炸）
+    b.repairing = false;
+    return refund;
+}
+
+bool SimWorld::build_ready(const std::string& owner) const {
+    const auto it = build_queue.find(owner);
+    return it != build_queue.end() && it->second.ready;
+}
+
+bool SimWorld::take_ready_build(const std::string& owner, std::string* type) {
+    const auto it = build_queue.find(owner);
+    if (it == build_queue.end() || !it->second.ready) return false;
+    if (type) *type = it->second.type;
+    build_queue.erase(it);
+    return true;
+}
+
+bool SimWorld::has_building(const std::string& owner, const std::string& type,
+                            bool completed_only) const {
+    for (const auto& b : buildings) {
+        if (!b.alive || b.owner != owner) continue;
+        if (completed_only && b.under_construction) continue;
+        if (b.type == type) return true;
+    }
+    return false;
 }
 
 uint64_t SimWorld::visual_hash() const {
@@ -678,6 +849,12 @@ uint64_t SimWorld::visual_hash() const {
     }
     mix(explosions.size());
     for (const auto& e : explosions) mix(static_cast<uint64_t>(e.elapsed));
+    // 建造队列（进度条/就绪提示需触发重绘）
+    for (const auto& [owner, item] : build_queue) {
+        (void)owner;
+        mix(item.ticks);
+        mix(item.ready ? 1ull : 0ull);
+    }
     return h;
 }
 

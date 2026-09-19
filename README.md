@@ -57,7 +57,8 @@ build\tools\stage.exe --test                    # 模拟/渲染测试台
 
 洁净室逆向、本机实测驱动，见 [docs/formats/](docs/formats/)：
 
-mix（含 Blowfish/RSA 密钥派生）、shp、vxl、map、pcx、tmp、aud、csf、fnt、hva、palettes 等。
+mix（含 Blowfish/RSA 密钥派生）、shp、vxl、map、pcx、tmp、aud、csf、fnt、hva、palettes、
+[skirmish](docs/formats/skirmish.md)（遭遇战流程：出生点/基地车展开/科技树/阵营色）等。
 
 ## 架构与规划
 
@@ -66,7 +67,7 @@ mix（含 Blowfish/RSA 密钥派生）、shp、vxl、map、pcx、tmp、aud、csf
 | [docs/PLAN.md](docs/PLAN.md) | 项目规划、架构决策、里程碑 M0–M9、风险 |
 | [docs/REFERENCE.md](docs/REFERENCE.md) | 社区项目、格式文档与工具索引 |
 | [docs/design/](docs/design/) | 代码组织约定、缓存层设计 |
-| [docs/DEBUGGING.md](docs/DEBUGGING.md) | 调试与回归测试方法 |
+| [docs/DEBUGGING.md](docs/DEBUGGING.md) | 调试方法、踩坑记录（含 SHP 阴影/帧段、HVA、NewTheater 剧场代号等实测勘误） |
 
 ## 许可与法律
 

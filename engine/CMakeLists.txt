@@ -9,6 +9,7 @@ add_library(ra2r_engine STATIC
   src/assets/mix_file.cpp
   src/assets/pal_file.cpp
   src/assets/shp_file.cpp
+  src/assets/shp_layout.cpp
   src/assets/vxl_file.cpp
   src/assets/lcw.cpp
   src/assets/lzo1x.cpp
@@ -33,6 +34,7 @@ add_library(ra2r_engine STATIC
   src/render/map_scene.cpp
   src/sim/pathfind.cpp
   src/sim/sim_world.cpp
+  src/sim/skirmish.cpp
 )
 target_include_directories(ra2r_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_definitions(ra2r_engine PUBLIC RA2R_ENGINE)

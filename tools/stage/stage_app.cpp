@@ -11,6 +11,7 @@
 
 #include "ra2r/assets/map_file.h"
 #include "ra2r/assets/shp_file.h"
+#include "ra2r/assets/shp_layout.h"
 #include "ra2r/assets/theater.h"
 #include "ra2r/assets/hva_file.h"
 #include "ra2r/assets/vxl_file.h"
@@ -363,7 +364,8 @@ void render_all(StageApp& a, std::string* error) {
     } else {
         objs = a.objects;
     }
-    const ra2r::render::UnitPaletteCfg upal{cfg.unit_pal};
+    const ra2r::render::UnitPaletteCfg upal{cfg.unit_pal, a.map.theater,
+                                            a.sk.ramps.empty() ? nullptr : &a.sk.ramps};
     // 身后类配件动画（YSort）画在全部对象之下
     if (a.sim_active) draw_building_anims(a, grid, bw, bh, ox, oy, canvas, true);
     a.obj_stats = ra2r::render::render_objects(objs, upal, grid,
@@ -377,6 +379,35 @@ void render_all(StageApp& a, std::string* error) {
     if (a.sim_active) {
         if (!a.selection.empty()) draw_selection_markers(a, grid, bw, bh, ox, oy, canvas);
         draw_sim_fx(a, grid, bw, bh, ox, oy, canvas);
+    }
+    // 建造落点预览（待放置建筑的地基格：绿色可放 / 红色被占）
+    if (a.placing && a.hover_cx >= 0 && a.hover_cy >= 0) {
+        const auto* bt = a.rules.unit(a.sim.build_queue.count("Player")
+                                          ? a.sim.build_queue["Player"].type
+                                          : std::string());
+        const int fw = bt ? bt->fw : 1, fh = bt ? bt->fh : 1;
+        const bool ok = a.sim.can_place(a.hover_cx, a.hover_cy, fw, fh);
+        for (int j = 0; j < fh; ++j)
+            for (int i = 0; i < fw; ++i) {
+                int px, py;
+                grid.cell_to_pixel(a.hover_cx + i, a.hover_cy + j, px, py);
+                const int cxp = ox + px + grid.tile_w / 2;
+                const int cyp = oy + py + grid.tile_h / 2;
+                const uint8_t r = ok ? 60 : 220, g = ok ? 255 : 40, b = 60;
+                const auto dot = [&](int x, int y) {
+                    if (x < 0 || y < 0 || x >= bw || y >= bh) return;
+                    uint8_t* d = canvas.data() + (static_cast<size_t>(y) * bw + x) * 4;
+                    d[0] = r;
+                    d[1] = g;
+                    d[2] = b;
+                    d[3] = 255;
+                };
+                // 菱形描边（每 2px 一点，虚线观感）
+                for (int t = -30; t <= 30; t += 2) {
+                    dot(cxp + t, cyp - 15 + std::abs(t) / 2);
+                    dot(cxp + t, cyp + 15 - std::abs(t) / 2);
+                }
+            }
     }
     const auto t2 = std::chrono::steady_clock::now();
     // 上传纹理（呈现后端抽象：OpenGL / SDLRenderer）
@@ -409,31 +440,57 @@ void ensure_rules(StageApp& a) {
     }
     std::printf("rules: %zu 单位类型 %zu 武器（rulesmd/artmd 全量载入）\n",
                 a.rules.unit_count(), a.rules.weapon_count());
+    // 遭遇战 UI 列表：可选国家（Multiplay=yes）与阵营色（[Colors] 全部）
+    a.sk.player_countries.clear();
+    for (const auto& c : a.rules.countries())
+        if (c.multiplay) a.sk.player_countries.push_back(c.name);
+    a.sk.color_names.clear();
+    for (const auto& c : a.rules.colors()) a.sk.color_names.push_back(c.name);
+    if (a.sk.cfg.player.country.empty() && !a.sk.player_countries.empty()) {
+        a.sk.cfg.player.country = a.sk.player_countries[0];
+        a.sk.cfg.opponent.country = a.sk.player_countries[a.sk.player_countries.size() > 8 ? 8 : 0];
+    }
+    if (a.sk.cfg.player.color.empty() && !a.sk.color_names.empty())
+        a.sk.cfg.player.color = a.rules.country(a.sk.cfg.player.country)
+                                    ? a.rules.country(a.sk.cfg.player.country)->color
+                                    : a.sk.color_names[0];
+    if (a.sk.cfg.opponent.color.empty() && !a.sk.color_names.empty())
+        a.sk.cfg.opponent.color = a.rules.country(a.sk.cfg.opponent.country)
+                                      ? a.rules.country(a.sk.cfg.opponent.country)->color
+                                      : a.sk.color_names[0];
 }
 
 void append_sim_objects(StageApp& a, std::vector<ra2r::render::PlacedObject>& objects_out) {
     const IsometricGrid grid;
+    // 阵营色下标（House → ramps 下标+1；未开局/中立 = 0）
+    const auto remap_of = [&](const std::string& owner) -> uint8_t {
+        const auto it = a.sk.house_remap.find(owner);
+        return it != a.sk.house_remap.end() ? it->second : 0;
+    };
     // 建筑：BB 底座平台（矿场卸货台/重工出口台）先于建筑本体入列——
     // 同格按入列序绘制（object_layer 确定性决胜），底座压在建筑之下
     for (const auto& b : a.sim.buildings) {
         if (!b.alive) continue;
         if (b.col < 0 || b.row < 0 || b.col >= a.map.w || b.row >= a.map.h) continue;
         const auto* u = a.rules.unit(b.type);
+        const uint8_t rm = remap_of(b.owner);
         if (u && u->bib) {
             const std::string bib_name = u->image + "BB";
             if (load_file(a, bib_name + ".SHP"))
                 objects_out.push_back({0, bib_name, b.col, b.row, 0, 0,
                                        static_cast<int>(a.map.cell(b.col, b.row).height), 0, 0,
-                                       static_cast<uint8_t>(255), 256, -1.0f});
+                                       static_cast<uint8_t>(255), 256, -1.0f, rm});
         }
-        // 帧语义：idle/damaged-idle/make 由 hp/build_p 驱动（object_layer）
+        // 帧语义：idle/damaged-idle/make 由 hp/build_p 驱动（object_layer）；
+        // 建造中若有 artmd Buildup= 则播放其逐帧动画
         objects_out.push_back({0, b.type, b.col, b.row, 0, 0,
                                static_cast<int>(a.map.cell(b.col, b.row).height), 0, 0,
                                static_cast<uint8_t>(255), b.hp,
                                b.under_construction
                                    ? static_cast<float>(b.build_ticks) /
                                          std::max(1, b.build_total)
-                                   : -1.0f});
+                                   : -1.0f,
+                               rm});
     }
     for (size_t i = 0; i < a.sim.units.size(); ++i) {
         const ra2r::sim::SimUnit& u = a.sim.units[i];
@@ -447,7 +504,8 @@ void append_sim_objects(StageApp& a, std::vector<ra2r::render::PlacedObject>& ob
         const int off_y = ((ny - ty) * u.frac) / ra2r::sim::kFracMax;
         objects_out.push_back({u.kind, u.type, cx, cy,
                                static_cast<uint8_t>(u.dir * 32), 0,
-                               static_cast<int>(a.map.cell(cx, cy).height), off_x, off_y});
+                               static_cast<int>(a.map.cell(cx, cy).height), off_x, off_y,
+                               static_cast<uint8_t>(255), 256, -1.0f, remap_of(u.owner)});
     }
 }
 
@@ -560,18 +618,33 @@ void draw_sim_fx(StageApp& a, const IsometricGrid& grid, int bw, int bh, int ox,
 }
 
 namespace {
-// 动画 SHP 段长（原版布局，artmd 实证）：帧数 = 段长×4 时为四段
-// [正常动画][正常阴影][受损动画][受损阴影]；×2 时 [动画][阴影]；其余全帧。
-int anim_seg_len(const ra2r::assets::ShpFile& shp) {
-    const int n = static_cast<int>(shp.frame_count());
-    if (n % 4 == 0) return n / 4;
-    if (n % 2 == 0) return n / 2;
-    return n;
+// NewTheater 美术名回退：第 2 字母换剧场代号 → 'G' 通用 → 原名
+// （类型名第 2 字母是雪 'A'，按原名加载会拿到雪地美术）
+std::string resolve_art(StageApp& a, const std::string& name, const char* ext) {
+    if (name.size() < 2) return name;
+    const auto has = [&](const std::string& n) { return load_file(a, n + ext) != nullptr; };
+    const char codes[2] = {ra2r::assets::theater_code(a.map.theater), 'G'};
+    for (char c : codes) {
+        std::string v = name;
+        v[1] = c;
+        if (v != name && has(v)) return v;
+    }
+    return name;
 }
 
-// 单帧 blit（缓存 + 建筑锚点定位）；ax/ay = 建筑顶格顶顶点像素
-void blit_bld_shp_frame(StageApp& a, const std::string& art, int f, int ax, int ay, int bw,
+// 动画 SHP 分段布局（引擎按帧内容自判；按美术名缓存，判定需解码若干帧）
+const ra2r::assets::ShpLayout& anim_layout(StageApp& a, const std::string& art,
+                                           const ra2r::assets::ShpFile& shp) {
+    const auto it = a.obj_cache.anim_layouts.find(art);
+    if (it != a.obj_cache.anim_layouts.end()) return it->second;
+    return a.obj_cache.anim_layouts.emplace(art, ra2r::assets::shp_layout(shp)).first->second;
+}
+
+// 单帧 blit（缓存 + 建筑锚点定位）；ax/ay = 建筑顶格顶顶点像素。
+// 阴影帧像素为索引 1（PaletteLut 映射为 ARGB(140,0,0,0)），此处按 alpha 混合。
+void blit_bld_shp_frame(StageApp& a, const std::string& art_in, int f, int ax, int ay, int bw,
                         int bh, std::vector<uint8_t>& canvas) {
+    const std::string art = resolve_art(a, art_in, ".SHP");
     const auto* raw = load_file(a, art + ".SHP");
     if (!raw) return;
     ra2r::assets::ShpFile shp;
@@ -596,7 +669,7 @@ void blit_bld_shp_frame(StageApp& a, const std::string& art, int f, int ax, int 
             d[0] = r;
             d[1] = g;
             d[2] = b;
-            d[3] = 255;
+            d[3] = al; // 索引 1 → 140（阴影），其余 255
         }
         ent.cx = frame.cx;
         ent.cy = frame.cy;
@@ -611,15 +684,23 @@ void blit_bld_shp_frame(StageApp& a, const std::string& art, int f, int ax, int 
     for (int y = 0; y < ent.cy; ++y) {
         const uint8_t* s = ent.rgba.data() + static_cast<size_t>(y) * ent.cx * 4;
         for (int x = 0; x < ent.cx; ++x) {
-            if (s[x * 4 + 3]) {
-                const int px2 = bx + x, py2 = by + y;
-                if (px2 < 0 || py2 < 0 || px2 >= bw || py2 >= bh) continue;
-                uint8_t* d = canvas.data() + (static_cast<size_t>(py2) * bw + px2) * 4;
+            const uint8_t sa = s[x * 4 + 3];
+            if (!sa) continue;
+            const int px2 = bx + x, py2 = by + y;
+            if (px2 < 0 || py2 < 0 || px2 >= bw || py2 >= bh) continue;
+            uint8_t* d = canvas.data() + (static_cast<size_t>(py2) * bw + px2) * 4;
+            if (sa >= 255) {
                 d[0] = s[x * 4 + 0];
                 d[1] = s[x * 4 + 1];
                 d[2] = s[x * 4 + 2];
                 d[3] = 255;
+                continue;
             }
+            const uint8_t ia = static_cast<uint8_t>(255 - sa);
+            d[0] = static_cast<uint8_t>((s[x * 4 + 0] * sa + d[0] * ia) / 255);
+            d[1] = static_cast<uint8_t>((s[x * 4 + 1] * sa + d[1] * ia) / 255);
+            d[2] = static_cast<uint8_t>((s[x * 4 + 2] * sa + d[2] * ia) / 255);
+            d[3] = 255;
         }
     }
 }
@@ -627,27 +708,38 @@ void blit_bld_shp_frame(StageApp& a, const std::string& art, int f, int ax, int 
 // 单个配件动画帧绘制：锚点与建筑同语义（画布中心对顶格顶顶点）；
 // 配件 SHP 画布与建筑同尺寸（实测 GAWEAP 266x224 = GAWEAP_A = GAWEAPBB，
 // GAPOWR 142x110 = GAPOWR_A…），美术已自定位，无需偏移换算。
-// 帧布局（原版约定，artmd 实证）：四段 [动画][阴影][受损][受损阴影]。
-//   frame_i = 段内帧号（时钟 % 段长）；damaged=true 时切到受损段；
-//   阴影帧先画（垫底）、精灵帧置顶。
-void draw_bld_anim_frame(StageApp& a, const std::string& art, int frame_i, bool damaged,
+// 帧布局由 shp_layout 按帧内容自判：
+//   四段 [空闲 L][受损 L][空闲阴影 L][受损阴影 L]（受损变体在同文件第 2 段）
+//   两段 [动画 L][阴影 L]；单段 [动画 n]。
+// 阴影段起点恒为 n/2；受损帧 = 段 2（不是 n/2 处！旧实现把受损段当阴影画，
+// 造成光棱塔/磁暴塔"空闲动画与受损动画叠加"的观感）。阴影帧像素为索引 1，
+// 已由 PaletteLut 映射为半透明黑，按 alpha 混合垫底。
+void draw_bld_anim_frame(StageApp& a, const std::string& art_in, int frame_i, bool damaged,
                          int col, int row, int height,
                          const ra2r::render::IsometricGrid& grid, int bw, int bh, int ox,
                          int oy, std::vector<uint8_t>& canvas) {
+    const std::string art = resolve_art(a, art_in, ".SHP");
     const auto* raw = load_file(a, art + ".SHP");
     if (!raw) return;
     ra2r::assets::ShpFile shp;
     std::string err;
     if (!shp.open(raw->data(), raw->size(), &err) || shp.frame_count() == 0) return;
+    const auto& lay = anim_layout(a, art, shp);
     const int n = static_cast<int>(shp.frame_count());
-    const int len = anim_seg_len(shp);
-    const int base = (damaged && n >= 3 * len) ? 2 * len : 0; // 受损段 = 第 3 段
-    const int fi = base + frame_i % len;
+    const int L = std::max(1, lay.seg_len);
+    const int fi = ((frame_i % L) + L) % L;
+    int base = 0;
+    int shadow_base = lay.shadow_start;
+    if (damaged && lay.has_damaged) {
+        base = L;                        // 受损变体 = 第 2 段
+        shadow_base = lay.shadow_start + L; // 受损阴影 = 第 4 段
+    }
     // 建筑锚点（object_layer 建筑段同款）：顶格顶顶点
     const int ax = ox + col * 60 + (row & 1) * 30 + 30;
     const int ay = oy + row * 15 - height * ra2r::render::kHeightLevelPx;
-    if (n > fi + len) blit_bld_shp_frame(a, art, fi + len, ax, ay, bw, bh, canvas); // 阴影垫底
-    blit_bld_shp_frame(a, art, fi, ax, ay, bw, bh, canvas);
+    if (shadow_base >= 0 && shadow_base + fi < n)
+        blit_bld_shp_frame(a, art, shadow_base + fi, ax, ay, bw, bh, canvas); // 阴影垫底
+    if (base + fi < n) blit_bld_shp_frame(a, art, base + fi, ax, ay, bw, bh, canvas);
 }
 
 // SHP 炮塔（rulesmd Turret=yes + TurretAnim=，如 GAPILLTUR）：面向帧 =
@@ -657,7 +749,7 @@ void draw_bld_turret_shp(StageApp& a, const ra2r::assets::UnitTypeDef& u,
                          const ra2r::sim::SimBuilding& b, int hgt,
                          const ra2r::render::IsometricGrid& grid, int bw, int bh, int ox, int oy,
                          std::vector<uint8_t>& canvas) {
-    const auto* raw = load_file(a, u.turret_anim + ".SHP");
+    const auto* raw = load_file(a, resolve_art(a, u.turret_anim, ".SHP") + ".SHP");
     if (!raw) return;
     ra2r::assets::ShpFile shp;
     std::string err;
@@ -676,42 +768,103 @@ void draw_bld_turret_voxel(StageApp& a, const ra2r::assets::UnitTypeDef& u,
                            const ra2r::sim::SimBuilding& b, int hgt,
                            const ra2r::render::IsometricGrid& grid, int bw, int bh, int ox, int oy,
                            std::vector<uint8_t>& canvas) {
-    const auto* raw = load_file(a, u.turret_anim + ".VXL");
+    const std::string turret_art = resolve_art(a, u.turret_anim, ".VXL");
+    const auto* raw = load_file(a, turret_art + ".VXL");
     if (!raw) return;
     ra2r::assets::VxlFile vxl;
     std::string err;
     if (!vxl.open(raw->data(), raw->size(), &err)) return;
     ra2r::assets::HvaFile hva;
     bool have_hva = false;
-    if (const auto* hraw = load_file(a, u.turret_anim + ".HVA"))
+    if (const auto* hraw = load_file(a, turret_art + ".HVA"))
         have_hva = hva.open(hraw->data(), hraw->size());
-    // 枪管旋转：HVA 帧按逻辑帧时钟循环（每 2 帧一步）
-    int hva_frame = 0;
-    if (have_hva && hva.frame_count() > 1)
-        hva_frame = static_cast<int>((b.anim_clock / 2) % hva.frame_count());
+    // 炮管是独立体素模型：原版命名约定 <美术名>BARL.VXL（巨炮 GTGCANBARL、
+    // 坦克 GTNKBARL…），与炮塔同坐标系，必须一起做深度合成，否则缺炮管
+    // 且与炮塔互相穿插（TurretRecoil=yes 的炮塔都有这一件）。
+    const std::string barrel_art = resolve_art(a, u.image + "BARL", ".VXL");
+    ra2r::assets::VxlFile bvxl;
+    ra2r::assets::HvaFile bhva;
+    bool have_barrel = false, have_bhva = false;
+    if (const auto* braw = load_file(a, barrel_art + ".VXL")) {
+        have_barrel = bvxl.open(braw->data(), braw->size(), &err);
+        if (have_barrel)
+            if (const auto* bhraw = load_file(a, barrel_art + ".HVA"))
+                have_bhva = bhva.open(bhraw->data(), bhraw->size());
+    }
+    // 枪管旋转动画（HVA 多帧，如盖特机炮双管循环）：原版只在**开火时**旋转，
+    // 待机恒帧 0（否则炮管持续换位闪动）。开火驱动留 M5 战斗系统接入。
+    (void)0;
+    const int hva_frame = 0;
+    const int bhva_frame = 0;
+    // 比例与载具一致（OpenRA RenderVoxels.Scale 默认 12 全体共用，建筑炮塔
+    // 无独立比例；随 obj_scale 滑杆联动）
     const int scale16 = static_cast<int>(std::clamp(a.obj_scale, 0.1f, 4.0f) * 16.0f);
-    const std::string vkey = u.turret_anim + '|' + std::to_string(b.dir) + '|' +
-                             std::to_string(scale16) + '|' + std::to_string(hva_frame);
+    const std::string vkey = turret_art + '+' + (have_barrel ? barrel_art : std::string("-")) + '|' +
+                             std::to_string(b.dir) + '|' + std::to_string(scale16) + '|' +
+                             std::to_string(hva_frame) + '|' + std::to_string(bhva_frame);
     ra2r::render::ObjectRenderCache::VoxelEntry ent;
     if (!a.obj_cache.voxels.count(vkey)) {
         ra2r::render::VoxelView view;
         view.yaw = b.dir / 256.0f * 6.2831853f - 1.5707963f;
         view.pitch = 0.0f;
         view.scale = std::clamp(a.obj_scale, 0.1f, 4.0f);
-        float ax = 0, ay = 0;
-        const auto img = ra2r::render::rasterize_voxel_model(
-            vxl, have_hva ? &hva : nullptr, hva_frame, view, &ax, &ay);
+        float ax = 0, ay = 0, body_ax = 0, body_ay = 0, orig_ax = 0, orig_ay = 0;
+        const ra2r::render::VoxelPart parts[2] = {
+            {&vxl, have_hva ? &hva : nullptr, hva_frame},
+            {have_barrel ? &bvxl : nullptr, have_bhva ? &bhva : nullptr, bhva_frame}};
+        const auto img = ra2r::render::rasterize_voxel_parts(
+            parts, have_barrel ? 2u : 1u, view, &ax, &ay, &body_ax, &body_ay, &orig_ax,
+            &orig_ay);
         ent.w = img.w;
         ent.h = img.h;
-        ent.ax = static_cast<int>(ax);
-        ent.ay = static_cast<int>(ay);
+        // 锚点 = 模型原点 (0,0,0)【模型空间】在光栅中的位置——rules TurretAnimX/Y
+        // 以模型原点（炮塔枢轴）为参照（OpenRA pxOrigin 同款）。注意区别于
+        // 包围盒角锚（索引原点）：两者差 = mn 偏移经视角变换，曾造成 1~3px 错位。
+        ent.ax = static_cast<int>(std::lround(orig_ax));
+        ent.ay = static_cast<int>(std::lround(orig_ay));
+        (void)body_ax;
+        (void)body_ay;
         ent.rgba = img.rgba;
         a.obj_cache.voxels.emplace(vkey, ent);
     } else {
         ent = a.obj_cache.voxels[vkey];
     }
-    const int ax0 = ox + b.col * 60 + (b.row & 1) * 30 + 30 + u.turret_x;
-    const int ay0 = oy + b.row * 15 - hgt * ra2r::render::kHeightLevelPx + u.turret_y;
+    // 放置（原版 rulesmd `TurretAnimX/Y` 语义 + OpenRA 同款机制）：
+    //   炮塔**模型原点**落在「建筑锚点 + (TurretAnimX, TurretAnimY)」，
+    //   与 OpenRA 一致：`ModelRenderable` 把体素光栅定位在 pxOrigin（模型原点），
+    //   炮塔偏移是屏幕空间平移（`Turreted.Offset` → `ScreenVectorComponents`）。
+    // 依据（游戏自身建成帧美术 <建筑>MK.SHP 完成帧逐像素标定，画布中心=锚点）：
+    //   YAGGUN TurretAnim(0,15)：原点 (0,15) 时，炮塔接触点落在画布中心附近，
+    //     与美术 F1 最优解只差 x≈15px（该差值来自美术里炮管仰角与我们的水平姿态
+    //     不一致，属标定偏差）；改按"接触点落在 TurretAnimY"反而会下沉 13.6px。
+    //   GTGCAN TurretAnim(3,28) / NAFLAK (0,2) / NASAM (0,0) 同为该规则。
+    // 不用整模 AABB 中心：炮管朝向一变它摆 ±27px；也不用底座上的"炮塔座特征"
+    // 定位（会把巨炮的炮塔拉到平台一侧）。
+    // 放置语义（ModEnc 权威）：TurretAnimX/Y = 相对**建筑中心**的像素偏移
+    //（正 Y 向下），建筑中心 = 地基 fw×fh 各格中心的均值（此前用顶格中心，
+    // 2×2 巨炮差 (+30,+7.5)px —— 残余错位根源）；ZAdjust 是深度遮挡修正
+    //（正=朝观察者），非屏幕位移，本渲染器炮塔后画于底座之上，无需应用。
+    int fcx = 0, fcy = 0, fn = 0;
+    for (int j = 0; j < b.fh; ++j)
+        for (int i = 0; i < b.fw; ++i) {
+            fcx += ox + (b.col + i) * 60 + ((b.row + j) & 1) * 30 + 30;
+            fcy += oy + (b.row + j) * 15;
+            ++fn;
+        }
+    // TurretAnimX/Y 为勒普顿（1 格 = 256）：X·60/256、Y·30/256 换算像素。
+    //（ModEnc 记作 pixels 系讹传——以真值标定验证：换算后 GTGCAN≈(1,3)、
+    // YAGGUN≈(0,2)、NASAM(0,0)，与 MK 建成帧实测偏移全部吻合；
+    // 按 1:1 像素套用时巨炮下移 28px、盖特下移 15px，正是偏移过大的来源）
+    // 每建筑微调（用户对照原版目视校准；键=rulesmd 类型名）
+    static const std::map<std::string, std::pair<int, int>> kTurretNudge = {
+        {"YAGGUN", {-4, -13}},  // 盖特机炮：上移 13、左移 4（用户 GUI 校准）
+    };
+    const auto nit = kTurretNudge.find(b.type);
+    const int ndx = nit != kTurretNudge.end() ? nit->second.first : 0;
+    const int ndy = nit != kTurretNudge.end() ? nit->second.second : 0;
+    const int ax0 = fcx / fn + u.turret_x * 60 / 256 + ndx;
+    const int ay0 = fcy / fn + u.turret_y * 30 / 256 + ndy -
+                    hgt * ra2r::render::kHeightLevelPx;
     for (int y = 0; y < ent.h; ++y) {
         const uint8_t* s = ent.rgba.data() + static_cast<size_t>(y) * ent.w * 4;
         for (int x = 0; x < ent.w; ++x) {
@@ -742,42 +895,36 @@ void draw_building_anims(StageApp& a, const IsometricGrid& grid, int bw, int bh,
         if (!b.has_anim && !u->turret) continue;
         const int hgt = static_cast<int>(a.map.cell(b.col, b.row).height);
         const bool dmg = b.hp < 128;
+        // 受损变体：artmd 的 ActiveAnimDamaged=<名>_AD 在原版数据里并不存在
+        // （NATSLA_AD/GAPRIS_BD/CAOILD_AD 均无文件），受损帧其实是同一 SHP 的
+        // 第 2 段（见 shp_layout）；只有 _AD 文件真的存在时才用它。
+        const auto shp_exists = [&](const std::string& name) {
+            return !name.empty() && load_file(a, name + ".SHP") != nullptr;
+        };
+        const auto draw_anim = [&](const std::string& art, int clock, bool damaged_state) {
+            if (art.empty()) return;
+            if (damaged_state && shp_exists(art + "_AD")) {
+                draw_bld_anim_frame(a, art + "_AD", clock, false, b.col, b.row, hgt, grid, bw,
+                                    bh, ox, oy, canvas);
+                return;
+            }
+            draw_bld_anim_frame(a, art, clock, damaged_state, b.col, b.row, hgt, grid, bw, bh,
+                                ox, oy, canvas);
+        };
         if (behind) {
-            // 身后类（ActiveAnimYSort，如电厂后侧天线）：画在建筑之下
-            if (any_anim && !u->anim.empty() && u->anim_ysort) {
-                if (dmg && !u->anim_dmg.empty())
-                    draw_bld_anim_frame(a, u->anim_dmg, static_cast<int>(b.anim_clock), false,
-                                        b.col, b.row, hgt, grid, bw, bh, ox, oy, canvas);
-                else
-                    draw_bld_anim_frame(a, u->anim, static_cast<int>(b.anim_clock), dmg, b.col,
-                                        b.row, hgt, grid, bw, bh, ox, oy, canvas);
-            }
+            // 身后类（ActiveAnimYSort，如电厂后侧天线/油井摇臂）：画在建筑之下
+            if (any_anim && !u->anim.empty() && u->anim_ysort)
+                draw_anim(u->anim, static_cast<int>(b.anim_clock), dmg);
         } else {
-            // 身前类（工厂门/油井火焰等）+ 常驻配件（SpecialAnim，如光棱塔棱镜，
-            // 待机为静态帧，充能/开火帧归 M5 战斗）+ 炮塔
-            if (any_anim && !u->anim.empty() && !u->anim_ysort) {
-                if (dmg && !u->anim_dmg.empty())
-                    draw_bld_anim_frame(a, u->anim_dmg, static_cast<int>(b.anim_clock), false,
-                                        b.col, b.row, hgt, grid, bw, bh, ox, oy, canvas);
-                else
-                    draw_bld_anim_frame(a, u->anim, static_cast<int>(b.anim_clock), dmg, b.col,
-                                        b.row, hgt, grid, bw, bh, ox, oy, canvas);
-            }
-            if (!u->anim_two.empty())
-                draw_bld_anim_frame(a, u->anim_two, static_cast<int>(b.anim_clock), dmg, b.col,
-                                    b.row, hgt, grid, bw, bh, ox, oy, canvas);
+            // 身前类（工厂门/油井火焰等）
+            if (any_anim && !u->anim.empty() && !u->anim_ysort)
+                draw_anim(u->anim, static_cast<int>(b.anim_clock), dmg);
+            if (!u->anim_two.empty()) draw_anim(u->anim_two, static_cast<int>(b.anim_clock), dmg);
             if (!u->anim_three.empty())
-                draw_bld_anim_frame(a, u->anim_three, static_cast<int>(b.anim_clock), dmg, b.col,
-                                    b.row, hgt, grid, bw, bh, ox, oy, canvas);
-            if (!u->special.empty()) {
-                // 待机静态：帧 0（+阴影）；受损切受损变体；充能动画 M5
-                if (dmg && !u->special_dmg.empty())
-                    draw_bld_anim_frame(a, u->special_dmg, 0, false, b.col, b.row, hgt, grid,
-                                        bw, bh, ox, oy, canvas);
-                else
-                    draw_bld_anim_frame(a, u->special, 0, dmg, b.col, b.row, hgt, grid, bw, bh,
-                                        ox, oy, canvas);
-            }
+                draw_anim(u->anim_three, static_cast<int>(b.anim_clock), dmg);
+            // SpecialAnim（光棱塔棱镜充能 GAPRIS_A、磁暴塔放电 NATSLA_B 等）是
+            // 动作动画：artmd 的 IsAnimDelayedFire=yes / DelayedFireDelay=28
+            // 表明它在开火前播放，待机时不画（M5 战斗按动作播放）。
             if (u->turret) {
                 if (u->turret_voxel)
                     draw_bld_turret_voxel(a, *u, b, hgt, grid, bw, bh, ox, oy, canvas);
@@ -803,6 +950,363 @@ void scan_map_files(StageApp& a, const std::filesystem::path& dir) {
         }
     }
     std::sort(a.map_files.begin(), a.map_files.end());
+}
+
+// ── M4 遭遇战流程 ──
+
+std::vector<std::pair<int, int>> map_waypoints(const StageApp& a) { return a.map.waypoints; }
+
+int buildup_frames(StageApp& a, const std::string& type) {
+    const auto* u = a.rules.unit(type);
+    if (!u || u->buildup.empty()) return 0;
+    const auto* raw = load_file(a, u->buildup + ".SHP");
+    if (!raw) return 0;
+    ra2r::assets::ShpFile shp;
+    std::string err;
+    if (!shp.open(raw->data(), raw->size(), &err)) return 0;
+    // Buildup SHP 与建筑本体同构：前半建造帧 + 后半同数阴影帧 → 取建造段帧数
+    const int sh = ra2r::assets::shp_shadow_start(shp);
+    return sh > 0 ? sh : static_cast<int>(shp.frame_count());
+}
+
+std::vector<const ra2r::assets::UnitTypeDef*> buildable_for(StageApp& a,
+                                                            const std::string& owner) {
+    ensure_rules(a);
+    std::string country;
+    if (owner == "Player") country = a.sk.cfg.player.country;
+    else if (owner == "Opponent") country = a.sk.cfg.opponent.country;
+    return ra2r::sim::buildable_buildings(a.sim, a.rules, owner, country, a.sk.tech_level);
+}
+
+const ra2r::assets::UnitTypeDef* faction_building(StageApp& a, const std::string& owner,
+                                                  const std::string& country, const char* role) {
+    for (const auto& [k, name] : a.rules.rules().section("BuildingTypes")) {
+        (void)k;
+        const auto* t = a.rules.unit(name);
+        if (!t || t->kind != 0 || t->owner.empty()) continue;
+        bool mine = false;
+        for (const auto& o : t->owner)
+            if (o == country) {
+                mine = true;
+                break;
+            }
+        if (!mine) continue;
+        bool match = false;
+        if (std::strcmp(role, "conyard") == 0) match = t->construction_yard;
+        else if (std::strcmp(role, "power") == 0)
+            match = t->power > 0 && t->build_cat == "Power";
+        else if (std::strcmp(role, "refinery") == 0) match = t->refinery;
+        else if (std::strcmp(role, "barracks") == 0) match = t->factory == "InfantryType";
+        else if (std::strcmp(role, "weapon") == 0) match = t->weapons_factory;
+        if (!match) continue;
+        if (std::strcmp(role, "conyard") != 0 &&
+            !ra2r::sim::check_buildable(a.sim, a.rules, owner, country, a.sk.tech_level, *t).ok)
+            continue;
+        return t;
+    }
+    return nullptr;
+}
+
+bool start_skirmish(StageApp& a, std::string* error) {
+    if (a.mode != 2 || a.map_files.empty()) {
+        if (error) *error = "遭遇战需要先加载地图";
+        return false;
+    }
+    ensure_rules(a);
+    const auto wps = map_waypoints(a);
+    if (wps.size() < 2) {
+        if (error) *error = "地图缺少至少 2 个 waypoint（出生点）";
+        return false;
+    }
+    // 玩家/对手阵营与阵营色
+    ra2r::sim::SkirmishCfg& cfg = a.sk.cfg;
+    if (cfg.player.country.empty()) cfg.player.country = "Americans";
+    if (cfg.opponent.country.empty()) cfg.opponent.country = "Russians";
+    cfg.player.house = "Player";
+    cfg.opponent.house = "Opponent";
+    cfg.player.start_class = a.sk.class_sel;
+    cfg.credits = a.sk.credits;
+    cfg.tech_level = a.sk.tech_level;
+    // 阵营色：玩家未选时用国家节的 Color=
+    const auto resolve_color = [&](ra2r::sim::SkirmishPlayerCfg& p) {
+        if (!p.color.empty()) return;
+        const auto* c = a.rules.country(p.country);
+        p.color = c ? c->color : "DarkBlue";
+    };
+    resolve_color(cfg.player);
+    resolve_color(cfg.opponent);
+    // 阵营色 ramp（[Colors] H,S,V → 16 色）
+    a.sk.ramps.clear();
+    a.sk.house_remap.clear();
+    const auto add_ramp = [&](const ra2r::sim::SkirmishPlayerCfg& p) {
+        const auto* c = a.rules.color(p.color);
+        ra2r::assets::HouseRamp r;
+        if (c) {
+            const auto hr = ra2r::sim::house_color_ramp(*c);
+            for (int i = 0; i < 16; ++i)
+                for (int k = 0; k < 3; ++k) r.rgb[i][k] = hr.rgb[i][k];
+        }
+        a.sk.ramps.push_back(r);
+        a.sk.house_remap[p.house] = static_cast<uint8_t>(a.sk.ramps.size());
+    };
+    add_ramp(cfg.player);
+    add_ramp(cfg.opponent);
+
+    // 重开一局：清空 sim 与建造队列
+    a.sim = {};
+    a.sim_active = false;
+    a.selection.clear();
+    a.queue_sel = -1;
+    a.placing = false;
+    a.sk.active = false;
+    // 地图装载（含地形阻挡/矿石），与加载模式同一条路径
+    ra2r::assets::MapFile mf;
+    if (!mf.open(a.map_files[a.map_sel], error)) return false;
+    const auto weapon_of = [&](const std::string& type, ra2r::sim::SimWeapon& w) {
+        if (const auto* u = a.rules.unit(type))
+            if (const auto* wp = a.rules.weapon(u->primary))
+                w = {wp->damage, wp->rof, wp->range};
+    };
+    const auto miner_of = [&](const std::string& type, bool& is_miner, int& cap) {
+        if (const auto* u = a.rules.unit(type)) {
+            is_miner = u->harvester;
+            cap = u->capacity;
+        }
+    };
+    a.sim.load_map(
+        mf,
+        [&](const std::string& type, int& fw, int& fh) {
+            if (const auto* u = a.rules.unit(type)) {
+                fw = u->fw;
+                fh = u->fh;
+            }
+        },
+        weapon_of, miner_of,
+        [&](const std::string& type) {
+            const auto* u = a.rules.unit(type);
+            return u && u->refinery;
+        },
+        [&](const std::string& type) -> int {
+            const auto* u = a.rules.unit(type);
+            return u ? u->power : 0;
+        },
+        [&](int x, int y) -> int16_t {
+            if (x < 0 || y < 0 || x >= mf.cell_w() || y >= mf.cell_h()) return 0;
+            const auto& c = mf.cell(x, y);
+            if (!c.present) return 0;
+            const auto it = a.overlay_names.find(mf.overlay_type(c.x, c.y));
+            if (it == a.overlay_names.end()) return 0;
+            const std::string& n = it->second;
+            if ((n.rfind("TIB", 0) == 0 && n.rfind("TIBTRE", 0) != 0) ||
+                n.rfind("GEM", 0) == 0)
+                return 50;
+            return 0;
+        },
+        [&](int x, int y) -> bool {
+            if (x < 0 || y < 0 || x >= mf.cell_w() || y >= mf.cell_h()) return false;
+            const auto& c = mf.cell(x, y);
+            if (!c.present) return false;
+            const auto* info = a.tileset.set_info(a.tileset.set_index_for(c.tile_id));
+            if (!info) return false;
+            const std::string& n = info->set_name;
+            if (n.find("Bridge") != std::string::npos ||
+                n.find("bridge") != std::string::npos)
+                return false;
+            return n.find("Water") != std::string::npos ||
+                   n.find("Cliff") != std::string::npos ||
+                   n.find("Ice") != std::string::npos;
+        });
+    // 清掉地图自带对象（遭遇战从零开始）
+    a.sim.buildings.clear();
+    a.sim.units.clear();
+    a.sim.explosions.clear();
+    a.sim.credits.clear();
+    a.sim.build_queue.clear();
+    a.sim.next_id = 1;
+    // 单位工厂（rulesmd → SimUnit 属性）
+    ra2r::sim::UnitFactory uf;
+    uf.kind_of = [&](const std::string& type) {
+        const auto* u = a.rules.unit(type);
+        return u ? u->kind : 1;
+    };
+    uf.weapon = weapon_of;
+    uf.miner = miner_of;
+    // 开局：玩家 waypoint0、对手 waypoint1
+    const int n0 = ra2r::sim::spawn_start(a.sim, a.rules, "Player", cfg.player.country,
+                                          cfg.player.start_class, wps[0].first, wps[0].second, uf,
+                                          static_cast<uint32_t>(cfg.seed));
+    const int n1 = ra2r::sim::spawn_start(a.sim, a.rules, "Opponent", cfg.opponent.country,
+                                          cfg.opponent.start_class, wps[1].first, wps[1].second,
+                                          uf, static_cast<uint32_t>(cfg.seed) + 7919u);
+    a.sim.credits["Player"] = cfg.credits;
+    a.sim.credits["Opponent"] = cfg.credits;
+    a.sk.active = true;
+    a.sk.ai_done = false;
+    a.sim_active = true;
+    a.obj_cache.clear();
+    a.last_vhash = 0;
+    a.dirty = true;
+    std::printf(
+        "[stage] 遭遇战开始：玩家 %s/%s class=%d %d 单位 @(%d,%d)；对手 %s/%s %d 单位 "
+        "@(%d,%d)\n",
+        cfg.player.country.c_str(), cfg.player.color.c_str(), cfg.player.start_class, n0,
+        wps[0].first, wps[0].second, cfg.opponent.country.c_str(), cfg.opponent.color.c_str(), n1,
+        wps[1].first, wps[1].second);
+    return n0 > 0;
+}
+
+bool deploy_selected_mcv(StageApp& a) {
+    if (!a.sim_active) return false;
+    bool any = false;
+    for (size_t i = 0; i < a.sim.units.size(); ++i) {
+        // 注意：deploy_mcv 内部会 erase 该单位 → 下标与引用失效，先拷出所需字段
+        const std::string utype = a.sim.units[i].type;
+        const int ucol = a.sim.units[i].col, urow = a.sim.units[i].row;
+        const std::string uowner = a.sim.units[i].owner;
+        const uint32_t uid = a.sim.units[i].id;
+        if (!a.sim.units[i].alive) continue;
+        if (std::find(a.selection.begin(), a.selection.end(), uid) == a.selection.end())
+            continue;
+        const auto* t = a.rules.unit(utype);
+        if (!t || t->deploys_into.empty()) continue;
+        const auto* bt = a.rules.unit(t->deploys_into);
+        if (!bt) continue;
+        const std::string btype = t->deploys_into;
+        const int bf = buildup_frames(a, btype);
+        const uint32_t bid = ra2r::sim::deploy_mcv(a.sim, i, btype, bt->fw, bt->fh, bt->cost,
+                                                   bt->power, bf > 0 ? bf : 60, bt->strength);
+        std::printf("[stage] %s(%s) 展开 → %s @(%d,%d) 动画 %d 帧 %s\n", utype.c_str(),
+                    uowner.c_str(), btype.c_str(), ucol, urow, bf, bid ? "ok" : "fail");
+        if (bid) {
+            any = true;
+            a.selection.clear();
+        }
+        break; // 展开后 units 下标失效，一帧只处理一台
+    }
+    a.dirty = true;
+    return any;
+}
+
+bool queue_player_build(StageApp& a, const std::string& type) {
+    const auto* t = a.rules.unit(type);
+    if (!t) return false;
+    const auto chk = ra2r::sim::check_buildable(a.sim, a.rules, "Player", a.sk.cfg.player.country,
+                                                a.sk.tech_level, *t);
+    if (!chk.ok) {
+        std::printf("[stage] 无法建造 %s：%s\n", type.c_str(), chk.reason.c_str());
+        return false;
+    }
+    // 工期：原版 BuildSpeed=.7 × Cost（M3 近似：cost/2 逻辑帧）
+    const int total = std::max(30, t->cost / 2);
+    const bool ok = a.sim.queue_build("Player", type, t->cost, total);
+    std::printf("[stage] 排队建造 %s $%d 工期 %d 帧 %s\n", type.c_str(), t->cost, total,
+                ok ? "ok" : "fail（队列占用/资金不足）");
+    a.dirty = true;
+    return ok;
+}
+
+bool place_player_build(StageApp& a, int col, int row) {
+    std::string type;
+    if (!a.sim.take_ready_build("Player", &type)) {
+        std::printf("[stage] 没有待放置的建筑\n");
+        return false;
+    }
+    const auto* t = a.rules.unit(type);
+    if (!t) return false;
+    if (!a.sim.can_place(col, row, t->fw, t->fh)) {
+        // 位置非法：退回队列（保持就绪）
+        a.sim.build_queue["Player"] = {type, 1, 1, t->cost, true};
+        std::printf("[stage] %s 无法放置 @(%d,%d)（地基被占）\n", type.c_str(), col, row);
+        return false;
+    }
+    const uint32_t id = a.sim.spawn_building("Player", type, col, row, t->fw, t->fh, t->cost,
+                                             t->power, true, std::max(30, t->cost / 2),
+                                             t->strength);
+    std::printf("[stage] 放置 %s @(%d,%d) id=%u\n", type.c_str(), col, row, id);
+    a.placing = false;
+    a.queue_sel = -1;
+    a.dirty = true;
+    return id != 0;
+}
+
+void skirmish_ai_tick(StageApp& a) {
+    if (!a.sk.active || !a.sk_ai || a.sk.ai_done) return;
+    if (a.sim.units.empty() && a.sim.buildings.empty()) return;
+    const std::string& oc = a.sk.cfg.opponent.country;
+    // 按角色取本阵营建筑（候选必须通过科技树校验，故不会把盟军 GAPOWR 挑给苏军）
+    const auto faction = [&](const char* role) {
+        return faction_building(a, "Opponent", oc, role);
+    };
+    // 1) 展开基地车
+    if (a.sk.ai_deploy_at > 0) {
+        --a.sk.ai_deploy_at;
+        if (a.sk.ai_deploy_at == 0) {
+            for (size_t i = 0; i < a.sim.units.size(); ++i) {
+                // deploy_mcv 会 erase 该单位 → 先拷贝字段（引用/下标随后失效）
+                const std::string utype = a.sim.units[i].type;
+                const std::string uowner = a.sim.units[i].owner;
+                const int ucol = a.sim.units[i].col, urow = a.sim.units[i].row;
+                if (uowner != "Opponent") continue;
+                const auto* t = a.rules.unit(utype);
+                if (!t || t->deploys_into.empty()) continue;
+                const auto* bt = a.rules.unit(t->deploys_into);
+                if (!bt) break;
+                const std::string btype = t->deploys_into;
+                const int bf = buildup_frames(a, btype);
+                const uint32_t id = ra2r::sim::deploy_mcv(a.sim, i, btype, bt->fw, bt->fh,
+                                                          bt->cost, bt->power,
+                                                          bf > 0 ? bf : 60, bt->strength);
+                std::printf("[stage] AI 展开 %s → %s @(%d,%d) id=%u\n", utype.c_str(),
+                            btype.c_str(), ucol, urow, id);
+                a.dirty = true;
+                break;
+            }
+        }
+    }
+    // 2) 建造脚本：电厂 → 矿场 → 兵营 → 重工（每 240 帧一项，自动就近落点）
+    if (a.sk.ai_build_at > 0) {
+        --a.sk.ai_build_at;
+        if (a.sk.ai_build_at == 0) {
+            a.sk.ai_build_at = 240;
+            static const char* kRoles[4] = {"power", "refinery", "barracks", "weapon"};
+            for (const char* role : kRoles) {
+                const auto* wt = faction(role);
+                if (!wt) continue;
+                if (a.sim.has_building("Opponent", wt->name, false)) continue; // 已有
+                const auto chk = ra2r::sim::check_buildable(a.sim, a.rules, "Opponent", oc,
+                                                            a.sk.tech_level, *wt);
+                if (!chk.ok) continue;
+                const auto* cy = faction("conyard");
+                if (!cy) continue;
+                int cc = -1, cr = -1;
+                for (const auto& b : a.sim.buildings)
+                    if (b.owner == "Opponent" && b.type == cy->name) {
+                        cc = b.col;
+                        cr = b.row;
+                        break;
+                    }
+                if (cc < 0) continue;
+                int bx = -1, by = -1;
+                for (int rad = 0; rad < 24 && bx < 0; ++rad)
+                    for (int dy = -rad; dy <= rad && bx < 0; ++dy)
+                        for (int dx = -rad; dx <= rad && bx < 0; ++dx) {
+                            if (rad > 0 && std::abs(dx) != rad && std::abs(dy) != rad) continue;
+                            if (a.sim.can_place(cc + dx, cr + dy, wt->fw, wt->fh)) {
+                                bx = cc + dx;
+                                by = cr + dy;
+                            }
+                        }
+                if (bx < 0) continue;
+                const bool ok = a.sim.spawn_building("Opponent", wt->name, bx, by, wt->fw, wt->fh,
+                                                     wt->cost, wt->power, true,
+                                                     std::max(30, wt->cost / 2), wt->strength);
+                std::printf("[stage] AI 建造 %s @(%d,%d) %s\n", wt->name.c_str(), bx, by,
+                            ok ? "ok" : "fail");
+                a.dirty = true;
+                break; // 每轮一项
+            }
+        }
+    }
 }
 
 // BMP 写出（--shot/--test 自检）
