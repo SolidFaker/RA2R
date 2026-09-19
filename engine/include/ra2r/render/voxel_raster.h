@@ -7,6 +7,8 @@
 //         OpenRA 用 GPU 深度缓冲，见 third_party/reference/VoxelLoader.cs）
 //
 // 相关规格：docs/formats/vxl.md、docs/formats/hva.md、docs/DEBUGGING.md §3.5
+#include <cstddef>
+
 #include "ra2r/assets/hva_file.h"
 #include "ra2r/assets/vxl_file.h"
 #include "ra2r/render/raster.h"

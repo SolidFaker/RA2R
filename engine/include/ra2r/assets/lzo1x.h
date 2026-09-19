@@ -1,5 +1,6 @@
 #pragma once
 // RA2R — LZO1X 解压（IsoMapPack5 使用；格式为公开规范，实现自 lzo1x 文档化算法）
+#include <cstddef>
 #include <cstdint>
 
 namespace ra2r::assets {

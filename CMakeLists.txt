@@ -15,11 +15,12 @@ endif()
 # SDL3 提前查找：engine 下的 ra2r_ui 模块按 SDL3_FOUND 决定是否构建
 find_package(SDL3 CONFIG QUIET)
 
-add_subdirectory(engine)
+# third_party 必须先于 engine：ra2r_ui 需要 RA2R_IMGUI_DIR（在 third_party 里定义）
 add_subdirectory(third_party)
+add_subdirectory(engine)
 add_subdirectory(tools)
 
-# 测试：后续里程碑引入（Catch2）
+# 测试（GoogleTest，vendored 于 third_party/googletest）
 option(RA2R_BUILD_TESTS "Build tests" OFF)
 if(RA2R_BUILD_TESTS)
   enable_testing()

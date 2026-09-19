@@ -2,6 +2,7 @@
 #include "ra2r/sim/sim_world.h"
 
 #include <algorithm>
+#include <climits>
 #include <cstdlib>
 
 #include "ra2r/sim/pathfind.h"

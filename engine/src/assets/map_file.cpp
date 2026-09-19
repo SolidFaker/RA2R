@@ -1,6 +1,7 @@
 // RA2R — 地图解析实现
 #include "ra2r/assets/map_file.h"
 
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -178,26 +179,26 @@ bool MapFile::parse(std::string* error) {
     //   列 = 沿反对角线 (rx−ry−min_d)/2，奇偶行的 30px 相位由 px=(rx−ry−min_d)·30
     //     天然给出（行内步进 60px，行间错位 30px）。
     const size_t count = all.size() / kCellBytes;
-    int min_d = INT_MAX, min_s = INT_MAX, max_s = INT_MIN;
+    int min_d = INT_MAX, min_s_v = INT_MAX, max_s = INT_MIN;
     for (size_t i = 0; i < count; ++i) {
         const uint8_t* c = all.data() + i * kCellBytes;
         const int rx = core::read_u16_le(c);
         const int ry = core::read_u16_le(c + 2);
         min_d = std::min(min_d, rx - ry);
-        min_s = std::min(min_s, rx + ry);
+        min_s_v = std::min(min_s_v, rx + ry);
         max_s = std::max(max_s, rx + ry);
     }
     if (min_d == INT_MAX) return true; // 空地图
     min_d_ = min_d;
-    min_s_ = min_s;
-    const int grid_h = max_s - min_s + 1; // 反对角线行数（≈2H）
+    min_s_ = min_s_v;
+    const int grid_h = max_s - min_s_v + 1; // 反对角线行数（≈2H）
     bottom_ = grid_h; // cell_h() 暴露点阵行数（渲染/小地图/迷雾都以点阵行计）
     cells_.assign(static_cast<size_t>(W) * grid_h, MapCell{});
     for (size_t i = 0; i < count; ++i) {
         const uint8_t* c = all.data() + i * kCellBytes;
         const int rx = core::read_u16_le(c);
         const int ry = core::read_u16_le(c + 2);
-        const int row = rx + ry - min_s;
+        const int row = rx + ry - min_s_v;
         const int col = (rx - ry - min_d) / 2;
         if (row < 0 || row >= grid_h || col < 0 || col >= W) continue;
         MapCell& cell = cells_[static_cast<size_t>(row) * W + col];
