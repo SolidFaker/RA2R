@@ -772,9 +772,12 @@ void draw_bld_turret_voxel(StageApp& a, const ra2r::assets::UnitTypeDef& u,
                            const ra2r::sim::SimBuilding& b, int hgt,
                            const ra2r::render::IsometricGrid& grid, int bw, int bh, int ox, int oy,
                            std::vector<uint8_t>& canvas) {
-    // 建筑炮塔体素比例与载具滑杆解耦：MK 建成帧 F1 标定（GTGCAN 0.50→0.713、
-    // 0.35→0.606、0.30→0.529；YAGGUN 0.50→0.684、0.35→0.664）→ 0.5（1px/体素）
-    constexpr float kBldTurretScale = 0.5f;
+    // 建筑炮塔体素比例：与原版一致 = ModEnc「RA2 一格 = 42.4264 体素」
+    //（1 体素 = 6.03397 勒普顿，256/6.03397 per cell）→ 每体素沿格轴水平步进
+    // 60/42.4264 = 1.4142px；本投影 ex=(2s,−s) → s = 30/42.4264 = 0.35355。
+    //（勿用 0.5：那会把炮塔放大 41%；MK 建成帧 F1 联合扫描峰值 0.36~0.44 亦印证，
+    //  且 GTGCAN 炮塔罩 @0.5=105px 已占满 113px 平台——原版约占 2/3。）
+    constexpr float kBldTurretScale = 0.35355f;
     const std::string turret_art = resolve_art(a, u.turret_anim, ".VXL");
     const auto* raw = load_file(a, turret_art + ".VXL");
     if (!raw) return;
