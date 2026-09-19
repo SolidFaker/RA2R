@@ -15,6 +15,8 @@
 #include "ra2r/assets/shp_file.h"
 #include "ra2r/core/win_unicode.h"
 
+#include "../common/bmp_write.h"
+
 using ra2r::assets::Palette;
 using ra2r::assets::ShpFile;
 
@@ -35,41 +37,12 @@ std::vector<uint8_t> to_rgba(const std::vector<uint8_t>& idx, const Palette& pal
     return out;
 }
 
-// 24 位 BMP 写入（行自底向上，4 字节对齐）
+// ── BMP 输出（-shot 自检用；实现见 tools/common/bmp_write.h）──
 bool write_bmp(const std::filesystem::path& path, int w, int h,
                const std::vector<uint8_t>& rgba) {
-    const int stride = (w * 3 + 3) & ~3;
-    std::ofstream f(path, std::ios::binary);
-    if (!f) return false;
-    auto w16 = [&](uint16_t v) { f.put(v & 0xFF); f.put(v >> 8); };
-    auto w32 = [&](uint32_t v) {
-        f.put(v & 0xFF); f.put((v >> 8) & 0xFF); f.put((v >> 16) & 0xFF); f.put((v >> 24) & 0xFF);
-    };
-    w16(0x4D42);                 // 'BM'
-    w32(54 + stride * h);        // 文件大小
-    w32(0);                      // 保留
-    w32(54);                     // 数据偏移
-    w32(40);                     // DIB 头大小
-    w32(w);                      // 宽
-    w32(h);                      // 高（正 = 自底向上）
-    w16(1);                      // 平面数
-    w16(24);                     // 位深
-    w32(0);                      // 压缩
-    w32(stride * h);             // 图像大小
-    w32(2835); w32(2835);        // 分辨率
-    w32(0); w32(0);              // 调色板
-    std::vector<uint8_t> row(stride, 0);
-    for (int y = h - 1; y >= 0; --y) {
-        for (int x = 0; x < w; ++x) {
-            const uint8_t* p = rgba.data() + (static_cast<size_t>(y) * w + x) * 4;
-            row[x * 3 + 0] = p[2]; // B
-            row[x * 3 + 1] = p[1]; // G
-            row[x * 3 + 2] = p[0]; // R
-        }
-        f.write(reinterpret_cast<const char*>(row.data()), stride);
-    }
-    return true;
+    return ra2r::tools::write_bmp_rgba(path, w, h, rgba);
 }
+
 } // namespace
 
 static int run(int argc, char** argv) {

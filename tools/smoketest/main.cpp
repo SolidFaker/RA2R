@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "ra2r/assets/aud_file.h"
+
+#include "../common/bmp_write.h"
 #include "ra2r/assets/csf_file.h"
 #include "ra2r/assets/fnt_file.h"
 #include "ra2r/assets/hva_file.h"
@@ -25,45 +27,12 @@ static bool read_all(const fs::path& path, std::vector<uint8_t>& out) {
     return !out.empty();
 }
 
-// 简单 BMP 写出（自检用，与 mixbrowser 的 write_bmp 等价）
-static bool write_bmp(const fs::path& path, int w, int h, const std::vector<uint8_t>& rgba) {
-    const int stride = (w * 3 + 3) & ~3;
-    std::ofstream f(path, std::ios::binary);
-    if (!f) return false;
-    auto w16 = [&](uint16_t v) { f.put(v & 0xFF); f.put(v >> 8); };
-    auto w32 = [&](uint32_t v) {
-        f.put(v & 0xFF);
-        f.put((v >> 8) & 0xFF);
-        f.put((v >> 16) & 0xFF);
-        f.put((v >> 24) & 0xFF);
-    };
-    w16(0x4D42);
-    w32(54 + stride * h);
-    w32(0);
-    w32(54);
-    w32(40);
-    w32(w);
-    w32(h);
-    w16(1);
-    w16(24);
-    w32(0);
-    w32(stride * h);
-    w32(2835);
-    w32(2835);
-    w32(0);
-    w32(0);
-    std::vector<uint8_t> row(stride, 0);
-    for (int y = h - 1; y >= 0; --y) {
-        for (int x = 0; x < w; ++x) {
-            const uint8_t* p = rgba.data() + (static_cast<size_t>(y) * w + x) * 4;
-            row[x * 3 + 0] = p[2];
-            row[x * 3 + 1] = p[1];
-            row[x * 3 + 2] = p[0];
-        }
-        f.write(reinterpret_cast<const char*>(row.data()), stride);
-    }
-    return true;
+// ── BMP 输出（自检用；实现见 tools/common/bmp_write.h）──
+static bool write_bmp(const std::filesystem::path& path, int w, int h,
+                      const std::vector<uint8_t>& rgba) {
+    return ra2r::tools::write_bmp_rgba(path, w, h, rgba);
 }
+
 
 static int run(int argc, char** argv) {
     if (argc < 2) {
@@ -89,9 +58,8 @@ static int run(int argc, char** argv) {
         size_t n = 0;
         for (const auto& [k, v] : f.all()) {
             if (n++ < 5) {
-                std::printf("  %s = %s%s%s\n", k.c_str(), v.value.c_str(),
-                            v.extra.empty() ? "" : "  [extra: ", v.extra.c_str(),
-                            v.extra.empty() ? "" : "]");
+                std::printf("  %s = %s%s\n", k.c_str(), v.value.c_str(),
+                            v.extra.empty() ? "" : ("  [extra: " + v.extra + "]").c_str());
             }
         }
     } else if (ext == ".aud" || ext == ".wav") {

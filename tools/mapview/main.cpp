@@ -39,6 +39,8 @@
 #include "ra2r/core/win_unicode.h"
 #include "ra2r/render/overlay_layer.h"
 #include "ra2r/ui/ui.h"
+
+#include "../common/bmp_write.h"
 #include "ra2r/render/isometric.h"
 #include "ra2r/render/fog.h"
 #include "ra2r/render/map_scene.h"
@@ -59,45 +61,12 @@ using ra2r::render::TerrainTileFrame;
 
 namespace {
 
-// ── 简单 BMP 写出（--dump 自检）──
-bool write_bmp(const fs::path& path, int w, int h, const std::vector<uint8_t>& rgba) {
-    const int stride = (w * 3 + 3) & ~3;
-    std::ofstream f(path, std::ios::binary);
-    if (!f) return false;
-    auto w16 = [&](uint16_t v) { f.put(v & 0xFF); f.put(v >> 8); };
-    auto w32 = [&](uint32_t v) {
-        f.put(v & 0xFF);
-        f.put((v >> 8) & 0xFF);
-        f.put((v >> 16) & 0xFF);
-        f.put((v >> 24) & 0xFF);
-    };
-    w16(0x4D42);
-    w32(54 + stride * h);
-    w32(0);
-    w32(54);
-    w32(40);
-    w32(w);
-    w32(h);
-    w16(1);
-    w16(24);
-    w32(0);
-    w32(stride * h);
-    w32(2835);
-    w32(2835);
-    w32(0);
-    w32(0);
-    std::vector<uint8_t> row(stride, 0);
-    for (int y = h - 1; y >= 0; --y) {
-        for (int x = 0; x < w; ++x) {
-            const uint8_t* p = rgba.data() + (static_cast<size_t>(y) * w + x) * 4;
-            row[x * 3 + 0] = p[2];
-            row[x * 3 + 1] = p[1];
-            row[x * 3 + 2] = p[0];
-        }
-        f.write(reinterpret_cast<const char*>(row.data()), stride);
-    }
-    return true;
+// ── BMP 输出（-shot 自检用；实现见 tools/common/bmp_write.h）──
+bool write_bmp(const std::filesystem::path& path, int w, int h,
+               const std::vector<uint8_t>& rgba) {
+    return ra2r::tools::write_bmp_rgba(path, w, h, rgba);
 }
+
 
 } // namespace
 
@@ -109,7 +78,7 @@ static int run(int argc, char** argv) {
     const char* gamedir = nullptr;
     const char* dump_path = nullptr;
     const char* cells_path = nullptr;
-    bool no_height = false; // --noheight：高度全按 0 渲染（几何诊断）
+    [[maybe_unused]] bool no_height = false; // --noheight：高度全按 0 渲染（几何诊断）
     bool transpose = false; // --transpose：格坐标转置渲染（A/B 方向对照）
     const char* minimap_path = nullptr;
     const char* showcase_path = nullptr;
@@ -277,7 +246,9 @@ static int run(int argc, char** argv) {
                     transpose ? map.cell_w() : map.cell_h(), 15, bw, bh, ox, oy);
     std::vector<uint8_t> canvas(static_cast<size_t>(bw) * bh * 4, 0);
     // 光照等级（--light）：离地图中心越远越暗（演示 PaletteLut 32 级管线）
-    const float light_r = light ? std::max(map.cell_w(), map.cell_h()) * 0.5f : 0.0f;
+    const float light_r = light
+                              ? static_cast<float>(std::max(map.cell_w(), map.cell_h())) * 0.5f
+                              : 0.0f;
     // 战争迷雾/黑幕（--fog：地图 [Shroud] 或合成演示）
     ra2r::render::ShroudMap shroud_map(ra2r::render::ShroudMap::from_map(map));
     if (fog) {
@@ -305,8 +276,8 @@ static int run(int argc, char** argv) {
     const std::function<int(int, int)> light_fn = [&](int cx, int cy) -> int {
         if (fog) return ra2r::render::ShroudMap::to_light(shroud_map.state(cx, cy));
         if (!light) return 0;
-        const float dx = cx - map.cell_w() * 0.5f;
-        const float dy = cy - map.cell_h() * 0.5f;
+        const float dx = static_cast<float>(cx) - static_cast<float>(map.cell_w()) * 0.5f;
+        const float dy = static_cast<float>(cy) - static_cast<float>(map.cell_h()) * 0.5f;
         const float dist = std::sqrt(dx * dx + dy * dy);
         return std::clamp(static_cast<int>(dist / light_r * 24.0f), 0, 24);
     };
@@ -465,11 +436,12 @@ static int run(int argc, char** argv) {
             }
         }
         // 平移边界：地图不得完全滚出视口（留 160px 边）
-        pan_x = std::clamp(pan_x, 160.0f - bw * zoom, 1360.0f - 160.0f);
-        pan_y = std::clamp(pan_y, 100.0f - bh * zoom, 800.0f - 100.0f);
+        pan_x = std::clamp(pan_x, 160.0f - static_cast<float>(bw) * zoom, 1360.0f - 160.0f);
+        pan_y = std::clamp(pan_y, 100.0f - static_cast<float>(bh) * zoom, 800.0f - 100.0f);
         SDL_SetRenderDrawColor(renderer, 16, 16, 20, 255);
         SDL_RenderClear(renderer);
-        const SDL_FRect dst = {pan_x, pan_y, bw * zoom, bh * zoom};
+        const SDL_FRect dst = {pan_x, pan_y, static_cast<float>(bw) * zoom,
+                               static_cast<float>(bh) * zoom};
         SDL_RenderTexture(renderer, tex, nullptr, &dst);
         SDL_RenderPresent(renderer);
     }

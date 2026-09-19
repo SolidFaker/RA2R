@@ -166,7 +166,12 @@ static int run(int argc, char** argv) {
             return 1;
         }
     }
-    // GUI 约束底座：进程 DPI 感知（窗口创建前）+ 控制台 UTF-8（有控制台时）
+    // --test 无头转储模式依赖 --shot 作为输出路径前缀（csv/bmp 系列均基于它）；
+    // 缺失时直接报错，避免运行到中途 std::string(nullptr) 抛异常崩溃。
+    if (test_mode && !shot_path) {
+        std::fprintf(stderr, "--test requires --shot <bmp> (dump path prefix)\n");
+        return 1;
+    }
     ra2r::ui::enable_dpi_awareness();
     ra2r::ui::console_utf8();
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -560,7 +565,8 @@ static int run(int argc, char** argv) {
                 if (qit != a.sim.build_queue.end()) {
                     const auto& item = qit->second;
                     const float p = item.total > 0
-                                        ? static_cast<float>(item.ticks) / item.total
+                                        ? static_cast<float>(item.ticks) /
+                                              static_cast<float>(item.total)
                                         : 0.0f;
                     ImGui::ProgressBar(std::min(1.0f, p), ImVec2(-1, 0), item.type.c_str());
                     if (item.ready) {
@@ -724,8 +730,8 @@ static int run(int argc, char** argv) {
                     const float fit = std::min(avail2.x / static_cast<float>(a.bw),
                                                avail2.y / static_cast<float>(a.bh));
                     a.zoom = std::clamp(fit, 0.1f, 1.0f);
-                    a.pan_x = (avail2.x - a.bw * a.zoom) * 0.5f;
-                    a.pan_y = (avail2.y - a.bh * a.zoom) * 0.5f;
+                    a.pan_x = (avail2.x - static_cast<float>(a.bw) * a.zoom) * 0.5f;
+                    a.pan_y = (avail2.y - static_cast<float>(a.bh) * a.zoom) * 0.5f;
                     a.recenter = false;
                 }
                 a.dirty = false;
@@ -1031,10 +1037,10 @@ static int run(int argc, char** argv) {
         }
         if (a.bw > 0 && a.bh > 0) {
             // 绘制（平移/缩放应用，AddImage 直接给屏幕坐标）
-            ImGui::GetWindowDrawList()->AddImage(host.texture_id(),
-                                                 ImVec2(pos.x + a.pan_x, pos.y + a.pan_y),
-                                                 ImVec2(pos.x + a.pan_x + a.bw * a.zoom,
-                                                        pos.y + a.pan_y + a.bh * a.zoom));
+            ImGui::GetWindowDrawList()->AddImage(
+                host.texture_id(), ImVec2(pos.x + a.pan_x, pos.y + a.pan_y),
+                ImVec2(pos.x + a.pan_x + static_cast<float>(a.bw) * a.zoom,
+                       pos.y + a.pan_y + static_cast<float>(a.bh) * a.zoom));
             ImGui::GetWindowDrawList()->AddText(
                 ImVec2(pos.x + 8, pos.y + 4), IM_COL32(255, 255, 160, 255),
                 a.sim_active ? "拖拽平移 · 滚轮缩放 · 左键选择/拖框选 · 双击同型全选"

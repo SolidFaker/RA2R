@@ -48,8 +48,9 @@ if(SDL3_FOUND)
   )
   target_link_libraries(mixbrowser PRIVATE ra2r_engine ra2r_ui ra2r_imgui SDL3::SDL3)
   # ffmpeg 头（仅 mixbrowser：音视频播放运行时加载 DLL，无需导入库）
-  target_include_directories(mixbrowser PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/mixbrowser/ffmpeg/include)
-  target_include_directories(mixbrowser PRIVATE ${RA2R_IMGUI_DIR} ${RA2R_IMGUI_DIR}/backends)
+  target_include_directories(mixbrowser SYSTEM PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/mixbrowser/ffmpeg/include)
+  target_include_directories(mixbrowser SYSTEM PRIVATE ${RA2R_IMGUI_DIR} ${RA2R_IMGUI_DIR}/backends)
   target_link_options(mixbrowser PRIVATE ${RA2R_WIN_GUI_LINK_OPTS} ${RA2R_RUNTIME_STATIC})
   ra2r_copy_sdl(mixbrowser)
 
@@ -67,8 +68,8 @@ if(SDL3_FOUND)
     stage/stage_map.cpp
   )
   target_link_libraries(stage PRIVATE ra2r_engine ra2r_ui ra2r_imgui SDL3::SDL3)
-  target_include_directories(stage PRIVATE ${RA2R_IMGUI_DIR} ${RA2R_IMGUI_DIR}/backends
-                                           ${CMAKE_CURRENT_SOURCE_DIR})
+  target_include_directories(stage SYSTEM PRIVATE ${RA2R_IMGUI_DIR} ${RA2R_IMGUI_DIR}/backends)
+  target_include_directories(stage PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_options(stage PRIVATE ${RA2R_WIN_GUI_LINK_OPTS} ${RA2R_RUNTIME_STATIC})
   ra2r_copy_sdl(stage)
 endif()

@@ -501,7 +501,8 @@ void append_sim_objects(StageApp& a, std::vector<ra2r::render::PlacedObject>& ob
         po.alpha = 255;
         po.hp = b.hp;
         po.build_p = b.under_construction
-                         ? static_cast<float>(b.build_ticks) / std::max(1, b.build_total)
+                         ? static_cast<float>(b.build_ticks) /
+                               static_cast<float>(std::max(1, b.build_total))
                          : -1.0f;
         po.remap = rm;
         po.build_ticks = b.under_construction ? b.build_ticks : 0;
@@ -543,13 +544,13 @@ void append_sim_objects(StageApp& a, std::vector<ra2r::render::PlacedObject>& ob
             const long long f = u.frac; // 0..255（kFracMax=256）
             long long sx2, sy2;         // 2× 平滑位置
             if (f < 128) { // 前半段：过当前格心（控制点 tx,ty）
-                const long long v = f + 128, a = 256 - v, b = v;
-                sx2 = (a * a * m0x + 2 * a * b * (2LL * tx) + b * b * m1x) / 65536;
-                sy2 = (a * a * m0y + 2 * a * b * (2LL * ty) + b * b * m1y) / 65536;
+                const long long v = f + 128, ca = 256 - v, cb = v;
+                sx2 = (ca * ca * m0x + 2 * ca * cb * (2LL * tx) + cb * cb * m1x) / 65536;
+                sy2 = (ca * ca * m0y + 2 * ca * cb * (2LL * ty) + cb * cb * m1y) / 65536;
             } else { // 后半段：过下一格心（控制点 nx,ny）
-                const long long v = f - 128, a = 256 - v, b = v;
-                sx2 = (a * a * m1x + 2 * a * b * (2LL * nx) + b * b * m2x) / 65536;
-                sy2 = (a * a * m1y + 2 * a * b * (2LL * ny) + b * b * m2y) / 65536;
+                const long long v = f - 128, ca = 256 - v, cb = v;
+                sx2 = (ca * ca * m1x + 2 * ca * cb * (2LL * nx) + cb * cb * m2x) / 65536;
+                sy2 = (ca * ca * m1y + 2 * ca * cb * (2LL * ny) + cb * cb * m2y) / 65536;
             }
             off_x = static_cast<int>((sx2 - 2LL * tx) / 2);
             off_y = static_cast<int>((sy2 - 2LL * ty) / 2);
@@ -729,6 +730,7 @@ const ra2r::assets::ShpLayout& anim_layout(StageApp& a, const std::string& art,
 // 建筑血条：受损建筑常显、选中建筑必显；画在本体精灵上方（顶格锚点 − 本体帧高）
 void draw_building_hp_bars(StageApp& a, const ra2r::render::IsometricGrid& grid, int bw, int bh,
                            int ox, int oy, std::vector<uint8_t>& canvas) {
+    (void)grid; // 血条绘制不需要格几何（保留参数以统一绘制函数签名）
     const auto put = [&](int x, int y, uint8_t r, uint8_t g, uint8_t b) {
         if (x < 0 || y < 0 || x >= bw || y >= bh) return;
         uint8_t* d = canvas.data() + (static_cast<size_t>(y) * bw + x) * 4;
@@ -871,6 +873,7 @@ void draw_bld_anim_frame(StageApp& a, const std::string& art_in, int frame_i, bo
                          int col, int row, int height,
                          const ra2r::render::IsometricGrid& grid, int bw, int bh, int ox,
                          int oy, std::vector<uint8_t>& canvas) {
+    (void)grid; // 帧位由调用方算好（保留参数以统一绘制函数签名）
     const std::string art = resolve_art(a, art_in, ".SHP");
     const auto* raw = load_file(a, art + ".SHP");
     if (!raw) return;
@@ -902,6 +905,7 @@ void draw_bld_turret_shp(StageApp& a, const ra2r::assets::UnitTypeDef& u,
                          const ra2r::sim::SimBuilding& b, int hgt,
                          const ra2r::render::IsometricGrid& grid, int bw, int bh, int ox, int oy,
                          std::vector<uint8_t>& canvas) {
+    (void)grid; // 锚点直接按格坐标换算（保留参数以统一绘制函数签名）
     const auto* raw = load_file(a, resolve_art(a, u.turret_anim, ".SHP") + ".SHP");
     if (!raw) return;
     ra2r::assets::ShpFile shp;
@@ -925,6 +929,7 @@ void draw_bld_turret_voxel(StageApp& a, const ra2r::assets::UnitTypeDef& u,
                            const ra2r::sim::SimBuilding& b, int hgt,
                            const ra2r::render::IsometricGrid& grid, int bw, int bh, int ox, int oy,
                            std::vector<uint8_t>& canvas) {
+    (void)grid; // 锚点直接按格坐标换算（保留参数以统一绘制函数签名）
     // 建筑炮塔体素比例：与原版一致 = ModEnc「RA2 一格 = 42.4264 体素」
     //（1 体素 = 6.03397 勒普顿，256/6.03397 per cell）→ 每体素沿格轴水平步进
     // 60/42.4264 = 1.4142px；本投影 ex=(2s,−s) → s = 30/42.4264 = 0.35355。
@@ -1015,14 +1020,15 @@ void draw_bld_turret_voxel(StageApp& a, const ra2r::assets::UnitTypeDef& u,
     //   ox = [cx(cy−sy) − cy(sy+cy)]·2s, oy = [cx(cy+sy) + cy(cy−sy)]·s（pitch=0）。
     // ZAdjust 是深度遮挡修正（正=朝观察者），非屏幕位移，本渲染器炮塔后画于
     // 底座之上，无需应用。
-    const float yaw = b.turret_dir / 256.0f * 6.2831853f - 1.5707963f;
+    const float yaw = static_cast<float>(b.turret_dir) / 256.0f * 6.2831853f - 1.5707963f;
     const float cyw = std::cos(yaw), syw = std::sin(yaw);
     const float projx = (bcx * (cyw - syw) - bcy * (syw + cyw)) * (2.0f * kBldTurretScale);
     const float projy = (bcx * (cyw + syw) + bcy * (cyw - syw)) * kBldTurretScale;
     const int ax0 = static_cast<int>(std::lround(
-        ox + b.col * 60 + (b.row & 1) * 30 + 30 + u.turret_x - projx));
-    const int ay0 = static_cast<int>(std::lround(
-        oy + b.row * 15 + u.turret_y - projy)) - hgt * ra2r::render::kHeightLevelPx;
+        static_cast<float>(ox + b.col * 60 + (b.row & 1) * 30 + 30 + u.turret_x) - projx));
+    const int ay0 =
+        static_cast<int>(std::lround(static_cast<float>(oy + b.row * 15 + u.turret_y) - projy)) -
+        hgt * ra2r::render::kHeightLevelPx;
     for (int y = 0; y < ent.h; ++y) {
         const uint8_t* s = ent.rgba.data() + static_cast<size_t>(y) * ent.w * 4;
         for (int x = 0; x < ent.w; ++x) {
@@ -1509,12 +1515,16 @@ bool write_bmp(const std::filesystem::path& path, int w, int h,
     const int stride = (w * 3 + 3) & ~3;
     std::ofstream f(path, std::ios::binary);
     if (!f) return false;
-    auto w16 = [&](uint16_t v) { f.put(v & 0xFF); f.put(v >> 8); };
+    auto put8 = [&](uint32_t v) { f.put(static_cast<char>(v & 0xFF)); };
+    auto w16 = [&](uint16_t v) {
+        put8(v & 0xFF);
+        put8(v >> 8);
+    };
     auto w32 = [&](uint32_t v) {
-        f.put(v & 0xFF);
-        f.put((v >> 8) & 0xFF);
-        f.put((v >> 16) & 0xFF);
-        f.put((v >> 24) & 0xFF);
+        put8(v & 0xFF);
+        put8((v >> 8) & 0xFF);
+        put8((v >> 16) & 0xFF);
+        put8((v >> 24) & 0xFF);
     };
     w16(0x4D42);
     w32(54 + stride * h);

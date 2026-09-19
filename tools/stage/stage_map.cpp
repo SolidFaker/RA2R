@@ -10,21 +10,21 @@
 
 namespace stage {
 
-void StageMap::set_size(int w, int h) {
-    this->w = w;
-    this->h = h;
+void StageMap::set_size(int nw, int nh) {
+    w = nw;
+    h = nh;
     cells.assign(static_cast<size_t>(w) * h, StageCell{});
     decor.clear();
 }
 
-void StageMap::generate_flat(int w, int h) {
-    set_size(w, h);
+void StageMap::generate_flat(int nw, int nh) {
+    set_size(nw, nh);
     // 全部 = 默认瓦片 0（set 0 的第 0 瓦片），高度 0
 }
 
-void StageMap::generate_algorithm(int w, int h, const ra2r::assets::TerrainTileset& ts,
+void StageMap::generate_algorithm(int nw, int nh, const ra2r::assets::TerrainTileset& ts,
                                   uint32_t seed) {
-    set_size(w, h);
+    set_size(nw, nh);
     std::mt19937 rng(seed);
     // 找水域瓦片：优先精确匹配 "Water"（避免误中排在前面的 "Water Cliffs"）；
     // 回退：SetName 含 Water 但排除 Cliff/Cave
@@ -56,9 +56,11 @@ void StageMap::generate_algorithm(int w, int h, const ra2r::assets::TerrainTiles
             for (int dx = -hr; dx <= hr; ++dx) {
                 const int x = hx + dx, y = hy + dy;
                 if (x < 0 || y < 0 || x >= w || y >= h) continue;
-                const float d = std::sqrt(dx * dx + dy * dy);
-                if (d > hr) continue;
-                const int v = static_cast<int>(hp * (1.0f - d / (hr + 1)) + 0.5f);
+                const float d = std::sqrt(static_cast<float>(dx * dx + dy * dy));
+                if (d > static_cast<float>(hr)) continue;
+                const float hrf = static_cast<float>(hr);
+                const int v = static_cast<int>(static_cast<float>(hp) * (1.0f - d / (hrf + 1.0f)) +
+                                               0.5f);
                 if (v > 0) {
                     hfield[static_cast<size_t>(y) * w + x] =
                         std::max(hfield[static_cast<size_t>(y) * w + x], v);
@@ -102,9 +104,9 @@ void StageMap::generate_algorithm(int w, int h, const ra2r::assets::TerrainTiles
                 for (auto& d : kN4) {
                     const int nx = x + d[0], ny = y + d[1];
                     if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-                    const int nh = static_cast<int>(cells[static_cast<size_t>(ny) * w + nx].height);
-                    if (nh - static_cast<int>(c.height) > 2) {
-                        c.height = static_cast<uint8_t>(nh - 2);
+                    const int nbh = static_cast<int>(cells[static_cast<size_t>(ny) * w + nx].height);
+                    if (nbh - static_cast<int>(c.height) > 2) {
+                        c.height = static_cast<uint8_t>(nbh - 2);
                         changed = true;
                     }
                 }

@@ -16,6 +16,8 @@
 #include "ra2r/assets/vxl_file.h"
 #include "ra2r/core/win_unicode.h"
 
+#include "../common/bmp_write.h"
+
 using ra2r::assets::VxlFile;
 using ra2r::assets::VxlSection;
 
@@ -38,9 +40,10 @@ RenderResult render_vxl(const VxlFile& vxl, int limb, int scale, float lx, float
     const float k = 2.0f;  // 等距投影系数（每个体素单位的屏幕位移）
     const float kh = 1.0f;
     const float kz = 2.0f;
-    const int pitch_x = static_cast<int>(k * scale);
-    const int pitch_y = static_cast<int>(kh * scale);
-    const int pitch_z = static_cast<int>(kz * scale);
+    const float fs = static_cast<float>(scale);
+    const int pitch_x = static_cast<int>(k * fs);
+    const int pitch_y = static_cast<int>(kh * fs);
+    const int pitch_z = static_cast<int>(kz * fs);
 
     const int min_x = static_cast<int>((0 - static_cast<int>(s.sy)) * pitch_x);
     const int max_x = static_cast<int>(static_cast<int>(s.sx) * pitch_x);
@@ -100,7 +103,9 @@ RenderResult render_vxl(const VxlFile& vxl, int limb, int scale, float lx, float
         int r = static_cast<int>(pal[v.color * 3] * 4 * shade);
         int g = static_cast<int>(pal[v.color * 3 + 1] * 4 * shade);
         int b = static_cast<int>(pal[v.color * 3 + 2] * 4 * shade);
-        if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+        if (r > 255) r = 255;
+        if (g > 255) g = 255;
+        if (b > 255) b = 255;
         for (int dy = -hh; dy <= hh; ++dy) {
             const int half = hw - std::abs(dy) * hw / (hh + 1);
             const int sy = v.sy + dy;
@@ -123,40 +128,12 @@ RenderResult render_vxl(const VxlFile& vxl, int limb, int scale, float lx, float
     return res;
 }
 
+// ── BMP 输出（-shot 自检用；实现见 tools/common/bmp_write.h）──
 bool write_bmp(const std::filesystem::path& path, int w, int h,
                const std::vector<uint8_t>& rgba) {
-    const int stride = (w * 3 + 3) & ~3;
-    std::ofstream f(path, std::ios::binary);
-    if (!f) return false;
-    auto w16 = [&](uint16_t v) { f.put(v & 0xFF); f.put(v >> 8); };
-    auto w32 = [&](uint32_t v) {
-        f.put(v & 0xFF); f.put((v >> 8) & 0xFF); f.put((v >> 16) & 0xFF); f.put((v >> 24) & 0xFF);
-    };
-    w16(0x4D42);
-    w32(54 + stride * h);
-    w32(0);
-    w32(54);
-    w32(40);
-    w32(w);
-    w32(h);
-    w16(1);
-    w16(24);
-    w32(0);
-    w32(stride * h);
-    w32(2835); w32(2835);
-    w32(0); w32(0);
-    std::vector<uint8_t> row(stride, 0);
-    for (int y = h - 1; y >= 0; --y) {
-        for (int x = 0; x < w; ++x) {
-            const uint8_t* p = rgba.data() + (static_cast<size_t>(y) * w + x) * 4;
-            row[x * 3 + 0] = p[2];
-            row[x * 3 + 1] = p[1];
-            row[x * 3 + 2] = p[0];
-        }
-        f.write(reinterpret_cast<const char*>(row.data()), stride);
-    }
-    return true;
+    return ra2r::tools::write_bmp_rgba(path, w, h, rgba);
 }
+
 } // namespace
 
 static int run(int argc, char** argv) {

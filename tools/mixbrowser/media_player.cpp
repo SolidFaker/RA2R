@@ -88,7 +88,8 @@ struct MediaPlayer::Impl {
     void drain_audio_decoder();
     void queue_audio_frame();
     double now_sec() const {
-        return base_sec + (playing ? (SDL_GetTicks() - t0) / 1000.0 : 0.0);
+        return base_sec +
+               (playing ? static_cast<double>(SDL_GetTicks() - t0) / 1000.0 : 0.0);
     }
     int64_t audio_available() const {
         // 输入侧未播字节（我们的 S16 PCM 口径；Available 是设备侧转换后口径，勿混用）
@@ -211,27 +212,28 @@ bool MediaPlayer::Impl::open_bik(const uint8_t* data, size_t size) {
     }
     tmp_path = out;  // fail() 将顺带删除
 
-    AVFormatContext* fmt = nullptr;
-    if (ff.avformat_open_input(&fmt, out.string().c_str(), nullptr, nullptr) != 0 || !fmt)
+    AVFormatContext* fmt_ctx = nullptr;
+    if (ff.avformat_open_input(&fmt_ctx, out.string().c_str(), nullptr, nullptr) != 0 ||
+        !fmt_ctx)
         return fail("avformat_open_input 失败（格式不被识别）");
-    if (ff.avformat_find_stream_info(fmt, nullptr) < 0)
+    if (ff.avformat_find_stream_info(fmt_ctx, nullptr) < 0)
         return fail("avformat_find_stream_info 失败");
-    this->fmt = fmt;
-    vstream = ff.av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-    astream = ff.av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, vstream, nullptr, 0);
+    this->fmt = fmt_ctx;
+    vstream = ff.av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    astream = ff.av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_AUDIO, -1, vstream, nullptr, 0);
 
     // 解码器/转换器就绪；失败仅退化该流，不致命
     auto open_codec = [&](int si, AVCodecContext** cc) -> bool {
         AVCodecContext* c = ff.avcodec_alloc_context3(nullptr);
         *cc = c;
         if (!c) return false;
-        if (ff.avcodec_parameters_to_context(c, fmt->streams[si]->codecpar) < 0) return false;
+        if (ff.avcodec_parameters_to_context(c, fmt_ctx->streams[si]->codecpar) < 0) return false;
         const AVCodec* dec = ff.avcodec_find_decoder(c->codec_id);
         if (!dec) return false;
         return ff.avcodec_open2(c, dec, nullptr) == 0;
     };
     if (vstream >= 0 && open_codec(vstream, &vcc)) {
-        const AVStream* vs = fmt->streams[vstream];
+        const AVStream* vs = fmt_ctx->streams[vstream];
         vw = vcc->width;
         vh = vcc->height;
         fps = av_q2d(vs->avg_frame_rate);
@@ -271,12 +273,13 @@ bool MediaPlayer::Impl::open_bik(const uint8_t* data, size_t size) {
     if (vstream < 0 && astream < 0) return fail("无可用音视频流");
 
     // 时长：容器 > 视频流 > 音频流，均未知则 0（UI 显示 -）
-    if (fmt->duration > 0) {
-        duration = fmt->duration / static_cast<double>(AV_TIME_BASE);
-    } else if (vstream >= 0 && fmt->streams[vstream]->duration > 0) {
-        duration = fmt->streams[vstream]->duration * vtb;
-    } else if (astream >= 0 && fmt->streams[astream]->duration > 0) {
-        duration = fmt->streams[astream]->duration * av_q2d(fmt->streams[astream]->time_base);
+    if (fmt_ctx->duration > 0) {
+        duration = static_cast<double>(fmt_ctx->duration) / static_cast<double>(AV_TIME_BASE);
+    } else if (vstream >= 0 && fmt_ctx->streams[vstream]->duration > 0) {
+        duration = static_cast<double>(fmt_ctx->streams[vstream]->duration) * vtb;
+    } else if (astream >= 0 && fmt_ctx->streams[astream]->duration > 0) {
+        duration = static_cast<double>(fmt_ctx->streams[astream]->duration) *
+                   av_q2d(fmt_ctx->streams[astream]->time_base);
     }
     vframe = ff.av_frame_alloc();
     aframe = ff.av_frame_alloc();
@@ -285,7 +288,7 @@ bool MediaPlayer::Impl::open_bik(const uint8_t* data, size_t size) {
 
     // 无视频流（通用音频兜底）：整段预解码，无需按墙钟驱动
     if (vstream < 0 && astream >= 0 && sdl_stream) {
-        while (ff.av_read_frame(fmt, packet) >= 0) {
+        while (ff.av_read_frame(fmt_ctx, packet) >= 0) {
             if (packet->stream_index == astream) send_audio_packet();
             ff.av_packet_unref(packet);
         }
@@ -361,8 +364,9 @@ int MediaPlayer::Impl::decode_video_step() {
             uint8_t* dst[4] = {vrgba.data(), nullptr, nullptr, nullptr};
             const int dstride[4] = {vstride, 0, 0, 0};
             ff.sws_scale(sws, vframe->data, vframe->linesize, 0, vh, dst, dstride);
-            const double pts = vframe->pts >= 0 ? vframe->pts * vtb
-                                                : next_video_sec + 1.0 / fps;
+            const double pts = vframe->pts >= 0
+                                   ? static_cast<double>(vframe->pts) * vtb
+                                   : next_video_sec + 1.0 / fps;
             next_video_sec = pts;
             vframe_valid = true;
             return 1;

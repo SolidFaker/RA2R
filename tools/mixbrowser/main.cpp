@@ -46,6 +46,8 @@
 #include "ra2r/core/win_unicode.h"
 #include "ra2r/ui/ui.h"
 
+#include "../common/bmp_write.h"
+
 #include "media_player.h"  // AUD/WAV/BIK 播放（FFmpeg 运行时绑定封装在此模块内）
 #include "ra2r/render/minimap.h"
 #include "ra2r/render/terrain_tile.h"
@@ -66,7 +68,8 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS* ep) {
     std::fprintf(stderr,
                  "CRASH code=%08lX addr=%p base=%p offset=%p\n",
                  static_cast<unsigned long>(ep->ExceptionRecord->ExceptionCode),
-                 ep->ExceptionRecord->ExceptionAddress, base,
+                 static_cast<const void*>(ep->ExceptionRecord->ExceptionAddress),
+                 static_cast<const void*>(base),
                  reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(ep->ExceptionRecord->ExceptionAddress) -
                                          reinterpret_cast<uintptr_t>(base)));
     std::fflush(stderr);
@@ -185,39 +188,12 @@ std::vector<uint8_t> render_shp(const ShpFile& shp, int frame, const Palette& pa
 
 // ── BMP 输出（--shot 自检用） ────────────────────────────────────────
 
-bool write_bmp(const fs::path& path, int w, int h, const std::vector<uint8_t>& rgba) {
-    const int stride = (w * 3 + 3) & ~3;
-    std::ofstream f(path, std::ios::binary);
-    if (!f) return false;
-    auto w16 = [&](uint16_t v) { f.put(v & 0xFF); f.put(v >> 8); };
-    auto w32 = [&](uint32_t v) {
-        f.put(v & 0xFF); f.put((v >> 8) & 0xFF); f.put((v >> 16) & 0xFF); f.put((v >> 24) & 0xFF);
-    };
-    w16(0x4D42);
-    w32(54 + stride * h);
-    w32(0);
-    w32(54);
-    w32(40);
-    w32(w);
-    w32(h);
-    w16(1);
-    w16(24);
-    w32(0);
-    w32(stride * h);
-    w32(2835); w32(2835);
-    w32(0); w32(0);
-    std::vector<uint8_t> row(stride, 0);
-    for (int y = h - 1; y >= 0; --y) {
-        for (int x = 0; x < w; ++x) {
-            const uint8_t* p = rgba.data() + (static_cast<size_t>(y) * w + x) * 4;
-            row[x * 3 + 0] = p[2];
-            row[x * 3 + 1] = p[1];
-            row[x * 3 + 2] = p[0];
-        }
-        f.write(reinterpret_cast<const char*>(row.data()), stride);
-    }
-    return true;
+// ── BMP 输出（-shot 自检用；实现见 tools/common/bmp_write.h）──
+bool write_bmp(const std::filesystem::path& path, int w, int h,
+               const std::vector<uint8_t>& rgba) {
+    return ra2r::tools::write_bmp_rgba(path, w, h, rgba);
 }
+
 
 // ── 应用状态 ────────────────────────────────────────────────────────
 
@@ -1700,8 +1676,10 @@ void draw_preview_pane(App& a, SDL_Renderer* renderer) {
             }
             if (a.preview_tex) {
                 const auto& fh = s.shp.frame(s.shp_frame);
-                ImGui::Image(reinterpret_cast<ImTextureID>(a.preview_tex),
-                             ImVec2(fh.cx * s.shp_scale, fh.cy * s.shp_scale));
+                ImGui::Image(
+                    reinterpret_cast<ImTextureID>(a.preview_tex),
+                    ImVec2(static_cast<float>(fh.cx) * static_cast<float>(s.shp_scale),
+                           static_cast<float>(fh.cy) * static_cast<float>(s.shp_scale)));
             }
             break;
         }
@@ -1715,8 +1693,10 @@ void draw_preview_pane(App& a, SDL_Renderer* renderer) {
                 break;
             }
             const std::string mname = s.mapf.ini().get("Basic", "Name", "");
-            const int players = 1 + std::max<int>(s.mapf.buildings().size() > 8 ? 2 : 1,
-                                                  s.mapf.units().size() > 6 ? 2 : 1);
+            const int players =
+                1 + std::max(s.mapf.buildings().size() > 8 ? 2 : 1,
+                             s.mapf.units().size() > 6 ? 2 : 1);
+            (void)players;
             ImGui::Text("地图: %s", mname.c_str());
             ImGui::Text("剧场 %s · %dx%d 格 · 对象: 建筑%zu / 单位%zu / 步兵%zu",
                         s.mapf.theater().c_str(), s.mapf.cell_w(), s.mapf.cell_h(),
@@ -1743,11 +1723,13 @@ void draw_preview_pane(App& a, SDL_Renderer* renderer) {
                 s.map_thumb_uploaded = true;
             }
             if (s.map_thumb_uploaded) {
-                const float scale = std::max(1.0f, std::min(6.0f, 420.0f / img.w));
+                const float scale =
+                    std::max(1.0f, std::min(6.0f, 420.0f / static_cast<float>(img.w)));
                 ImGui::Text("%s（%dx%d × %.1f）", s.map_thumb_src.c_str(), img.w, img.h,
                             scale);
                 ImGui::Image(reinterpret_cast<ImTextureID>(a.preview_tex),
-                             ImVec2(img.w * scale, img.h * scale));
+                             ImVec2(static_cast<float>(img.w) * scale,
+                                    static_cast<float>(img.h) * scale));
             }
             break;
         }
@@ -1779,9 +1761,11 @@ void draw_preview_pane(App& a, SDL_Renderer* renderer) {
             ImGui::Text("PCX %dx%d（%d 平面 × %d 位%s）", w, h, s.pcx.planes(),
                         s.pcx.bits_per_pixel(),
                         s.pcx.has_palette() ? "，256 色调色板" : "，24 位真彩");
-            const float scale = std::max(0.5f, std::min(2.0f, 640.0f / w));
+            const float scale =
+                std::max(0.5f, std::min(2.0f, 640.0f / static_cast<float>(w)));
             ImGui::Image(reinterpret_cast<ImTextureID>(a.preview_tex),
-                         ImVec2(w * scale, h * scale));
+                         ImVec2(static_cast<float>(w) * scale,
+                                static_cast<float>(h) * scale));
             break;
         }
         case Kind::Tmp: {
@@ -1837,8 +1821,10 @@ void draw_preview_pane(App& a, SDL_Renderer* renderer) {
             }
             if (a.preview_tex) {
                 ImGui::Image(reinterpret_cast<ImTextureID>(a.preview_tex),
-                             ImVec2(a.ptex_w * static_cast<float>(s.tmp_scale),
-                                    a.ptex_h * static_cast<float>(s.tmp_scale)));
+                             ImVec2(static_cast<float>(a.ptex_w) *
+                                        static_cast<float>(s.tmp_scale),
+                                    static_cast<float>(a.ptex_h) *
+                                        static_cast<float>(s.tmp_scale)));
             }
             break;
         }
