@@ -762,12 +762,19 @@ void draw_bld_turret_shp(StageApp& a, const ra2r::assets::UnitTypeDef& u,
 
 // 体素炮塔（rulesmd TurretAnimIsVoxel=true，如 YAGGUN.VXL/SAM.VXL）：
 // 整模合成（全部 section，跨节深度），yaw = 建筑朝向（与载具同约定），
-// HVA 帧按 anim_clock 循环（盖特枪管旋转动画），锚点 = 建筑顶格顶顶点 +
-// TurretAnimX/Y
+// HVA 帧按 anim_clock 循环（盖特枪管旋转动画）。
+// 放置规则（实测标定，见 docs/DEBUGGING.md §3.17）：
+//   炮塔模型原点 = 地基几何中心 + TurretAnimX/Y（勒普顿换算像素）。
+//   地基中心相对建筑锚点（顶格顶顶点）= ((fw−fh)·15, (fw+fh)·7.5)——2×2 巨炮
+//   (0,30)、1×1 (0,15)，与行奇偶无关；早期用"各格顶顶点均值"在 2×2 时随行
+//   奇偶差 30px（偶行 +45、奇行 +15），是巨炮错位主因。
 void draw_bld_turret_voxel(StageApp& a, const ra2r::assets::UnitTypeDef& u,
                            const ra2r::sim::SimBuilding& b, int hgt,
                            const ra2r::render::IsometricGrid& grid, int bw, int bh, int ox, int oy,
                            std::vector<uint8_t>& canvas) {
+    // 建筑炮塔体素比例与载具滑杆解耦：MK 建成帧 F1 标定（GTGCAN 0.50→0.713、
+    // 0.35→0.606、0.30→0.529；YAGGUN 0.50→0.684、0.35→0.664）→ 0.5（1px/体素）
+    constexpr float kBldTurretScale = 0.5f;
     const std::string turret_art = resolve_art(a, u.turret_anim, ".VXL");
     const auto* raw = load_file(a, turret_art + ".VXL");
     if (!raw) return;
@@ -796,9 +803,7 @@ void draw_bld_turret_voxel(StageApp& a, const ra2r::assets::UnitTypeDef& u,
     (void)0;
     const int hva_frame = 0;
     const int bhva_frame = 0;
-    // 比例与载具一致（OpenRA RenderVoxels.Scale 默认 12 全体共用，建筑炮塔
-    // 无独立比例；随 obj_scale 滑杆联动）
-    const int scale16 = static_cast<int>(std::clamp(a.obj_scale, 0.1f, 4.0f) * 16.0f);
+    const int scale16 = static_cast<int>(kBldTurretScale * 16.0f);
     const std::string vkey = turret_art + '+' + (have_barrel ? barrel_art : std::string("-")) + '|' +
                              std::to_string(b.dir) + '|' + std::to_string(scale16) + '|' +
                              std::to_string(hva_frame) + '|' + std::to_string(bhva_frame);
@@ -807,7 +812,7 @@ void draw_bld_turret_voxel(StageApp& a, const ra2r::assets::UnitTypeDef& u,
         ra2r::render::VoxelView view;
         view.yaw = b.dir / 256.0f * 6.2831853f - 1.5707963f;
         view.pitch = 0.0f;
-        view.scale = std::clamp(a.obj_scale, 0.1f, 4.0f);
+        view.scale = kBldTurretScale;
         float ax = 0, ay = 0, body_ax = 0, body_ay = 0, orig_ax = 0, orig_ay = 0;
         const ra2r::render::VoxelPart parts[2] = {
             {&vxl, have_hva ? &hva : nullptr, hva_frame},
@@ -817,9 +822,9 @@ void draw_bld_turret_voxel(StageApp& a, const ra2r::assets::UnitTypeDef& u,
             &orig_ay);
         ent.w = img.w;
         ent.h = img.h;
-        // 锚点 = 模型原点 (0,0,0)【模型空间】在光栅中的位置——rules TurretAnimX/Y
-        // 以模型原点（炮塔枢轴）为参照（OpenRA pxOrigin 同款）。注意区别于
-        // 包围盒角锚（索引原点）：两者差 = mn 偏移经视角变换，曾造成 1~3px 错位。
+        // 锚点 = 模型原点 (0,0,0)【模型空间】在光栅中的位置（不含任何节 HVA
+        // 平移，见 engine voxel_raster.cpp）——rules TurretAnimX/Y 以炮塔枢轴
+        // 为参照（OpenRA pxOrigin 同款）。
         ent.ax = static_cast<int>(std::lround(orig_ax));
         ent.ay = static_cast<int>(std::lround(orig_ay));
         (void)body_ax;
@@ -829,41 +834,17 @@ void draw_bld_turret_voxel(StageApp& a, const ra2r::assets::UnitTypeDef& u,
     } else {
         ent = a.obj_cache.voxels[vkey];
     }
-    // 放置（原版 rulesmd `TurretAnimX/Y` 语义 + OpenRA 同款机制）：
-    //   炮塔**模型原点**落在「建筑锚点 + (TurretAnimX, TurretAnimY)」，
-    //   与 OpenRA 一致：`ModelRenderable` 把体素光栅定位在 pxOrigin（模型原点），
-    //   炮塔偏移是屏幕空间平移（`Turreted.Offset` → `ScreenVectorComponents`）。
-    // 依据（游戏自身建成帧美术 <建筑>MK.SHP 完成帧逐像素标定，画布中心=锚点）：
-    //   YAGGUN TurretAnim(0,15)：原点 (0,15) 时，炮塔接触点落在画布中心附近，
-    //     与美术 F1 最优解只差 x≈15px（该差值来自美术里炮管仰角与我们的水平姿态
-    //     不一致，属标定偏差）；改按"接触点落在 TurretAnimY"反而会下沉 13.6px。
-    //   GTGCAN TurretAnim(3,28) / NAFLAK (0,2) / NASAM (0,0) 同为该规则。
-    // 不用整模 AABB 中心：炮管朝向一变它摆 ±27px；也不用底座上的"炮塔座特征"
-    // 定位（会把巨炮的炮塔拉到平台一侧）。
-    // 放置语义（ModEnc 权威）：TurretAnimX/Y = 相对**建筑中心**的像素偏移
-    //（正 Y 向下），建筑中心 = 地基 fw×fh 各格中心的均值（此前用顶格中心，
-    // 2×2 巨炮差 (+30,+7.5)px —— 残余错位根源）；ZAdjust 是深度遮挡修正
-    //（正=朝观察者），非屏幕位移，本渲染器炮塔后画于底座之上，无需应用。
-    int fcx = 0, fcy = 0, fn = 0;
-    for (int j = 0; j < b.fh; ++j)
-        for (int i = 0; i < b.fw; ++i) {
-            fcx += ox + (b.col + i) * 60 + ((b.row + j) & 1) * 30 + 30;
-            fcy += oy + (b.row + j) * 15;
-            ++fn;
-        }
-    // TurretAnimX/Y 为勒普顿（1 格 = 256）：X·60/256、Y·30/256 换算像素。
-    //（ModEnc 记作 pixels 系讹传——以真值标定验证：换算后 GTGCAN≈(1,3)、
-    // YAGGUN≈(0,2)、NASAM(0,0)，与 MK 建成帧实测偏移全部吻合；
-    // 按 1:1 像素套用时巨炮下移 28px、盖特下移 15px，正是偏移过大的来源）
-    // 每建筑微调（用户对照原版目视校准；键=rulesmd 类型名）
-    static const std::map<std::string, std::pair<int, int>> kTurretNudge = {
-        {"YAGGUN", {-4, -13}},  // 盖特机炮：上移 13、左移 4（用户 GUI 校准）
-    };
-    const auto nit = kTurretNudge.find(b.type);
-    const int ndx = nit != kTurretNudge.end() ? nit->second.first : 0;
-    const int ndy = nit != kTurretNudge.end() ? nit->second.second : 0;
-    const int ax0 = fcx / fn + u.turret_x * 60 / 256 + ndx;
-    const int ay0 = fcy / fn + u.turret_y * 30 / 256 + ndy -
+    // 放置：模型原点落在「建筑锚点 + 地基几何中心偏移 + TurretAnimX/Y」。
+    // TurretAnimX/Y 为勒普顿（1 格 = 256）：X·60/256、Y·30/256 换算像素
+    //（MK 建成帧 F1：GTGCAN 地基中心+勒普顿 0.713 vs 像素 1:1 仅 0.481；
+    //  ModEnc 记作 pixels 系讹传）。
+    // ZAdjust 是深度遮挡修正（正=朝观察者），非屏幕位移，本渲染器炮塔后画于
+    // 底座之上，无需应用。
+    const int struct_dx = (b.fw - b.fh) * 15;
+    const int struct_dy = (b.fw + b.fh) * 15 / 2;
+    const int ax0 = ox + b.col * 60 + (b.row & 1) * 30 + 30 + struct_dx +
+                    u.turret_x * 60 / 256;
+    const int ay0 = oy + b.row * 15 + struct_dy + u.turret_y * 30 / 256 -
                     hgt * ra2r::render::kHeightLevelPx;
     for (int y = 0; y < ent.h; ++y) {
         const uint8_t* s = ent.rgba.data() + static_cast<size_t>(y) * ent.w * 4;

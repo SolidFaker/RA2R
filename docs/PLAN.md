@@ -205,7 +205,7 @@
 | 阵营色重映射（Remap 16..31） | ✅ `PaletteLut::build(pal, remap16)` 与 `VoxelView::remap` 双路径（SHP 用剧场单位盘、VXL 用内嵌盘，同段 16..31）；ramp 按 ModEnc 语义生成（H 恒定、V 最大亮度、越暗越饱和，8 位不经 6 位 ×4）；`PlacedObject.remap` 按 House 索引、帧/体素缓存键含 remap；battle1 实测盟军建筑/载具/步兵蓝、苏军红 |
 | 遭遇战 AI 脚本（自检用） | ✅ `skirmish_ai_tick`：按角色（conyard/power/refinery/barracks/weapon）在 `[BuildingTypes]` 里挑**通过科技树校验**的本阵营建筑（避免把盟军 GAPOWR 挑给苏军），固定节拍展开基地车 + 就近落点建造；仅用于演示/自检，正式 AI 归 M6 |
 | 无头验收 | ✅ `--skirmish --test --simsteps N`：玩家展开 → 电厂 → 矿场 → 兵营 → 重工，AI 同步运营；battle1 实测 4800 帧后 Player 建筑 4/5 完成（$4700、电力 +140）、Opponent 5/5 完成（电力 +65）；截图目视确认两基地布局、展开动画序列与阵营色 |
-| 载具炮塔/炮管 + 建筑体素炮塔 | ✅ VXL 节包围盒映射烘焙进投影（索引→模型空间；HTNK 三件天生咬合验证）；建筑炮塔 <Image>TUR.VXL / <Image>.VXL（GTGCAN/YAGGUN）以 2.0px/体素顶置于 SHP 底座、主体节基座中心对顶格中心；HVA 帧定位（YAGGUN 双管）生效 |
+| 载具炮塔/炮管 + 建筑体素炮塔 | ✅ VXL 节包围盒映射烘焙进投影（索引→模型空间；HTNK 三件天生咬合验证）；建筑炮塔 <Image>TUR.VXL / <Image>.VXL（GTGCAN/YAGGUN）、HVA 帧定位（YAGGUN 双管）生效；**锚点修复（DEBUGGING §3.17）**：原点锚剔除首节 HVA 平移（YAGGUN 曾偏 (15.4,−25.2)px）、基准点 = 地基几何中心 `(fw−fh)·15, (fw+fh)·7.5`（取消随行奇偶跳变的各格均值）、TurretAnimX/Y 勒普顿换算、炮塔比例独立固定 0.5（1px/体素）；MK 建成帧 F1：GTGCAN 0.71 / YAGGUN 0.68 / NASAM 0.68 / NAFLAK 0.56；dttd 全图 A/B 目视修正、nudge 表删除 |
 | 低电惩罚 | ✅ sim.tick：净电力<0 的 House 建造推进与修理均 ×1/2（奇数帧跳过，确定性；正电力场景与旧基线逐项一致）；低电武器 ROF/雷达影响留 M5 |
 | 建筑修理 / 出售 | ✅ `toggle_repair/sell_building`：修理按满修≈300 帧节奏回血并等比扣款（资金耗尽自停、满血自停、低电减半）；出售退款 = Cost·RefundPercent%·残血比，静默移除（无爆炸）并解除地基阻挡；stage 点选建筑（地基格拾取）→ 侧边栏 修理/出售 按钮 |
 

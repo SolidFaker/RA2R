@@ -58,6 +58,10 @@ struct VoxelPart {
 // 炮管 `<Image>BARL.VXL`，如巨炮 GTGCANTUR + GTGCANBARL、坦克 GTNKTUR + GTNKBARL），
 // 两者坐标同系、必须一起做 z-test，否则互相穿插。锚点语义同单模型版本
 // （body_* 取全部部件中体素最多的那节）。
+// 额外输出：
+//   origin_x/origin_y — **不含任何 HVA 平移**的模型原点 (0,0,0) 光栅位置
+//     （炮塔枢轴，建筑体素炮塔用；rules TurretAnimX/Y 以它为参照）。
+//     HVA 平移只摆位节几何，不得进入该锚点（否则整模随首节平移漂移）。
 RasterImage rasterize_voxel_parts(const VoxelPart* parts, size_t count, const VoxelView& view,
                                   float* anchor_x = nullptr, float* anchor_y = nullptr,
                                   float* body_x = nullptr, float* body_y = nullptr,

@@ -441,7 +441,12 @@ RasterImage rasterize_voxel_parts(const VoxelPart* parts, size_t count, const Vo
     }
     // 模型原点 (0,0,0)【模型空间】在光栅中的位置：rules TurretAnimX/Y 等
     // 游戏内偏移都以模型原点为参照（炮塔枢轴）。索引 → 模型：
-    // i = (0 − mn − 0.5·step)/step，用首个节的投影换算（各节线性一致或仅差平移）
+    // i = (0 − mn − 0.5·step)/step。
+    // **必须用不含 HVA 平移的投影**：HVA 平移只是"该节几何相对模型原点的摆位"
+    // （如 YAGGUN 炮管 t=(6.2,9.1,26.7) 抬到枢轴高度），原点锚必须固定在模型
+    // 坐标系原点。早期用 secs[0].proj（含该节 HVA 平移）计算，整个光栅随首节
+    // 平移漂移 R·t——YAGGUN 首节=炮管，实测偏 (+15.4,−25.2)px@scale0.5，是
+    // "盖特炮塔与底座错位"的主因之一；GTGCAN/BARL 平移极小故未暴露。
     if (origin_x || origin_y) {
         if (!secs.empty()) {
             const auto& s0 = *secs[0].s;
@@ -449,10 +454,13 @@ RasterImage rasterize_voxel_parts(const VoxelPart* parts, size_t count, const Vo
                 const float step = n > 0 ? (mx - mn) / n : 1.0f;
                 return step > 0 ? (0.0f - mn - 0.5f * step) / step : 0.0f;
             };
+            const float identity[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+            const Projection pure =
+                make_section_projection(s0, identity, view.yaw, view.pitch, view.scale);
             float ox, oy, od;
-            secs[0].proj.project(idx_of(s0.min[0], s0.max[0], s0.sx),
-                                 idx_of(s0.min[1], s0.max[1], s0.sy),
-                                 idx_of(s0.min[2], s0.max[2], s0.sz), ox, oy, od);
+            pure.project(idx_of(s0.min[0], s0.max[0], s0.sx),
+                         idx_of(s0.min[1], s0.max[1], s0.sy),
+                         idx_of(s0.min[2], s0.max[2], s0.sz), ox, oy, od);
             if (origin_x) *origin_x = ox - min_x + margin;
             if (origin_y) *origin_y = oy - min_y + margin;
         } else {
