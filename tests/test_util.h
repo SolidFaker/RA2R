@@ -6,17 +6,44 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <filesystem>
 #include <map>
 #include <string>
 #include <vector>
 
 #include "ra2r/assets/file_index.h"
+#if defined(__linux__)
+#include <unistd.h>
+#endif
+
 #include "ra2r/assets/rules_db.h"
 
 namespace ra2r::test {
 
 inline const char* game_dir() {
     if (const char* env = std::getenv("RA2R_GAME_DIR")) return env;
+    // 默认：仓库根 Yuri/（相对本测试可执行文件向上找，Windows/Linux 通用）
+    static std::string cached;
+    if (!cached.empty()) return cached.c_str();
+    namespace fs = std::filesystem;
+    std::error_code ec;
+#if defined(__linux__)
+    char lbuf[4096] = {};
+    if (::readlink("/proc/self/exe", lbuf, sizeof(lbuf) - 1) > 0)
+        cached = fs::path(lbuf).parent_path().string();
+#elif defined(_WIN32)
+    cached = fs::current_path(ec).string();
+#endif
+    if (!cached.empty()) {
+        fs::path p(cached);
+        for (int up = 0; up < 4; ++up) {
+            const fs::path y = p / "Yuri";
+            if (fs::exists(y / "ra2md.mix", ec)) return cached = y.string(), cached.c_str();
+            if (fs::exists(y / "RA2MD.MIX", ec)) return cached = y.string(), cached.c_str();
+            p = p.parent_path();
+            if (p.empty()) break;
+        }
+    }
     return "I:/ai/RA2R/Yuri";
 }
 

@@ -8,6 +8,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "ra2r/core/win_unicode.h"
+#elif defined(__linux__)
+#include <unistd.h>
 #endif
 
 namespace ra2r::core {
@@ -15,11 +17,12 @@ namespace ra2r::core {
 namespace {
 
 // 判定目录像不像游戏目录：含 ra2md.mix（YR）或 ra2.mix（RA2）。
-// Windows 文件系统大小写不敏感，小写检测即可覆盖。
+// Windows 文件系统大小写不敏感；Linux 区分大小写 → 同时探测常见大小写
+// （原版安装为小写，部分拷贝/社区版为 RA2MD.MIX）。
 bool looks_like_game_dir(const std::filesystem::path& dir) {
     std::error_code ec;
     if (!std::filesystem::is_directory(dir, ec)) return false;
-    for (const char* n : {"ra2md.mix", "ra2.mix"}) {
+    for (const char* n : {"ra2md.mix", "ra2.mix", "RA2MD.MIX", "RA2.MIX"}) {
         if (std::filesystem::exists(dir / n, ec)) return true;
     }
     return false;
@@ -64,7 +67,8 @@ std::string find_game_dir() {
         if (!p.empty() && looks_like_game_dir(p)) return p;
     }
 
-    // 2) exe 目录向上几级（开发布局：exe 在 build/tools/，游戏在仓库根 Yuri/）
+    // 2) exe 目录向上几级（开发布局：exe 在 build/tools/ 或 build/tests/，
+    //    游戏在仓库根 Yuri/）。Windows：GetModuleFileNameW；Linux：/proc/self/exe。
     std::vector<std::filesystem::path> candidates;
 #ifdef _WIN32
     wchar_t buf[MAX_PATH];
@@ -72,6 +76,16 @@ std::string find_game_dir() {
         const std::filesystem::path exe_dir = std::filesystem::path(buf).parent_path();
         for (const char* rel : {"Yuri", "RA2", "Red Alert 2", "Yuri's Revenge", "../Yuri",
                                 "../RA2", "../../Yuri", "../../RA2", "../Red Alert 2"}) {
+            candidates.push_back(exe_dir / rel);
+        }
+    }
+#elif defined(__linux__)
+    char lbuf[4096] = {};
+    const ssize_t n = ::readlink("/proc/self/exe", lbuf, sizeof(lbuf) - 1);
+    if (n > 0) {
+        const std::filesystem::path exe_dir = std::filesystem::path(lbuf).parent_path();
+        for (const char* rel : {"Yuri", "RA2", "../Yuri", "../../Yuri", "../RA2",
+                                "../../RA2"}) {
             candidates.push_back(exe_dir / rel);
         }
     }
