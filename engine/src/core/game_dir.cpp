@@ -42,6 +42,40 @@ bool looks_like_game_dir(const std::filesystem::path& dir) {
     return false;
 }
 
+// 逐级把路径解析为磁盘上真实大小写（Linux 大小写敏感；找不到返回空 + ec 置位）
+std::filesystem::path resolve_ci(const std::filesystem::path& p, std::error_code& ec) {
+    std::filesystem::path out;
+    for (const auto& part : p) {
+        if (part == "/" || part == "\\" || part == ".") {
+            out /= part;
+            continue;
+        }
+        if (part == "..") {
+            out /= part;
+            continue;
+        }
+        const std::filesystem::path next = out / part;
+        if (std::filesystem::is_directory(next, ec) || std::filesystem::is_regular_file(next, ec))
+            continue;
+        // 在父目录里按大小写不敏感找一个同名项
+        bool found = false;
+        for (const auto& de : std::filesystem::directory_iterator(
+                 out.empty() ? std::filesystem::path(".") : out, ec)) {
+            if (iequals(de.path().filename().string(), part.string())) {
+                out /= de.path().filename();
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            ec = std::make_error_code(std::errc::no_such_file_or_directory);
+            return {};
+        }
+    }
+    ec.clear();
+    return out;
+}
+
 // 注册表读 InstallPath（宽字符值 → UTF-8）
 std::string registry_install_path(const std::vector<std::wstring>& subkeys) {
 #ifdef _WIN32
@@ -118,6 +152,10 @@ std::string find_game_dir() {
         const auto abs = std::filesystem::absolute(c, ec);
         if (ec) continue;
         if (looks_like_game_dir(abs)) return abs.string();
+        // 路径本身不存在时（Linux 大小写敏感：候选 `Yuri` vs 实际 `yuri`），
+        // 逐级做大小写不敏感解析后再判定
+        const auto ci = resolve_ci(abs, ec);
+        if (!ec && looks_like_game_dir(ci)) return ci.string();
     }
     return {};
 }
