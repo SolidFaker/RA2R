@@ -12,12 +12,16 @@
 
 #include "ra2r/assets/file_index.h"
 #include "ra2r/assets/rules_db.h"
+#include "ra2r/core/game_dir.h"
 
 namespace ra2r::test {
 
+// 游戏目录：环境变量 RA2R_GAME_DIR 优先，否则用引擎的自动发现
+// （注册表 / exe 相对路径 / 当前目录，大小写不敏感）——跨平台同一套逻辑
 inline const char* game_dir() {
     if (const char* env = std::getenv("RA2R_GAME_DIR")) return env;
-    return "I:/ai/RA2R/Yuri";
+    static const std::string found = core::find_game_dir();
+    return found.c_str();
 }
 
 // 懒加载的 MIX 名称索引（失败返回 nullptr；只尝试一次）
