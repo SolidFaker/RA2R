@@ -353,15 +353,20 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                 }
                 // 无 Sequence= 的步兵（动物/平民）默认帧 0..7 为朝向帧（stride 1）
             }
+            // 步兵序列朝向块序（实测定案）：SHP 的 8 个朝向块按**屏幕逆时针**排布
+            // ——块 f 画的是方向 (7−f)（ModEnc"infantries have a counter-clockwise
+            // ordering"备注为真；GI/CONS 逐帧与方向/枪口方向吻合），与炮塔/载具的
+            // 顺时针约定相反。→ 画方向 d 用块 (7−d)&7。
             const int facing = (o.dir + 16) / 32 % 8;
-            int frame_i = seq_start + facing * seq_stride;
+            const int art_face = (7 - facing) & 7;
+            int frame_i = seq_start + art_face * seq_stride;
             if (o.moving && walk_start >= 0 && walk_len > 0) {
                 // 行走相位：原版硬编码播放速率 = 每 3 逻辑帧推进 1 动画帧
                 // （ModEnc Infantry Animation Sequences：Walk=3 @15fps 逻辑帧；
                 // 旧实现 2/3 帧/逻辑帧 = 4.5 倍速已修）
                 const uint32_t phase =
                     (o.anim_clock / 3) % static_cast<uint32_t>(walk_len);
-                frame_i = walk_start + facing * walk_stride + static_cast<int>(phase);
+                frame_i = walk_start + art_face * walk_stride + static_cast<int>(phase);
             } else if (o.idle_kind) {
                 // 静止 idle 动作（sim 触发）：Idle1/Idle2 段按同速率 3 播放；
                 // 段内帧播完即回 Guard（busy 期由 sim 控制）
@@ -373,12 +378,12 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                     const uint32_t t =
                         o.anim_clock >= o.idle_start ? o.anim_clock - o.idle_start : 0;
                     if (t < static_cast<uint32_t>(i_len) * 3) {
-                        // Stride>0 = 多朝向段（罕见）：基址 = Start + 朝向·Stride，
-                        // 朝向取第 4 参数字母（缺省 = 单位当前朝向）；
+                        // Stride>0 = 多朝向段（罕见）：基址 = Start + 块号·Stride，
+                        // 块号由第 4 参数字母（缺省 = 单位当前朝向）换算到序列块序；
                         // Stride=0 = 单朝向段，帧序即 Start..Start+Length-1
                         const int base =
                             i_stride > 0
-                                ? i_start + (i_dir >= 0 ? i_dir : facing) * i_stride
+                                ? i_start + ((i_dir >= 0 ? (7 - i_dir) & 7 : art_face)) * i_stride
                                 : i_start;
                         frame_i = base + static_cast<int>(t / 3);
                     }

@@ -136,7 +136,7 @@
 | 光照等级管线 | ✅ PaletteLut 32 级 + --light 距离渐变（中心 0/边缘 24 已验证） |
 | 建筑渲染管线（artmd Image/Foundation + SHP 首帧 + 单位盘） | ✅ 战役图 119 建筑实测 |
 | 载具渲染管线（VXL+HVA 体素锚点对齐格中心，dir→yaw） | ✅ 战役图 21 载具实测 |
-| 步兵渲染管线（Image= 链 + Sequence 朝向帧 + subcell） | ✅ 战役图 41 步兵实测；**行走/idle 动画** = artmd `Sequence=` 节（`Walk=Start,Length,Stride` 循环段；`Idle1/Idle2=Start,Length,0,定向`）：行进播 Walk、静止由 sim 按 `IdleActionFrequency` 触发 Idle1/Idle2、否则 Guard；**播放速率 = 原版硬编码 3 逻辑帧/动画帧**（ModEnc Infantry Animation Sequences；旧实现 clock·2/3 快 4.5 倍已修），整数运算保确定性；`PlacedObject.moving/anim_clock/idle_kind/idle_start` 由 sim 注入，见 object_layer.cpp 与 DEBUGGING §3.18 |
+| 步兵渲染管线（Image= 链 + Sequence 朝向帧 + subcell） | ✅ 战役图 41 步兵实测；**行走/idle 动画** = artmd `Sequence=` 节（`Walk=Start,Length,Stride` 循环段；`Idle1/Idle2=Start,Length,0,定向`）：行进播 Walk、静止由 sim 按 `IdleActionFrequency` 触发 Idle1/Idle2、否则 Guard；**播放速率 = 原版硬编码 3 逻辑帧/动画帧**（ModEnc；旧实现 clock·2/3 快 4.5 倍已修）；**朝向块序 = 屏幕逆时针**（块 f = 方向 (7−dir)&7；GI/CONS 逐帧箭头对照实测定案，与炮塔/载具顺时针相反），块号 = `(7−dir)&7`；整数运算保确定性；`PlacedObject.moving/anim_clock/idle_kind/idle_start` 由 sim 注入，见 object_layer.cpp 与 DEBUGGING §3.18/§3.19 |
 | 等距包围盒修复（右极值角 (W-1,0)，此前右半被裁） | ✅ DEBUGGING.md 3.7 |
 | 全单位陈列场景（验收） | ✅ --showcase：218/218 VXL 网格渲染 |
 | 混合过渡（斜坡/水岸边的过渡瓦片选择） | ✅ 编辑器烘焙瓦片天然支持；斜坡高度经 cell.height 抬升 + 悬崖扩展区渲染 |
