@@ -20,6 +20,7 @@ add_executable(ra2r_tests
   test_codecs.cpp
   test_fixtures.cpp
   test_integration.cpp
+  test_engine_modules.cpp
   test_sim.cpp
   test_skirmish.cpp
   test_assets.cpp
