@@ -640,6 +640,38 @@ const ra2r::assets::ShpLayout& anim_layout(StageApp& a, const std::string& art,
     return a.obj_cache.anim_layouts.emplace(art, ra2r::assets::shp_layout(shp)).first->second;
 }
 
+// 体素节包围盒经 HVA 帧变换（旋转 3×3 + 平移×det）后的 AABB 角点。
+// 供建筑炮塔的"包围盒中心"对齐基准用（见 draw_bld_turret_voxel）。
+void section_bbox_hva(const ra2r::assets::VxlSection& sec, const ra2r::assets::HvaFile* hva,
+                      int frame, float mn[3], float mx[3]) {
+    const float identity[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    const float* m = identity;
+    float t[3] = {0, 0, 0};
+    if (hva && hva->is_open()) {
+        for (uint32_t i = 0; i < hva->section_count(); ++i)
+            if (hva->section_names()[i] == sec.name) {
+                const float* hm = hva->matrix(static_cast<uint32_t>(frame), i);
+                m = hm;
+                const float det = sec.det > 0 ? sec.det : 1.0f / 16.0f;
+                t[0] = hm[3] * det;
+                t[1] = hm[7] * det;
+                t[2] = hm[11] * det;
+                break;
+            }
+    }
+    mn[0] = mn[1] = mn[2] = 1e9f;
+    mx[0] = mx[1] = mx[2] = -1e9f;
+    for (int c = 0; c < 8; ++c) {
+        const float p[3] = {(c & 1) ? sec.max[0] : sec.min[0], (c & 2) ? sec.max[1] : sec.min[1],
+                            (c & 4) ? sec.max[2] : sec.min[2]};
+        for (int a = 0; a < 3; ++a) {
+            const float v = m[a * 4 + 0] * p[0] + m[a * 4 + 1] * p[1] + m[a * 4 + 2] * p[2] + t[a];
+            mn[a] = std::min(mn[a], v);
+            mx[a] = std::max(mx[a], v);
+        }
+    }
+}
+
 // 单帧 blit（缓存 + 建筑锚点定位）；ax/ay = 建筑顶格顶顶点像素。
 // 阴影帧像素为索引 1（PaletteLut 映射为 ARGB(140,0,0,0)），此处按 alpha 混合。
 void blit_bld_shp_frame(StageApp& a, const std::string& art_in, int f, int ax, int ay, int bw,
@@ -801,6 +833,22 @@ void draw_bld_turret_voxel(StageApp& a, const ra2r::assets::UnitTypeDef& u,
             if (const auto* bhraw = load_file(a, barrel_art + ".HVA"))
                 have_bhva = bhva.open(bhraw->data(), bhraw->size());
     }
+    // 对齐基准 = **炮塔 VXL 的包围盒中心 (x,y)**（含 HVA 帧 0 的旋转+平移），
+    // 不是模型原点：这些美术的原点常贴在模型一侧（YAGGUN 主体中心在模型
+    // x=+12、FLAKTUR +8.5、SAM +1.8），原点即锚会把炮塔整体推右 6~9px；
+    // 包围盒中心才是炮塔的旋转中心（旋转时自转不漂移）。z 仍以模型原点
+    // （地面）为准——TurretAnimY 的勒普顿/像素差在 y 上体现。
+    float bmin[3] = {1e9f, 1e9f, 1e9f}, bmax[3] = {-1e9f, -1e9f, -1e9f};
+    for (const auto& sec : vxl.sections()) {
+        float mn[3], mx[3];
+        section_bbox_hva(sec, have_hva ? &hva : nullptr, 0, mn, mx);
+        for (int k = 0; k < 3; ++k) {
+            bmin[k] = std::min(bmin[k], mn[k]);
+            bmax[k] = std::max(bmax[k], mx[k]);
+        }
+    }
+    const float bcx = (bmin[0] + bmax[0]) * 0.5f;
+    const float bcy = (bmin[1] + bmax[1]) * 0.5f;
     // 枪管旋转动画（HVA 多帧，如盖特机炮双管循环）：原版只在**开火时**旋转，
     // 待机恒帧 0（否则炮管持续换位闪动）。开火驱动留 M5 战斗系统接入。
     (void)0;
@@ -837,18 +885,23 @@ void draw_bld_turret_voxel(StageApp& a, const ra2r::assets::UnitTypeDef& u,
     } else {
         ent = a.obj_cache.voxels[vkey];
     }
-    // 放置：模型原点落在「建筑锚点 + 地基几何中心偏移 + TurretAnimX/Y」。
-    // TurretAnimX/Y 为勒普顿（1 格 = 256）：X·60/256、Y·30/256 换算像素
-    //（MK 建成帧 F1：GTGCAN 地基中心+勒普顿 0.713 vs 像素 1:1 仅 0.481；
-    //  ModEnc 记作 pixels 系讹传）。
+    // 放置（对齐规则 = ModEnc TurretAnimX/Y 语义 + 真值标定，见 DEBUGGING §3.17）：
+    //   炮塔 VXL **包围盒中心 (x,y)** 落在「建筑精灵锚点（顶格顶顶点 = 底座
+    //   画布中心）+ (TurretAnimX, TurretAnimY) 像素」；z 以模型原点（地面）为准。
+    //   偏移单位是**像素**（ModEnc 权威："default ... dead-center (0,0,0)",
+    //   positive Y moves downward）；早前按勒普顿+地基中心是误标定。
+    //   包围盒中心的屏幕位移（原点→中心）由同一投影换算：
+    //   ox = [cx(cy−sy) − cy(sy+cy)]·2s, oy = [cx(cy+sy) + cy(cy−sy)]·s（pitch=0）。
     // ZAdjust 是深度遮挡修正（正=朝观察者），非屏幕位移，本渲染器炮塔后画于
     // 底座之上，无需应用。
-    const int struct_dx = (b.fw - b.fh) * 15;
-    const int struct_dy = (b.fw + b.fh) * 15 / 2;
-    const int ax0 = ox + b.col * 60 + (b.row & 1) * 30 + 30 + struct_dx +
-                    u.turret_x * 60 / 256;
-    const int ay0 = oy + b.row * 15 + struct_dy + u.turret_y * 30 / 256 -
-                    hgt * ra2r::render::kHeightLevelPx;
+    const float yaw = b.dir / 256.0f * 6.2831853f - 1.5707963f;
+    const float cyw = std::cos(yaw), syw = std::sin(yaw);
+    const float projx = (bcx * (cyw - syw) - bcy * (syw + cyw)) * (2.0f * kBldTurretScale);
+    const float projy = (bcx * (cyw + syw) + bcy * (cyw - syw)) * kBldTurretScale;
+    const int ax0 = static_cast<int>(std::lround(
+        ox + b.col * 60 + (b.row & 1) * 30 + 30 + u.turret_x - projx));
+    const int ay0 = static_cast<int>(std::lround(
+        oy + b.row * 15 + u.turret_y - projy)) - hgt * ra2r::render::kHeightLevelPx;
     for (int y = 0; y < ent.h; ++y) {
         const uint8_t* s = ent.rgba.data() + static_cast<size_t>(y) * ent.w * 4;
         for (int x = 0; x < ent.w; ++x) {
