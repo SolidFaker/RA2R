@@ -186,9 +186,19 @@
     `visual_hash` 计入 idle 相位（每 3 帧一档 → 重绘节流不吞动画）。
   - 渲染：Walk 相位 = `(anim_clock/3) % Length`；Idle 相位 = `(anim_clock −
     idle_start)/3`（`< Length·3` 时播 Idle 段，否则回 Guard 帧）。
+- **根因二（用户实测"没变化"的真凶）：artmd 缓存只存了 Image 表**。
+  `ObjectRenderCache` 用 `art_ready` 跳过重解析，但**没有保存解析结果本体**——
+  `render_objects` 第二帧起局部 `art` 是空 IniFile：`Buildup=`（以及本次新加的
+  `Walk/Idle1/Idle2`）全部查不到 → 建筑建造期停在 make 帧（外观像"受损/半成品"，
+  即用户反馈的"建造动画错误"）、步兵永远 Guard（"移动/idle 无动画"）。
+  修复 = 缓存 `shared_ptr<core::IniFile> art_file`，`art_ready` 时复用本体
+  （见 object_layer.cpp 头部注释）。教训：**缓存派生数据必须把源数据一起缓存**；
+  且探针/自检若**不走缓存路径**（`cache=nullptr`），这类"第二帧才失效"的 bug
+  永远测不出来——`probe_infanim` 已补上 cache 预热路径回归（首帧后再逐帧验证）。
 - **验证**：① `tools/probe/probe_infanim.cpp`（`render_objects` 单对象 → 与 GI.SHP 各帧逐像素
-  比对识别实际帧号）：dir=0 行走 t=0..20 帧号 = 8,8,8,9,9,9,…,13,13,13,8（每 3 帧
-  一档）；Idle1 t=0..44 帧 56..70、t=45 起回 Guard 帧 0；Idle2 从帧 71 起。
+  比对识别实际帧号；**带 ObjectRenderCache 预热**走 stage 同款缓存路径）：dir=0 行走
+  t=0..20 帧号 = 8,8,8,9,9,9,…,13,13,13,8（每 3 帧一档）；Idle1 t=0..44 帧 56..70、
+  t=45 起回 Guard 帧 0；Idle2 从帧 71 起。
   ② `tools/probe/probe_idle.cpp`（SimWorld 直接驱动）：首次触发 t=176（等待 ∈ [67,337] ✓）、
   忙期 78 帧、之后重掷等待，双跑触发序列逐项一致。③ 回归：simbuild 240 帧
   `GAPOWR under=0 ticks=54/54 hp=256 电力+4550`、simattack 660 帧 CMIN (51,155)

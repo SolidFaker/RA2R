@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -125,6 +126,9 @@ struct ObjectRenderCache {
     std::map<std::string, ra2r::assets::ShpLayout> anim_layouts; // 配件动画 SHP
     std::map<std::string, int> body_shadow;                      // 建筑本体阴影段起点
     bool art_ready = false;                     // artmd/rulesmd Image 表已解析
+    // artmd 解析结果本体（跨帧复用）。必须与 art_images 一起缓存：只缓存
+    // Image 表会让后续帧的 art 为空，Buildup=/Sequence= 等键全部查不到。
+    std::shared_ptr<ra2r::core::IniFile> art_file;
     std::map<std::string, std::string> art_images;
     void clear() {
         voxels.clear();
@@ -133,6 +137,7 @@ struct ObjectRenderCache {
         anim_layouts.clear();
         body_shadow.clear();
         art_ready = false;
+        art_file.reset();
         art_images.clear();
     }
 };

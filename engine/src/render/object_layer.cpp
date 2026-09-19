@@ -102,21 +102,23 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                                  ObjectRenderCache* cache) {
     ObjectRenderStats stats;
     // artmd 覆盖表：Image=（美术名）、Foundation=（地基尺寸）、Sequence=（序列节名）；
-    // 有缓存时跨帧复用（INI 不随帧变化）
-    ra2r::core::IniFile art;
+    // 有缓存时跨帧复用。缓存必须连**解析结果本体**一起存：只缓存 art_images 会让
+    // 后续帧的 art 为空 → Buildup=/Walk=/Idle1= 等 artmd 键全部查不到（动画静默
+    // 失效：建筑停 make 帧、步兵永远 Guard——曾把建造动画误判为"受损帧"）。
+    ra2r::core::IniFile art_local;
     bool have_art = false;
     std::map<std::string, std::string> art_images;
-    if (cache && cache->art_ready) {
+    if (cache && cache->art_ready && cache->art_file) {
         have_art = true;
         art_images = cache->art_images;
     } else {
         const auto* artraw = load("ARTMD.INI");
         if (artraw) {
             std::string err;
-            if (art.parse(artraw->data(), artraw->size(), &err)) {
+            if (art_local.parse(artraw->data(), artraw->size(), &err)) {
                 have_art = true;
-                for (const auto& sn : art.section_names()) {
-                    const std::string img = art.get(sn, "Image", "");
+                for (const auto& sn : art_local.section_names()) {
+                    const std::string img = art_local.get(sn, "Image", "");
                     if (!img.empty()) art_images[sn] = img;
                 }
             }
@@ -134,10 +136,13 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
             }
         }
         if (cache) {
+            cache->art_file = std::make_shared<ra2r::core::IniFile>(std::move(art_local));
             cache->art_images = art_images;
             cache->art_ready = true;
         }
     }
+    const ra2r::core::IniFile& art =
+        (cache && cache->art_file) ? *cache->art_file : art_local;
     // 单位调色盘（剧场单位盘；建筑/步兵共用）+ 阵营色重映射 LUT（按 remap 下标缓存）
     const std::vector<uint8_t>* upal = load(cfg.unit_pal);
     const bool have_upal = upal && upal->size() >= 768;
