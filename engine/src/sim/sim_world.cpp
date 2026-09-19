@@ -9,19 +9,21 @@
 namespace ra2r::sim {
 
 namespace {
-// 段的屏幕方向（8 向）：按屏幕增量取最接近的规范方向（kDirV 与 dir_toward 共用）。
-// 砖墙格 (c,r) 的屏幕位置 = (60c + 30(r&1), 15r)（见 IsometricGrid）；8 邻接步
-// 覆盖屏幕 8 向：45° 步 (0,±1)/(±1,±1)、水平 (±1,0)、垂直 (0,±2)
-uint8_t dir_of(int c, int r, int nc, int nr) {
-    const int dx = 60 * (nc - c) + 30 * ((nr & 1) - (r & 1));
-    const int dy = 15 * (nr - r);
-    static const int kDirV[8][2] = {{30, -15}, {60, 0},  {30, 15},  {0, 30},
-                                    {-30, 15}, {-60, 0}, {-30, -15}, {0, -30}};
+// 屏幕 8 向**单位**向量（×256）：45° = (229,±114)（(30,15)/33.54），
+// 水平 = (±256,0)（60px），垂直 = (0,±256)（30px）。
+// 必须用归一化向量做点积：屏幕 8 向的规范长度不等（60/33.5/30px），用未归一
+// 的 kDirV 时 45° 步的 dot 会输给水平步（60·30+0·15=1800 > 30·30+15·15=1125），
+// 对角移动被误判成"朝右"——VXL 车头只剩水平/竖直、步兵走序列也放错朝向帧。
+constexpr int kDirU[8][2] = {{229, -114}, {256, 0},   {229, 114},  {0, 256},
+                             {-229, 114}, {-256, 0},  {-229, -114}, {0, -256}};
+
+// 屏幕增量 → 最近朝向（8 向；argmax 与单位方向向量的点积，纯整数确定性）
+uint8_t dir_of_screen(int dx, int dy) {
     int best = 0;
     long long best_dot = INT64_MIN;
     for (int k = 0; k < 8; ++k) {
-        const long long dot = static_cast<long long>(dx) * kDirV[k][0] +
-                              static_cast<long long>(dy) * kDirV[k][1];
+        const long long dot = static_cast<long long>(dx) * kDirU[k][0] +
+                              static_cast<long long>(dy) * kDirU[k][1];
         if (dot > best_dot) {
             best_dot = dot;
             best = k;
@@ -30,24 +32,20 @@ uint8_t dir_of(int c, int r, int nc, int nr) {
     return static_cast<uint8_t>(best);
 }
 
-// 朝目标格的 8 向朝向（任意距离）：取与屏幕向量点积最大的规范方向
-// （纯整数、确定性；dir 0..7 规范向量 = 各朝向的屏幕单位向量）
+// 段的屏幕方向（8 向）。砖墙格 (c,r) 的屏幕位置 = (60c + 30(r&1), 15r)
+// （见 IsometricGrid）；8 邻接步覆盖屏幕 8 向：45° 步 (0,±1)/(±1,±1)、
+// 水平 (±1,0)、垂直 (0,±2)
+uint8_t dir_of(int c, int r, int nc, int nr) {
+    const int dx = 60 * (nc - c) + 30 * ((nr & 1) - (r & 1));
+    const int dy = 15 * (nr - r);
+    return dir_of_screen(dx, dy);
+}
+
+// 朝目标格的 8 向朝向（任意距离，站立/攻击面向用）
 uint8_t dir_toward(int c, int r, int tc, int tr) {
     const int dx = 60 * (tc - c) + 30 * ((tr & 1) - (r & 1));
     const int dy = 15 * (tr - r);
-    static const int kDirV[8][2] = {{30, -15}, {60, 0},  {30, 15},  {0, 30},
-                                    {-30, 15}, {-60, 0}, {-30, -15}, {0, -30}};
-    int best = 0;
-    long long best_dot = INT64_MIN;
-    for (int k = 0; k < 8; ++k) {
-        const long long dot = static_cast<long long>(dx) * kDirV[k][0] +
-                              static_cast<long long>(dy) * kDirV[k][1];
-        if (dot > best_dot) {
-            best_dot = dot;
-            best = k;
-        }
-    }
-    return static_cast<uint8_t>(best);
+    return dir_of_screen(dx, dy);
 }
 
 int manhattan(int c, int r, int tc, int tr) { return std::abs(c - tc) + std::abs(r - tr); }
@@ -206,46 +204,72 @@ bool SimWorld::load_map(const assets::MapFile& map,
 
 // 段推进（到达落格 + 余量进下一段；所有订单共用）
 bool SimWorld::advance_segment(SimUnit& u) {
-    bool changed = false;
-    while (u.frac >= kFracMax) {
-        u.prev_col = u.col; // 渲染转角平滑用（上一格 = 本段起点）
-        u.prev_row = u.row;
-        u.col = u.next_col;
-        u.row = u.next_row;
-        u.frac -= kFracMax;
-        changed = true;
-        if (u.path.empty()) {
-            u.next_col = u.col;
-            u.next_row = u.row;
-            if (u.order == kOrderMove) u.order = kOrderNone; // 移动完成 → 空闲（采矿车恢复自动采集）
-            break;
-        }
-        u.next_col = u.path.front().first;
-        u.next_row = u.path.front().second;
-        u.path.erase(u.path.begin());
-        u.dir = dir_of(u.col, u.row, u.next_col, u.next_row);
-    }
     if (u.next_col == u.col && u.next_row == u.row) {
         u.frac = 0;
-        return changed;
+        return false;
     }
     // 步长折算（恒定屏幕速率 = 33.5px/speed 单位）：45° 步 33.5px → speed；
     // 屏幕水平 60px → speed·143/256；屏幕垂直 30px → speed·286/256
     // （OpenRA 同思路：位置按世界距离推进，方向不同的步长按屏幕投影折算）
     const int dc = u.next_col - u.col;
     const int dr = u.next_row - u.row;
+    // 段屏幕长度（×10；仅用于跨段余量换算，与上面折算保持同一基准）
+    const auto seg_len = [](int ddc, int ddr) -> int {
+        if (ddc == 0 && (ddr == 2 || ddr == -2)) return 300; // 垂直 30px
+        if (ddc != 0 && ddr == 0) return 600;                // 水平 60px
+        return 335;                                          // 45° 33.5px
+    };
+    int len_old = seg_len(dc, dr);
     int inc;
     if (dc == 0 && (dr == 2 || dr == -2)) inc = (u.speed * 286) / 256;
     else if (dc != 0 && dr == 0) inc = (u.speed * 143) / 256;
     else inc = u.speed;
+    // 推进本帧增量，并在**同一帧内**结算跨过的格心（frac 恒 < 256）：
+    // 若把 >256 的残留留到下一帧，渲染位置会越过格心再被拉回（每格一次抖动）。
+    // 跨段时余量按新旧段长度换算（frac 是"段内百分比"，同余量=同屏幕距离）。
     u.frac += inc;
+    bool changed = false;
+    while (u.frac >= kFracMax) {
+        const int rem = u.frac - kFracMax; // 旧段余量（旧段单位）
+        u.prev_col = u.col; // 渲染转角平滑用（上一格 = 本段起点）
+        u.prev_row = u.row;
+        u.col = u.next_col;
+        u.row = u.next_row;
+        changed = true;
+        u.frac = rem;
+        if (u.path.empty()) {
+            u.next_col = u.col;
+            u.next_row = u.row;
+            if (u.order == kOrderMove) u.order = kOrderNone; // 移动完成 → 空闲
+            break;
+        }
+        u.next_col = u.path.front().first;
+        u.next_row = u.path.front().second;
+        u.path.erase(u.path.begin());
+        u.dir = dir_of(u.col, u.row, u.next_col, u.next_row);
+        const int len_new = seg_len(u.next_col - u.col, u.next_row - u.row);
+        if (len_new != len_old) {
+            u.frac = (rem * len_old + len_new / 2) / len_new;
+            len_old = len_new;
+        }
+    }
     return true;
 }
 
 // 朝目标格寻路（失败 → 清路径并驻停，返回是否可达）
 bool SimWorld::set_move_target(SimUnit& u, int tc, int tr) {
+    // 移动中重下令（反复右键改目标）：从当前段**终点**续接并保留段内进度 frac，
+    // 否则 frac 归零会让单位视觉上"复位到格心"（OpenRA 同思路：重寻路不改变
+    // 已走位置，只是替换剩余路径）。目标不可达时也先走完当前这一步再停。
+    const bool mid = u.frac > 0 && (u.next_col != u.col || u.next_row != u.row);
+    const int sc = mid ? u.next_col : u.col;
+    const int sr = mid ? u.next_row : u.row;
     std::vector<std::pair<int, int>> path =
-        find_path(blocked, w, h, u.col, u.row, tc, tr, (min_s + min_d) & 1);
+        find_path(blocked, w, h, sc, sr, tc, tr, (min_s + min_d) & 1);
+    if (mid) {
+        u.path = std::move(path); // 当前段（col/next/frac/prev）保持不动
+        return !u.path.empty();
+    }
     if (path.empty()) {
         u.path.clear();
         u.next_col = u.col;
@@ -269,6 +293,10 @@ bool SimWorld::set_move_target_near(SimUnit& u, int tc, int tr) {
     const bool blocked_target = tc < 0 || tr < 0 || tc >= w || tr >= h ||
                                 blocked[static_cast<size_t>(tr) * w + tc] != 0;
     if (!blocked_target) return set_move_target(u, tc, tr);
+    // 移动中：从当前段终点续接（与 set_move_target 同规，避免复位到格心）
+    const bool mid = u.frac > 0 && (u.next_col != u.col || u.next_row != u.row);
+    const int sc = mid ? u.next_col : u.col;
+    const int sr = mid ? u.next_row : u.row;
     static const int kN[8][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {-1, 1}, {1, -1}, {-1, -1}};
     std::vector<std::pair<int, int>> best;
     for (const auto& d : kN) {
@@ -276,9 +304,13 @@ bool SimWorld::set_move_target_near(SimUnit& u, int tc, int tr) {
         if (nc < 0 || nr < 0 || nc >= w || nr >= h) continue;
         if (blocked[static_cast<size_t>(nr) * w + nc]) continue;
         std::vector<std::pair<int, int>> path =
-            find_path(blocked, w, h, u.col, u.row, nc, nr, (min_s + min_d) & 1);
+            find_path(blocked, w, h, sc, sr, nc, nr, (min_s + min_d) & 1);
         if (path.empty()) continue;
         if (best.empty() || path.size() < best.size()) best = std::move(path);
+    }
+    if (mid) {
+        u.path = std::move(best); // 当前段保持不动
+        return !u.path.empty();
     }
     if (best.empty()) {
         u.path.clear();
