@@ -37,6 +37,15 @@ std::vector<std::string> split_list(const std::string& v) {
     }
     return out;
 }
+
+// artmd 取键，回退到 Image= 美术节（缺失返回空）
+std::string art_get_fallback(const core::IniFile& art, const std::string& section,
+                             const std::string& image, const char* key) {
+    std::string v = art.get(section, key, "");
+    if (!v.empty()) return v;
+    if (image != section) return art.get(image, key, "");
+    return {};
+}
 } // namespace
 
 bool RulesDB::load(const uint8_t* rulesmd, size_t rules_n, const uint8_t* artmd, size_t art_n,
@@ -104,19 +113,13 @@ bool RulesDB::load(const uint8_t* rulesmd, size_t rules_n, const uint8_t* artmd,
                 u.turret_za = std::atoi(rules_.get(name, "TurretAnimZAdjust", "0").c_str());
                 // 配件动画（artmd；键缺失时回退 Image= 美术节——如 ATESLA 的
                 // Image=GAPRIS，棱镜/摇臂等键在 [GAPRIS] 节）
-                const auto aget = [&](const char* key) {
-                    std::string v = art_.get(name, key, "");
-                    if (!v.empty()) return v;
-                    if (u.image != name) return art_.get(u.image, key, "");
-                    return std::string();
-                };
-                u.anim = aget("ActiveAnim");
-                u.anim_dmg = aget("ActiveAnimDamaged");
-                u.anim_two = aget("ActiveAnimTwo");
-                u.anim_three = aget("ActiveAnimThree");
-                u.anim_ysort = !aget("ActiveAnimYSort").empty();
-                u.special = aget("SpecialAnim");
-                u.special_dmg = aget("SpecialAnimDamaged");
+                u.anim = art_get_fallback(art_, name, u.image, "ActiveAnim");
+                u.anim_dmg = art_get_fallback(art_, name, u.image, "ActiveAnimDamaged");
+                u.anim_two = art_get_fallback(art_, name, u.image, "ActiveAnimTwo");
+                u.anim_three = art_get_fallback(art_, name, u.image, "ActiveAnimThree");
+                u.anim_ysort = !art_get_fallback(art_, name, u.image, "ActiveAnimYSort").empty();
+                u.special = art_get_fallback(art_, name, u.image, "SpecialAnim");
+                u.special_dmg = art_get_fallback(art_, name, u.image, "SpecialAnimDamaged");
             }
         }
     };
