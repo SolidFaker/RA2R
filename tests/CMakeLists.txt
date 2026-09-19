@@ -17,7 +17,9 @@
 
 add_executable(ra2r_tests
   test_core.cpp
+  test_codecs.cpp
   test_fixtures.cpp
+  test_integration.cpp
   test_sim.cpp
   test_skirmish.cpp
   test_assets.cpp
@@ -29,4 +31,11 @@ if(MINGW)
   target_link_options(ra2r_tests PRIVATE -static)
 endif()
 
-add_test(NAME ra2r_tests COMMAND ra2r_tests)
+# 每个 gtest 用例注册为独立 ctest 测试（CI 门禁逐条可见/逐条定位失败），
+# 需要资产的用例在无素材环境自动 GTEST_SKIP（SKIP 不算失败）。
+include(GoogleTest)
+gtest_discover_tests(ra2r_tests
+  PROPERTIES
+    SKIP_REGULAR_EXPRESSION "SKIPPED"
+  DISCOVERY_TIMEOUT 60
+)

@@ -109,9 +109,13 @@ jobs:
       - name: Package (Linux)
         if: matrix.name == 'linux'
         run: |
+          set -e
           mkdir -p dist/ra2r
           cp build/tools/{stage,mapview,mixbrowser,mixdump,shpview,vxlview,assetcheck,cachebuild,smoketest,gen_fixtures} dist/ra2r/
           cp LICENSE README.md dist/ra2r/
+          # Linux 运行需 SDL3 运行库（发行版包名不一，随包附上）
+          cp "$(ldd build/tools/stage | awk '/libSDL3.so.0/ {print $3}')" dist/ra2r/ || true
+          cp /usr/share/licenses/*/LICENSE.SDL3* dist/ra2r/ 2>/dev/null || true
           tar -C dist -czf "${{ matrix.archive }}" ra2r
 
       - name: Package (Windows)

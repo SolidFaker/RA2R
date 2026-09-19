@@ -39,8 +39,11 @@ uint32_t crc32(const uint8_t* data, size_t len) {
 // RA2 文件名混淆：大写；若长度非 4 的倍数，追加 (len&3) 字节后
 // 从索引 (len&~3) 处复制字符补齐到 4 的倍数。
 std::string obfuscate_name(std::string name) {
-    std::transform(name.begin(), name.end(), name.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    // 归一化：大写 + '/' → '\'（docs/formats/mix.md §2.3；嵌套路径名两种写法等价）
+    for (char& c : name) {
+        if (c == '/') c = '\\';
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
     const size_t len = name.size();
     const size_t salt = len & ~size_t(3);
     if (len & 3) {
