@@ -353,26 +353,27 @@ static int run(int argc, char** argv) {
         std::printf("scanmagic: %s (%zu bytes)\n", hex.c_str(), magic.size());
         uint64_t scanned = 0;
         std::vector<std::tuple<uint32_t, uint32_t, int, int>> hits; // id,size,depth,parent
-        auto walk = [&](auto&& self, MixFile& mix, int depth) -> void {
-            for (const auto& entry : mix.entries()) {
+        auto walk = [&](auto&& self, MixFile& cur, int depth) -> void {
+            for (const auto& entry : cur.entries()) {
                 if (++scanned > 2000000) return;
                 uint8_t head[16] = {};
                 const size_t n = entry.size < 16 ? entry.size : 16;
-                if (mix.read_head(entry, head, n) &&
+                if (cur.read_head(entry, head, n) &&
                     magic.size() <= n &&
                     std::memcmp(head, magic.data(), magic.size()) == 0) {
-                    hits.emplace_back(entry.id, entry.size, depth, mix.file_count());
+                    hits.emplace_back(entry.id, entry.size, depth, cur.file_count());
                     std::printf("MAGICHIT %08X size=%u depth=%d\n", entry.id, entry.size, depth);
                 }
                 uint8_t mh[96];
                 if (entry.size < sizeof(mh)) continue;
-                if (!mix.read_head(entry, mh, sizeof(mh))) continue;
+                if (!cur.read_head(entry, mh, sizeof(mh))) continue;
                 if (!MixFile::looks_like_mix(mh, sizeof(mh))) continue;
                 std::vector<uint8_t> data;
-                if (!mix.read_entry(entry, data)) continue;
+                if (!cur.read_entry(entry, data)) continue;
                 MixFile sub;
-                std::string error;
-                if (!sub.open(data.data(), data.size(), &error) || !sub.structure_valid()) continue;
+                std::string sub_error;
+                if (!sub.open(data.data(), data.size(), &sub_error) || !sub.structure_valid())
+                    continue;
                 self(self, sub, depth + 1);
             }
         };
