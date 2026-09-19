@@ -1,0 +1,123 @@
+# RA2R Release：打 tag 时构建并发布（Windows + Linux 二进制包）
+#
+# 产物：Windows zip（stage/mapview/mixbrowser/mixdump/... + SDL3.dll）
+#       Linux tar.gz（同工具集，链接系统 SDL3）
+# 不包含任何游戏素材；运行需玩家自备正版《尤里的复仇》。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+            archive: ra2r-linux-x86_64.tar.gz
+          - name: windows
+            os: windows-latest
+            archive: ra2r-windows-x86_64.zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ libsdl3-dev
+
+      - name: Install dependencies (Windows)
+        if: matrix.name == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-sdl3
+
+      - name: Configure (Linux)
+        if: matrix.name == 'linux'
+        run: >
+          cmake -B build -G Ninja
+          -DRA2R_BUILD_TESTS=ON
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Configure (Windows)
+        if: matrix.name == 'windows'
+        shell: msys2 {0}
+        run: >
+          cmake -B build -G Ninja
+          -DRA2R_BUILD_TESTS=ON
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build (Linux)
+        if: matrix.name == 'linux'
+        run: cmake --build build -j "$(nproc)"
+
+      - name: Build (Windows)
+        if: matrix.name == 'windows'
+        shell: msys2 {0}
+        run: cmake --build build -j "$(nproc)"
+
+      - name: Test (Linux)
+        if: matrix.name == 'linux'
+        run: |
+          ./build/tools/gen_fixtures tests/fixtures
+          ctest --test-dir build --output-on-failure
+
+      - name: Test (Windows)
+        if: matrix.name == 'windows'
+        shell: msys2 {0}
+        run: |
+          ./build/tools/gen_fixtures.exe tests/fixtures
+          ctest --test-dir build --output-on-failure
+
+      - name: Package (Linux)
+        if: matrix.name == 'linux'
+        run: |
+          mkdir -p dist/ra2r
+          cp build/tools/{stage,mapview,mixbrowser,mixdump,shpview,vxlview,assetcheck,cachebuild,smoketest,gen_fixtures} dist/ra2r/
+          cp LICENSE README.md dist/ra2r/
+          tar -C dist -czf "${{ matrix.archive }}" ra2r
+
+      - name: Package (Windows)
+        if: matrix.name == 'windows'
+        shell: msys2 {0}
+        run: |
+          mkdir -p dist/ra2r
+          cp build/tools/{stage,mapview,mixbrowser,mixdump,shpview,vxlview,assetcheck,cachebuild,smoketest,gen_fixtures}.exe dist/ra2r/
+          cp "$(cygpath -u "$MINGW_PREFIX")/bin/SDL3.dll" dist/ra2r/
+          cp LICENSE README.md dist/ra2r/
+          7z a "${{ matrix.archive }}" ./dist/ra2r
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          draft: false

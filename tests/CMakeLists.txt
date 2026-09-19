@@ -11,10 +11,13 @@
 #   test_assets.cpp   资产解析（需游戏目录）：FileIndex/Shp/Map/RulesDB/VXL/HVA
 #   test_render.cpp   渲染功能（需游戏目录）：步兵朝向块序/走序列速率/idle/
 #                     Buildup 进度/体素光栅确定性
+#   test_fixtures.cpp 合成夹具（tools/gen_fixtures 产出，无需游戏素材）：
+#                     PAL/SHP/VXL/HVA/MIX/地图/INI 解析回归
 # 需资产的用例在游戏目录缺失时自动 GTEST_SKIP（可用 RA2R_GAME_DIR 覆盖路径）。
 
 add_executable(ra2r_tests
   test_core.cpp
+  test_fixtures.cpp
   test_sim.cpp
   test_skirmish.cpp
   test_assets.cpp

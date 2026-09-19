@@ -84,3 +84,8 @@ target_link_options(assetcheck PRIVATE ${RA2R_WIN_LINK_OPTS} ${RA2R_RUNTIME_STAT
 add_executable(cachebuild cachebuild/main.cpp)
 target_link_libraries(cachebuild PRIVATE ra2r_engine)
 target_link_options(cachebuild PRIVATE ${RA2R_WIN_LINK_OPTS} ${RA2R_RUNTIME_STATIC})
+
+# gen_fixtures：测试夹具生成器（合成 MIX/SHP/VXL/HVA/PAL/地图/INI 示例）
+add_executable(gen_fixtures gen_fixtures/main.cpp)
+target_link_libraries(gen_fixtures PRIVATE ra2r_engine)
+target_link_options(gen_fixtures PRIVATE ${RA2R_WIN_LINK_OPTS} ${RA2R_RUNTIME_STATIC})

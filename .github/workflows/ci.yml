@@ -1,0 +1,72 @@
+# RA2R CI：Linux + Windows 构建与测试
+#
+# 测试分两层：夹具用例（tests/fixtures/，由 gen_fixtures 生成，无需游戏素材）
+# 与资产/渲染用例（需要正版游戏目录，CI 无素材 → 自动 GTEST_SKIP）。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux (GCC)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ libsdl3-dev
+
+      - name: Configure
+        run: >
+          cmake -B build -G Ninja
+          -DRA2R_BUILD_TESTS=ON
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+
+      - name: Generate test fixtures
+        run: ./build/tools/gen_fixtures tests/fixtures
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  windows:
+    name: Windows (MinGW)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-sdl3
+
+      - name: Configure
+        run: >
+          cmake -B build -G Ninja
+          -DRA2R_BUILD_TESTS=ON
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+
+      - name: Generate test fixtures
+        run: ./build/tools/gen_fixtures.exe tests/fixtures
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
