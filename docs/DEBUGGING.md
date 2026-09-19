@@ -620,3 +620,51 @@ rulesmd 没有**；按 `get()` 取默认值会得到 `TechLevel=0 / Owner 空 / 
 脚本里 `queue(GAREFN)` 必须排在电厂**完工**之后（电厂工期 = cost/2 帧），否则日志里的
 失败看起来像 bug，其实是科技树在正常工作。
 
+---
+
+## 8. 内存安全检查（三层防线）
+
+二进制格式解析器（MIX/SHP/VXL/AUD/地图）最容易出现越界读；三层检查全部接入了 CI
+（`sanitizers` 与 `static-analysis` 两个 job），本地复现方式如下。
+
+### 8.1 动态检测：ASan + UBSan（最有效，Linux）
+MinGW 的 GCC 对 ASan 支持不完整，本层只在 Linux 跑（CI 的 `sanitizers` job）：
+
+```bash
+cmake -B build-asan -G Ninja -DRA2R_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug \
+  -DRA2R_SANITIZE=address,undefined
+cmake --build build-asan -j
+RA2R_GAME_DIR=/path/to/Yuri \
+  ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 \
+  ctest --test-dir build-asan --output-on-failure
+```
+
+- `RA2R_SANITIZE` 是通用开关，值原样传给 `-fsanitize=`（也可只开 `address`）。
+- ASan 抓：越界读写、use-after-free、double-free、内存泄漏（LSan 随 ASan 启用）；
+  UBSan 抓：有符号溢出、错误对齐、空指针解引用、无效移位等。
+- 无 ASan 的环境（如 Windows）可退而用 `valgrind --leak-check=full build/tests/ra2r_tests`。
+- 曾借此发现：AUD WW-ADPCM 块在 `fsize < dsize/2`（损坏文件）时会按 dsize 读输入而越界，
+  现已按 `in_bytes` 截断（`aud_file.cpp` 的 `adpcm_channel`）。
+
+### 8.2 静态分析：cppcheck + clang-tidy（CI `static-analysis` job）
+```bash
+bash tools/ci/cppcheck.sh   # engine/src，warning/performance/portability，零告警门禁
+bash tools/ci/tidy.sh       # engine/（src+include），bugprone/clang-analyzer/performance 等
+```
+- `tidy.sh` 需要 `build-ct/compile_commands.json`：
+  `cmake -B build-ct -G Ninja -DRA2R_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`
+- `tidy.sh` 会按当前 clang-tidy 版本动态裁剪排除项（旧版不认识的检查不会导致命令行报错），
+  排除的都是噪声/误报项（如 `easily-swappable-parameters`、`narrowing-conversions`、
+  地图解析有意使用 `atoi` 的 `unchecked-string-to-number-conversion` 等）。
+- 曾借此修复：`object_layer.cpp` 的 `art_local` use-after-move 误用路径、
+  `lcw.cpp` 条件内自增、`vxl_file.cpp` 用 `c_str()` 截断字符串、
+  `Obj`/`Sec`/`Blowfish`/`UnitPaletteCfg` 的未初始化成员等。
+
+### 8.3 编译期加固（默认开启，`RA2R_HARDEN=ON`）
+- `-Wall -Wextra -Wpedantic -Wconversion -Wshadow`（MSVC `/W4 /permissive-`），当前零告警；
+- `-fstack-protector-strong`（栈溢出检测）；
+- `_GLIBCXX_ASSERTIONS`：libstdc++ 容器边界断言（ABI 兼容；不用会改变 ABI 的 `_GLIBCXX_DEBUG`，
+  以免和 SDL3/ImGui 混链出问题）；
+- Release/RelWithDebInfo 额外 `_FORTIFY_SOURCE=2`（需优化开启才生效）。
+
+

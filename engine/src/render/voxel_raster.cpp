@@ -23,6 +23,7 @@ namespace {
 struct DirectionalLight {
     float x, y, z;
 };
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) —— sqrt 不抛异常，纯常量
 const DirectionalLight kLight = [] {
     const float inv = 1.0f / std::sqrt(0.35f * 0.35f + 0.35f * 0.35f + 0.87f * 0.87f);
     return DirectionalLight{0.35f * inv, -0.35f * inv, 0.87f * inv};
@@ -267,9 +268,9 @@ void VoxelRasterizer::fill_triangle(float ax, float ay, float ad, float bx, floa
     const int miny = std::max(0, static_cast<int>(std::floor(std::min({ay, by, cy}))));
     const int maxy = std::min(h_ - 1, static_cast<int>(std::ceil(std::max({ay, by, cy}))));
     for (int y = miny; y <= maxy; ++y) {
-        const float fy = y + 0.5f;
+        const float fy = static_cast<float>(y) + 0.5f;
         for (int x = minx; x <= maxx; ++x) {
-            const float fx = x + 0.5f;
+            const float fx = static_cast<float>(x) + 0.5f;
             // 边函数（像素中心；0.35px 容差让相邻面共享棱无缝，
             // 覆盖正确性由 z-test 保证）
             const float w0 = (cx - bx) * (fy - by) - (cy - by) * (fx - bx);
@@ -372,7 +373,8 @@ RasterImage rasterize_voxel_section(const assets::VxlFile& vxl, const assets::Hv
 
     VoxelRasterizer rasterizer(section, proj, vxl, hva_m, view.yaw, view.pitch, out, nullptr,
                                view.remap);
-    rasterizer.run(voxels, -min_x + margin, -min_y + margin);
+    rasterizer.run(voxels, -min_x + static_cast<float>(margin),
+                   -min_y + static_cast<float>(margin));
     return out;
 }
 
@@ -383,11 +385,11 @@ RasterImage rasterize_voxel_parts(const VoxelPart* parts, size_t count, const Vo
     if (!parts || count == 0) return out;
     // 1) 各部件各节投影/收集体素，求全局包围盒
     struct Sec {
-        const assets::VxlSection* s;
-        const assets::VxlFile* vxl;
-        Projection proj;
+        const assets::VxlSection* s = nullptr;
+        const assets::VxlFile* vxl = nullptr;
+        Projection proj{};
         std::vector<Voxel> vx;
-        float hva_m[12];
+        float hva_m[12] = {};
     };
     std::vector<Sec> secs;
     float min_x = 1e9f, max_x = -1e9f, min_y = 1e9f, max_y = -1e9f;
@@ -430,14 +432,14 @@ RasterImage rasterize_voxel_parts(const VoxelPart* parts, size_t count, const Vo
         float bx, by, bd;
         // 包围盒中心/底 → 索引空间：i = ((mn+mx)/2 − mn − 0.5·step)/step
         const auto idx_c = [](float mn, float mx, int n) {
-            const float step = n > 0 ? (mx - mn) / n : 1.0f;
+            const float step = n > 0 ? (mx - mn) / static_cast<float>(n) : 1.0f;
             return (mx - mn) * 0.5f / step - 0.5f;
         };
         body->proj.project(idx_c(body->s->min[0], body->s->max[0], body->s->sx),
                            idx_c(body->s->min[1], body->s->max[1], body->s->sy), 0.0f, bx, by,
                            bd);
-        if (body_x) *body_x = bx - min_x + margin;
-        if (body_y) *body_y = by - min_y + margin;
+        if (body_x) *body_x = bx - min_x + static_cast<float>(margin);
+        if (body_y) *body_y = by - min_y + static_cast<float>(margin);
     }
     // 模型原点 (0,0,0)【模型空间】在光栅中的位置：rules TurretAnimX/Y 等
     // 游戏内偏移都以模型原点为参照（炮塔枢轴）。索引 → 模型：
@@ -451,7 +453,7 @@ RasterImage rasterize_voxel_parts(const VoxelPart* parts, size_t count, const Vo
         if (!secs.empty()) {
             const auto& s0 = *secs[0].s;
             const auto idx_of = [](float mn, float mx, int n) {
-                const float step = n > 0 ? (mx - mn) / n : 1.0f;
+                const float step = n > 0 ? (mx - mn) / static_cast<float>(n) : 1.0f;
                 return step > 0 ? (0.0f - mn - 0.5f * step) / step : 0.0f;
             };
             const float identity[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
@@ -461,11 +463,11 @@ RasterImage rasterize_voxel_parts(const VoxelPart* parts, size_t count, const Vo
             pure.project(idx_of(s0.min[0], s0.max[0], s0.sx),
                          idx_of(s0.min[1], s0.max[1], s0.sy),
                          idx_of(s0.min[2], s0.max[2], s0.sz), ox, oy, od);
-            if (origin_x) *origin_x = ox - min_x + margin;
-            if (origin_y) *origin_y = oy - min_y + margin;
+            if (origin_x) *origin_x = ox - min_x + static_cast<float>(margin);
+            if (origin_y) *origin_y = oy - min_y + static_cast<float>(margin);
         } else {
-            if (origin_x) *origin_x = margin - min_x;
-            if (origin_y) *origin_y = margin - min_y;
+            if (origin_x) *origin_x = static_cast<float>(margin) - min_x;
+            if (origin_y) *origin_y = static_cast<float>(margin) - min_y;
         }
     }
     // 2) 共享深度缓冲顺序绘制各节（跨节、跨部件遮挡正确）
@@ -473,7 +475,8 @@ RasterImage rasterize_voxel_parts(const VoxelPart* parts, size_t count, const Vo
     for (const auto& s : secs) {
         VoxelRasterizer rz(*s.s, s.proj, *s.vxl, s.hva_m, view.yaw, view.pitch, out, &zbuf,
                        view.remap);
-        rz.run(s.vx, -min_x + margin, -min_y + margin);
+        rz.run(s.vx, -min_x + static_cast<float>(margin),
+               -min_y + static_cast<float>(margin));
     }
     return out;
 }

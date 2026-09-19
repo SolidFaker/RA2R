@@ -19,18 +19,19 @@ ShroudMap ShroudMap::demo(int w, int h, int cx, int cy, int radius) {
     s.w_ = w;
     s.h_ = h;
     s.states_.assign(static_cast<size_t>(w) * h, kBlack);
+    const float r = static_cast<float>(radius);
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const float dx = static_cast<float>(x - cx);
             const float dy = static_cast<float>(y - cy);
             const float dist = std::sqrt(dx * dx + dy * dy);
-            if (dist <= radius) {
+            if (dist <= r) {
                 s.states_[static_cast<size_t>(y) * w + x] = kVisible;
-            } else if (dist <= radius + 4) {
+            } else if (dist <= r + 4) {
                 // 外圈两级迷雾：2 或 3（按距离细分）
                 s.states_[static_cast<size_t>(y) * w + x] =
-                    dist <= radius + 2 ? 2 : 3;
-            } else if (dist <= radius + 8) {
+                    dist <= r + 2 ? 2 : 3;
+            } else if (dist <= r + 8) {
                 s.states_[static_cast<size_t>(y) * w + x] = 4;
             }
             // 其余保持黑幕

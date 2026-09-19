@@ -33,10 +33,11 @@ struct AdpcmState {
 };
 
 // 解一个通道：输入为压缩字节流（步进 in_stride），输出交错写（步进 out_stride 样本）
+// 输入按 in_bytes 上限截断：损坏块（fsize 小于 dsize 所需）时宁少解不出界。
 void adpcm_channel(const uint8_t* in, int in_bytes, int16_t* out, int sample_count,
                    int in_stride, int out_stride, AdpcmState& st) {
     int step = kStepTab[st.index];
-    int half = sample_count;
+    const int half = std::min((sample_count + 1) / 2, in_bytes);
     for (int i = 0; i < half; ++i) {
         const uint8_t byte = in[static_cast<size_t>(i) * in_stride];
         for (int nib = 0; nib < 2; ++nib) {

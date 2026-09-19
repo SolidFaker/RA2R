@@ -9,7 +9,7 @@ namespace {
 // 光照等级 → 亮度系数：0 全亮，31 最暗（约 30% 亮度）
 inline float level_brightness(int level) {
     const int l = std::clamp(level, 0, PaletteLut::kLevels - 1);
-    return 1.0f - 0.7f * l / (PaletteLut::kLevels - 1);
+    return 1.0f - 0.7f * static_cast<float>(l) / static_cast<float>(PaletteLut::kLevels - 1);
 }
 } // namespace
 
@@ -33,9 +33,15 @@ void PaletteLut::build(const uint8_t* pal_768, const uint8_t* remap16) {
         const bool shadow = (idx == 1);
         for (int level = 0; level < kLevels; ++level) {
             const float f = level_brightness(level);
-            const uint8_t r = (idx == 0 || shadow) ? 0 : static_cast<uint8_t>(r8 * f);
-            const uint8_t g = (idx == 0 || shadow) ? 0 : static_cast<uint8_t>(g8 * f);
-            const uint8_t b = (idx == 0 || shadow) ? 0 : static_cast<uint8_t>(b8 * f);
+            const uint8_t r = (idx == 0 || shadow)
+                                  ? 0
+                                  : static_cast<uint8_t>(static_cast<float>(r8) * f);
+            const uint8_t g = (idx == 0 || shadow)
+                                  ? 0
+                                  : static_cast<uint8_t>(static_cast<float>(g8) * f);
+            const uint8_t b = (idx == 0 || shadow)
+                                  ? 0
+                                  : static_cast<uint8_t>(static_cast<float>(b8) * f);
             const uint8_t a = idx == 0 ? 0 : (shadow ? 140 : 255);
             lut_[idx + kColors * level] = static_cast<uint32_t>(a) << 24 |
                                           static_cast<uint32_t>(r) << 16 |

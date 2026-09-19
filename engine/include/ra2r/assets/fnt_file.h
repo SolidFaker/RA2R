@@ -63,7 +63,7 @@ public:
     // TS 变体：字符 ch（0..255 内，超出或越界返回空）
     FntGlyph ts_glyph(int ch) const {
         FntGlyph g;
-        if (kind_ != FntKind::Ts || ch < 0 || ch >= ts_char_count()) return g;
+        if (kind_ != FntKind::Ts || ch < 0 || ch >= static_cast<int>(ts_char_count())) return g;
         g.width = ts_cx_[ch];
         g.data = data_.data() + ts_img_ofs_[ch];
         g.stride_bytes = (ts_cx_[ch] + 7) / 8; // 行宽按像素取整

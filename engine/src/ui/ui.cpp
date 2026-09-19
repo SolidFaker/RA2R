@@ -2,6 +2,7 @@
 #include "ra2r/ui/ui.h"
 
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -73,6 +74,7 @@ void add_fontconfig_candidates(std::vector<std::string>& out) {
         std::string cmd = "fc-match -f '%{file}' \"";
         cmd += q;
         cmd += "\" 2>/dev/null";
+        // NOLINTNEXTLINE(bugprone-command-processor) —— 命令与字体名均为常量表，无注入面
         FILE* p = popen(cmd.c_str(), "r");
         if (!p) continue;
         char buf[1024] = {};
@@ -178,8 +180,9 @@ float scale_window_to_dpi(SDL_Window* window, int logical_w, int logical_h) {
     float s = 1.0f;
     if (window) s = SDL_GetWindowDisplayScale(window);
     if (s > 0.0f) {
-        SDL_SetWindowSize(window, static_cast<int>(logical_w * s + 0.5f),
-                          static_cast<int>(logical_h * s + 0.5f));
+        SDL_SetWindowSize(window,
+                          static_cast<int>(std::lround(static_cast<float>(logical_w) * s)),
+                          static_cast<int>(std::lround(static_cast<float>(logical_h) * s)));
         return s;
     }
     return 1.0f;

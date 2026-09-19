@@ -24,6 +24,7 @@ std::string upper(std::string_view s) {
 } // namespace
 
 bool IniFile::parse(const uint8_t* data, size_t size, std::string* error) {
+    (void)error; // 解析容错：忽略畸形行而不报错
     sections_.clear();
     section_names_.clear();
     std::string text(reinterpret_cast<const char*>(data), size);

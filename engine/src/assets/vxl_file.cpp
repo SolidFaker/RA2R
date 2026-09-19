@@ -56,7 +56,8 @@ bool VxlFile::open(const uint8_t* data, size_t size, std::string* error) {
         const uint8_t* tl = data + tailer_start + kTailerSize * i;
         VxlSection& s = sections_[i];
         s.name.assign(reinterpret_cast<const char*>(sh), 16);
-        s.name = s.name.c_str(); // 截到 NUL
+        const size_t nul = s.name.find('\0'); // 截到 NUL（名称字段定长 16）
+        if (nul != std::string::npos) s.name.resize(nul);
         const int32_t span_start_off = static_cast<int32_t>(core::read_u32_le(tl));
         const int32_t span_end_off = static_cast<int32_t>(core::read_u32_le(tl + 4));
         const int32_t span_data_off = static_cast<int32_t>(core::read_u32_le(tl + 8));

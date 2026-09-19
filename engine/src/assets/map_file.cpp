@@ -86,11 +86,8 @@ bool MapFile::open(const uint8_t* data, size_t size, std::string* error) {
                     best_data = std::move(d);
                     break;
                 }
-                if (!best && contains_bytes(d, "[Map]")) {
-                    best = &e;
-                    best_data = std::move(d);
-                } else if (!best && d.size() > best_data.size() &&
-                           contains_bytes(d, "[")) {
+                if (!best && (contains_bytes(d, "[Map]") ||
+                              (d.size() > best_data.size() && contains_bytes(d, "[")))) {
                     best = &e;
                     best_data = std::move(d);
                 }
@@ -227,37 +224,37 @@ bool MapFile::parse(std::string* error) {
     overlay_.clear();
     overlay_data_.clear();
     auto decode_lcw_section = [&](const char* section, std::vector<uint8_t>& out) -> bool {
-        std::string b64;
+        std::string section_b64;
         for (const auto& [key, value] : ini_.section(section)) {
             (void)key;
-            b64 += value;
+            section_b64 += value;
         }
-        if (b64.empty()) return true; // 无此节（如无覆盖物的地图）不视为错误
+        if (section_b64.empty()) return true; // 无此节（如无覆盖物的地图）不视为错误
         std::vector<uint8_t> raw;
-        if (!base64_decode(b64, raw)) {
+        if (!base64_decode(section_b64, raw)) {
             if (error) *error = std::string("base64 decode failed in [") + section + "]";
             return false;
         }
         std::vector<uint8_t> buf;
         buf.reserve(1u << 18);
         std::vector<uint8_t> scratch(1u << 18);
-        size_t pos = 0;
-        while (pos + 4 <= raw.size()) {
-            const uint16_t comp = core::read_u16_le(raw.data() + pos);
-            const uint16_t uncomp = core::read_u16_le(raw.data() + pos + 2);
-            pos += 4;
+        size_t chunk_pos = 0;
+        while (chunk_pos + 4 <= raw.size()) {
+            const uint16_t comp = core::read_u16_le(raw.data() + chunk_pos);
+            const uint16_t uncomp = core::read_u16_le(raw.data() + chunk_pos + 2);
+            chunk_pos += 4;
             if (comp == 0 || uncomp == 0) break; // [0][0] 结束头
-            if (pos + comp > raw.size() || uncomp > (1u << 18)) {
+            if (chunk_pos + comp > raw.size() || uncomp > (1u << 18)) {
                 if (error) *error = std::string("map chunk overruns pack in [") + section + "]";
                 return false;
             }
-            const int n = lcw_decompress(raw.data() + pos, comp, scratch.data(), uncomp);
+            const int n = lcw_decompress(raw.data() + chunk_pos, comp, scratch.data(), uncomp);
             if (n < 0) {
                 if (error) *error = std::string("lcw decompress failed in [") + section + "]";
                 return false;
             }
             buf.insert(buf.end(), scratch.begin(), scratch.begin() + n);
-            pos += comp;
+            chunk_pos += comp;
         }
         out = std::move(buf);
         return true;
@@ -341,9 +338,9 @@ bool MapFile::parse(std::string* error) {
     // ── [Terrain]（树木/岩石）：key = rx + ry·1000（OpenRA ReadTerrainActors 语义）──
     terrain_.clear();
     for (const auto& [key, value] : ini_.section("Terrain")) {
-        const int pos = std::atoi(key.c_str());
-        const int rx = pos % 1000;
-        const int ry = pos / 1000;
+        const int key_num = std::atoi(key.c_str());
+        const int rx = key_num % 1000;
+        const int ry = key_num / 1000;
         int cx = -1, cy = -1;
         if (!to_cell(std::to_string(rx), std::to_string(ry), cx, cy)) continue;
         if (value.empty()) continue;
@@ -386,7 +383,8 @@ bool is_low_bridge_piece(uint8_t t) {
 // 高架桥面（BRIDGE1/2 = 25/26）：每格一段条带，帧 = OverlayData 件号
 //   （BRIDGE.ubn 帧 0-8 = 下左条带、9-17 = 下右条带；实测桥面格存 9/2/6/8/10/11/12）。
 // 桥基（LOBRDGB1-4 = 237-240）：每格独立一片（艺术仅帧 1 有内容）。
-int bridge_family(uint8_t t) {
+// 桥件类型 → 家族号对照（参考表，供未来桥方向推断；当前渲染路径未直接使用）
+[[maybe_unused]] int bridge_family(uint8_t t) {
     if (t >= 77 && t <= 85) return 1;
     if (t >= 86 && t <= 94) return 2;
     if (t >= 95 && t <= 96) return 3;
@@ -408,9 +406,6 @@ int bridge_family(uint8_t t) {
     return 0;
 }
 
-bool is_bridge_overlay(uint8_t t) {
-    return bridge_family(t) != 0 || t == 25 || t == 26;
-}
 } // namespace
 
 uint8_t MapFile::overlay_render_frame(int cx, int cy) const {

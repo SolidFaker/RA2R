@@ -20,8 +20,8 @@ private:
     uint32_t f(uint32_t x) const;
     void crypt_block(uint32_t& l, uint32_t& r, bool encrypt) const;
 
-    uint32_t p_[18];
-    uint32_t s_[4][256];
+    uint32_t p_[18] = {};
+    uint32_t s_[4][256] = {};
 };
 
 } // namespace ra2r::crypto

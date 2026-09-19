@@ -81,7 +81,12 @@ build\tests\ra2r_tests.exe --gtest_filter=SimMove.*   # 按套件过滤
 覆盖：INI 解析 / 等距几何 / 调色板 LUT / 8 向 A* 寻路；移动（8 向朝向·恒速直线·
 重下令·idle 调度）·建造（工期/电力/队列/修理出售）·经济（采矿卸货）·防御建筑攻击·
 确定性哈希；遭遇战（展开/科技树/阵营色）；资产解析（MIX/SHP/地图/rulesmd/VXL/HVA）；
-渲染功能（步兵朝向块序与速率·idle·Buildup 进度·体素光栅）。
+格式夹具（PAL/SHP/VXL/HVA/MIX/地图/INI/PCX/CSF/FNT/AUD，无需素材）；渲染功能
+（步兵朝向块序与速率·idle·Buildup 进度·体素光栅）。
+
+内存安全三层检查已接入 CI（详见 `docs/DEBUGGING.md` §8）：ASan+UBSan（`-DRA2R_SANITIZE=address,undefined`）、
+cppcheck 与 clang-tidy（`tools/ci/cppcheck.sh`、`tools/ci/tidy.sh`）、编译期加固
+（默认 `RA2R_HARDEN=ON`：栈保护 + libstdc++ 边界断言 + `_FORTIFY_SOURCE`，全量 `-Wconversion -Wshadow` 零告警）。
 
 ## 格式规格文档
 

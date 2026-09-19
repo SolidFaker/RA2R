@@ -79,7 +79,8 @@ bool FntFile::open(const uint8_t* data, size_t size, std::string* error) {
             ts_cx_.resize(n);
             ts_cy_table_.resize(n);
             ts_img_ofs_.resize(n);
-            if (cx_ofs + n > size || cy_ofs + static_cast<size_t>(n) * 2 > size ||
+            if (cx_ofs + static_cast<size_t>(n) > size ||
+                cy_ofs + static_cast<size_t>(n) * 2 > size ||
                 20 + static_cast<size_t>(n) * 2 > size) {
                 if (error) *error = "ts fnt tables out of range";
                 return false;

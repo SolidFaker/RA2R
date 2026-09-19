@@ -23,7 +23,7 @@ using FileLoader = std::function<const std::vector<uint8_t>*(const std::string&)
 
 // 剧场单位调色盘名（建筑/步兵共用；载具用 VXL 内嵌盘）
 struct UnitPaletteCfg {
-    const char* unit_pal; // 如 "UNITSNO.PAL"
+    const char* unit_pal = nullptr; // 如 "UNITSNO.PAL"
     std::string theater;  // 剧场名（NewTheater 美术名回退用；空 = TEMPERATE）
     // 阵营色重映射表（[Colors] H,S,V → 16 色 ramp）。对象用 remap = 下标+1 引用；
     // 空表 = 全部按原调色盘（Remap 段仍是红渐变）

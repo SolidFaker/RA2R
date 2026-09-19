@@ -10,7 +10,6 @@ namespace ra2r::assets {
 int lcw_decompress(const uint8_t* src, size_t src_len, uint8_t* dst, size_t dst_capacity) {
     size_t ip = 0;   // 输入位置
     size_t op = 0;   // 输出位置
-    const uint8_t* dst_base = dst;
 
     auto read_u16 = [&](size_t pos) {
         return pos + 2 <= src_len ? core::read_u16_le(src + pos) : 0u;
@@ -50,7 +49,8 @@ int lcw_decompress(const uint8_t* src, size_t src_len, uint8_t* dst, size_t dst_
             // 命令 1：字面量拷贝
             const size_t count = opc & 0x3F;
             for (size_t i = 0; i < count; ++i) {
-                if (ip >= src_len || !put(src[ip++])) return -1;
+                if (ip >= src_len) return -1;
+                if (!put(src[ip++])) return -1;
             }
         } else if (opc == 0xFE) {
             // 命令 3：长填充

@@ -146,7 +146,7 @@ struct RenderFixture {
         grid.map_bounds(cells, cells, 15, bw, bh, ox, oy); // 与 stage 同参数（max_height=15）
         std::vector<render::PlacedObject> none;
         std::vector<uint8_t> warm(static_cast<size_t>(bw) * bh * 4, 0);
-        render::render_objects(none, render::UnitPaletteCfg{palette.c_str()}, grid, loader, bw,
+        render::render_objects(none, render::UnitPaletteCfg{palette.c_str(), {}}, grid, loader, bw,
                                bh, ox, oy, warm, 0.5f, &cache);
         return cache.art_ready && cache.art_file != nullptr;
     }
@@ -192,7 +192,7 @@ TEST(RenderInfantry, FacingBlocksAreCounterClockwise) {
             canvas[i * 4 + 2] = 9;
             canvas[i * 4 + 3] = 255;
         }
-        render::render_objects(objs, render::UnitPaletteCfg{"UNITURB.PAL"}, fx.grid,
+        render::render_objects(objs, render::UnitPaletteCfg{"UNITURB.PAL", {}}, fx.grid,
                                RenderFixture::loader, fx.bw, fx.bh, fx.ox, fx.oy, canvas, 0.5f,
                                &fx.cache);
         const int frame = ref.identify(canvas, fx.bw, fx.bh);
@@ -226,7 +226,7 @@ TEST(RenderInfantry, WalkRateIsThreeTicksPerFrame) {
             canvas[i * 4 + 2] = 9;
             canvas[i * 4 + 3] = 255;
         }
-        render::render_objects(objs, render::UnitPaletteCfg{"UNITURB.PAL"}, fx.grid,
+        render::render_objects(objs, render::UnitPaletteCfg{"UNITURB.PAL", {}}, fx.grid,
                                RenderFixture::loader, fx.bw, fx.bh, fx.ox, fx.oy, canvas, 0.5f,
                                &fx.cache);
         EXPECT_EQ(ref.identify(canvas, fx.bw, fx.bh), expect[t]) << "t=" << t;
@@ -257,7 +257,7 @@ TEST(RenderInfantry, IdlePlaysSequenceThenReturnsToGuard) {
             canvas[i * 4 + 2] = 9;
             canvas[i * 4 + 3] = 255;
         }
-        render::render_objects(objs, render::UnitPaletteCfg{"UNITURB.PAL"}, fx.grid,
+        render::render_objects(objs, render::UnitPaletteCfg{"UNITURB.PAL", {}}, fx.grid,
                                RenderFixture::loader, fx.bw, fx.bh, fx.ox, fx.oy, canvas, 0.5f,
                                &fx.cache);
         return ref.identify(canvas, fx.bw, fx.bh);
@@ -288,7 +288,7 @@ TEST(RenderBuilding, BuildupProgressAndInstantFallback) {
         po.cx = 1;
         po.cy = 1;
         po.hp = 1;
-        po.build_p = static_cast<float>(ticks) / std::max(1, total);
+        po.build_p = static_cast<float>(ticks) / static_cast<float>(std::max(1, total));
         po.build_ticks = ticks;
         po.build_total = total;
         std::vector<render::PlacedObject> objs{po};
@@ -299,7 +299,7 @@ TEST(RenderBuilding, BuildupProgressAndInstantFallback) {
             canvas[i * 4 + 2] = 9;
             canvas[i * 4 + 3] = 255;
         }
-        render::render_objects(objs, render::UnitPaletteCfg{"UNITTEM.PAL"}, fx.grid,
+        render::render_objects(objs, render::UnitPaletteCfg{"UNITTEM.PAL", {}}, fx.grid,
                                RenderFixture::loader, fx.bw, fx.bh, fx.ox, fx.oy, canvas, 0.5f,
                                &fx.cache);
         return mk.identify(canvas, fx.bw, fx.bh, 24); // 只看建造段（0..24），避免匹配到阴影段

@@ -290,7 +290,7 @@ HouseRamp house_color_ramp(const assets::ColorDef& c) {
         else if (h < 300) { r = x; b = cc; }
         else { r = cc; b = x; }
         const auto cl = [](float f) {
-            const int k = static_cast<int>(f + 0.5f);
+            const int k = static_cast<int>(std::lround(f));
             return static_cast<uint8_t>(k < 0 ? 0 : (k > 255 ? 255 : k));
         };
         out.rgb[i][0] = cl(r + m);

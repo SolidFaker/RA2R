@@ -105,7 +105,7 @@ bool RulesDB::load(const uint8_t* rulesmd, size_t rules_n, const uint8_t* artmd,
                 // 配件动画（artmd；键缺失时回退 Image= 美术节——如 ATESLA 的
                 // Image=GAPRIS，棱镜/摇臂等键在 [GAPRIS] 节）
                 const auto aget = [&](const char* key) {
-                    const std::string v = art_.get(name, key, "");
+                    std::string v = art_.get(name, key, "");
                     if (!v.empty()) return v;
                     if (u.image != name) return art_.get(u.image, key, "");
                     return std::string();

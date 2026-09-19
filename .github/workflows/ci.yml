@@ -58,6 +58,102 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+  # 内存安全：ASan（越界/use-after-free/泄漏）+ UBSan（有符号溢出/对齐/空指针）
+  sanitizers:
+    name: Linux ASan+UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ libgl1-mesa-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
+            libxfixes-dev libxss-dev libxtst-dev libwayland-dev libdecor-0-dev \
+            libegl1-mesa-dev libudev-dev libdbus-1-dev
+
+      - name: Cache SDL3
+        id: cache-sdl3
+        uses: actions/cache@v4
+        with:
+          path: ~/sdl3
+          key: sdl3-${{ runner.os }}-3.4.14
+
+      - name: Build SDL3
+        if: steps.cache-sdl3.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch release-3.4.14 https://github.com/libsdl-org/SDL.git /tmp/SDL
+          cmake -S /tmp/SDL -B /tmp/SDL/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/sdl3"
+          cmake --build /tmp/SDL/build -j "$(nproc)"
+          cmake --install /tmp/SDL/build
+
+      - name: Configure
+        run: >
+          cmake -B build -G Ninja
+          -DRA2R_BUILD_TESTS=ON
+          -DCMAKE_BUILD_TYPE=Debug
+          -DRA2R_SANITIZE=address,undefined
+          -DCMAKE_PREFIX_PATH="$HOME/sdl3"
+
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+
+      - name: Generate test fixtures
+        run: ./build/tools/gen_fixtures tests/fixtures
+
+      - name: Test (sanitizers)
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build --output-on-failure
+
+  # 静态分析：cppcheck（warning/performance/portability）+ clang-tidy（bugprone/clang-analyzer/performance）
+  static-analysis:
+    name: Linux 静态分析
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ cppcheck clang-tidy \
+            libgl1-mesa-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxi-dev libxfixes-dev libxss-dev libxtst-dev libwayland-dev \
+            libdecor-0-dev libegl1-mesa-dev libudev-dev libdbus-1-dev
+
+      - name: Cache SDL3
+        id: cache-sdl3
+        uses: actions/cache@v4
+        with:
+          path: ~/sdl3
+          key: sdl3-${{ runner.os }}-3.4.14
+
+      - name: Build SDL3
+        if: steps.cache-sdl3.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch release-3.4.14 https://github.com/libsdl-org/SDL.git /tmp/SDL
+          cmake -S /tmp/SDL -B /tmp/SDL/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/sdl3"
+          cmake --build /tmp/SDL/build -j "$(nproc)"
+          cmake --install /tmp/SDL/build
+
+      - name: Configure (compile_commands.json)
+        run: >
+          cmake -B build-ct -G Ninja
+          -DRA2R_BUILD_TESTS=ON
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          -DCMAKE_PREFIX_PATH="$HOME/sdl3"
+
+      - name: cppcheck
+        run: bash tools/ci/cppcheck.sh
+
+      - name: clang-tidy
+        run: bash tools/ci/tidy.sh
+
   windows:
     name: Windows (MinGW)
     runs-on: windows-latest

@@ -234,14 +234,12 @@ bool SimWorld::advance_segment(SimUnit& u) {
     // 若把 >256 的残留留到下一帧，渲染位置会越过格心再被拉回（每格一次抖动）。
     // 跨段时余量按新旧段长度换算（frac 是"段内百分比"，同余量=同屏幕距离）。
     u.frac += inc;
-    bool changed = false;
     while (u.frac >= kFracMax) {
         const int rem = u.frac - kFracMax; // 旧段余量（旧段单位）
         u.prev_col = u.col; // 渲染转角平滑用（上一格 = 本段起点）
         u.prev_row = u.row;
         u.col = u.next_col;
         u.row = u.next_row;
-        changed = true;
         u.frac = rem;
         if (u.path.empty()) {
             u.frac = 0; // 到达终点：清段内余量（否则 unit_moving 恒真、走路动画停不下来）
@@ -840,7 +838,7 @@ bool SimWorld::can_place(int col, int row, int fw, int fh) const {
 }
 
 uint32_t SimWorld::spawn_unit(const std::string& owner, const std::string& type, int kind,
-                              int col, int row, uint8_t dir, const SimWeapon& w, bool is_miner,
+                              int col, int row, uint8_t dir, const SimWeapon& weapon, bool is_miner,
                               int capacity, int speed) {
     if (kind < 1) kind = 1;
     SimUnit u;
@@ -852,7 +850,7 @@ uint32_t SimWorld::spawn_unit(const std::string& owner, const std::string& type,
     u.col = u.next_col = col;
     u.row = u.next_row = row;
     u.dir = dir;
-    u.weapon = w;
+    u.weapon = weapon;
     u.is_miner = is_miner;
     u.capacity = capacity > 0 ? capacity : 20;
     u.speed = speed > 0 ? speed : (kind == 2 ? 51 : 68);
@@ -965,12 +963,13 @@ bool SimWorld::build_ready(const std::string& owner) const {
 
 // ── 建筑配置 / 防御攻击（M4）──
 
-bool SimWorld::configure_building(uint32_t id, int dir, const SimWeapon& w, bool is_refinery) {
+bool SimWorld::configure_building(uint32_t id, int dir, const SimWeapon& weapon,
+                                  bool is_refinery) {
     for (auto& b : buildings) {
         if (b.id != id) continue;
         b.dir = static_cast<uint8_t>(dir & 255);
         b.turret_dir = b.dir;
-        b.weapon = w;
+        b.weapon = weapon;
         b.is_refinery = is_refinery;
         return true;
     }
@@ -1013,10 +1012,10 @@ bool SimWorld::has_building(const std::string& owner, const std::string& type,
 }
 
 uint64_t SimWorld::visual_hash() const {
-    uint64_t h = 1469598103934665603ull; // FNV-1a
-    const auto mix = [&h](uint64_t v) {
-        h ^= v;
-        h *= 1099511628211ull;
+    uint64_t hash = 1469598103934665603ull; // FNV-1a
+    const auto mix = [&hash](uint64_t v) {
+        hash ^= v;
+        hash *= 1099511628211ull;
     };
     for (const auto& u : units) {
         mix(u.id);
@@ -1056,7 +1055,7 @@ uint64_t SimWorld::visual_hash() const {
         mix(item.ticks);
         mix(item.ready ? 1ull : 0ull);
     }
-    return h;
+    return hash;
 }
 
 } // namespace ra2r::sim

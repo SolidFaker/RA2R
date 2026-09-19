@@ -106,11 +106,13 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
     // 后续帧的 art 为空 → Buildup=/Walk=/Idle1= 等 artmd 键全部查不到（动画静默
     // 失效：建筑停 make 帧、步兵永远 Guard——曾把建造动画误判为"受损帧"）。
     ra2r::core::IniFile art_local;
+    const ra2r::core::IniFile* art_ptr = &art_local;
     bool have_art = false;
     std::map<std::string, std::string> art_images;
     if (cache && cache->art_ready && cache->art_file) {
         have_art = true;
         art_images = cache->art_images;
+        art_ptr = cache->art_file.get();
     } else {
         const auto* artraw = load("ARTMD.INI");
         if (artraw) {
@@ -139,10 +141,10 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
             cache->art_file = std::make_shared<ra2r::core::IniFile>(std::move(art_local));
             cache->art_images = art_images;
             cache->art_ready = true;
+            art_ptr = cache->art_file.get();
         }
     }
-    const ra2r::core::IniFile& art =
-        (cache && cache->art_file) ? *cache->art_file : art_local;
+    const ra2r::core::IniFile& art = *art_ptr;
     // 单位调色盘（剧场单位盘；建筑/步兵共用）+ 阵营色重映射 LUT（按 remap 下标缓存）
     const std::vector<uint8_t>* upal = load(cfg.unit_pal);
     const bool have_upal = upal && upal->size() >= 768;
@@ -166,24 +168,24 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
     };
     // 对象列表统一按 (cx+cy, cx) 排序
     struct Obj {
-        int cx, cy, depth;
-        int kind; // 0=建筑 1=载具 2=步兵
+        int cx = 0, cy = 0, depth = 0;
+        int kind = 0; // 0=建筑 1=载具 2=步兵
         std::string id;
-        uint8_t dir;
-        uint8_t subcell;
-        int height;
-        int off_x, off_y; // 格内像素偏移（M3 平滑移动插值；建筑恒 0）
-        uint8_t alpha;    // 透明度（建造中建筑半透明）
-        int hp;           // 建筑血量（受损帧切换）
-        float build_p;    // 建筑建造进度（<0 = 建成）
-        int remap;        // 阵营色重映射下标（0 = 无）
-        int seq;          // 原始序号（确定性决胜：同格对象稳定排序）
-        int build_ticks;  // 建造已用逻辑帧（Buildup 动画时长用）
-        int build_total;  // 建造总逻辑帧
-        uint8_t moving;   // 步兵行进中（Walk 序列）
-        uint32_t anim_clock; // 动画时钟（逻辑帧）
-        uint8_t idle_kind;   // 步兵 idle 动作（1=Idle1 2=Idle2 0=无）
-        uint32_t idle_start; // idle 动作触发逻辑帧
+        uint8_t dir = 0;
+        uint8_t subcell = 0;
+        int height = 0;
+        int off_x = 0, off_y = 0; // 格内像素偏移（M3 平滑移动插值；建筑恒 0）
+        uint8_t alpha = 255;      // 透明度（建造中建筑半透明）
+        int hp = 0;               // 建筑血量（受损帧切换）
+        float build_p = -1.0f;    // 建筑建造进度（<0 = 建成）
+        int remap = 0;            // 阵营色重映射下标（0 = 无）
+        int seq = 0;              // 原始序号（确定性决胜：同格对象稳定排序）
+        int build_ticks = 0;      // 建造已用逻辑帧（Buildup 动画时长用）
+        int build_total = 0;      // 建造总逻辑帧
+        uint8_t moving = 0;       // 步兵行进中（Walk 序列）
+        uint32_t anim_clock = 0;  // 动画时钟（逻辑帧）
+        uint8_t idle_kind = 0;    // 步兵 idle 动作（1=Idle1 2=Idle2 0=无）
+        uint32_t idle_start = 0;  // idle 动作触发逻辑帧
     };
     std::vector<Obj> sorted;
     for (size_t i = 0; i < objs.size(); ++i) {
@@ -502,14 +504,16 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
             const auto get_entry = [&](int f, ObjectRenderCache::BldEntry& ent) -> bool {
                 return entry_of(shp, img_name, f, o.remap, ent);
             };
-            const float ax = ox + o.cx * 60.0f + (o.cy & 1) * 30.0f + 30.0f;
+            const float ax = static_cast<float>(ox) + static_cast<float>(o.cx) * 60.0f +
+                             static_cast<float>(o.cy & 1) * 30.0f + 30.0f;
             // y 锚点 = 顶格顶顶点（格中心再上移半格 15px，原版观感实测）
-            const float ay = oy + o.cy * 15.0f - o.height * kHeightLevelPx;
+            const float ay = static_cast<float>(oy) + static_cast<float>(o.cy) * 15.0f -
+                             static_cast<float>(o.height) * kHeightLevelPx;
             // 阴影帧垫底、精灵帧置顶（scale 恒 1；建造生长由 Buildup 动画承担）
             const auto blit_entry = [&](const ObjectRenderCache::BldEntry& ent, float scale,
                                         uint8_t alpha) {
-                const int dx = static_cast<int>(ent.cx * scale);
-                const int dy = static_cast<int>(ent.cy * scale);
+                const int dx = static_cast<int>(static_cast<float>(ent.cx) * scale);
+                const int dy = static_cast<int>(static_cast<float>(ent.cy) * scale);
                 const int bx =
                     static_cast<int>(std::lround(ax)) + ent.fx - ent.canvas_w / 2 +
                     (ent.cx - dx) / 2; // 底心锚定：水平居中
@@ -635,7 +639,7 @@ ShowcaseResult run_showcase(const std::vector<std::string>& vxl_names, const Fil
                     have_bhva = bhva.open(bhraw->data(), bhraw->size());
         }
         ra2r::render::VoxelView view;
-        view.scale = std::clamp(scale, 1, 3);
+        view.scale = static_cast<float>(std::clamp(scale, 1, 3));
         float ax = 0, ay = 0;
         const ra2r::render::VoxelPart parts[3] = {
             {&vxl, have_hva ? &hva : nullptr, 0},

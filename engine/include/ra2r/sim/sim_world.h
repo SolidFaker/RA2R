@@ -193,7 +193,7 @@ struct SimWorld {
     // 生成单位（不走地图加载路径）：返回新单位 id（0 = 失败）。owner 无资金条目时
     // 按 $10000 补种；格被占/出界不拒绝（调用方负责选点）。
     uint32_t spawn_unit(const std::string& owner, const std::string& type, int kind, int col,
-                        int row, uint8_t dir, const SimWeapon& w, bool is_miner, int capacity,
+                        int row, uint8_t dir, const SimWeapon& weapon, bool is_miner, int capacity,
                         int speed);
     // 移除单位（基地车展开消耗车体）；返回是否移除
     bool remove_unit(size_t idx);
@@ -226,7 +226,8 @@ struct SimWorld {
     // 落成后由 stage 按 rulesmd 注入：朝向 dir（0..255，也作为炮塔初始朝向）、
     // Primary 武器（无武器传空 = 纯建筑）与精炼厂标记（Refinery=yes；采矿车
     // 卸货目标判定用）。返回是否找到该建筑。
-    bool configure_building(uint32_t id, int dir, const SimWeapon& w, bool is_refinery = false);
+    bool configure_building(uint32_t id, int dir, const SimWeapon& weapon,
+                            bool is_refinery = false);
     // 命令建筑攻击单位（防御建筑；仅同/敌我校验，射程外会先转向等待）。
     bool issue_build_attack(size_t building_idx, size_t unit_idx);
     // 停止建筑攻击（清目标，恢复自动索敌）

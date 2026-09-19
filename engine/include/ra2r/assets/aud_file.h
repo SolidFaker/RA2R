@@ -23,12 +23,13 @@ public:
     double duration_seconds() const {
         // ADPCM WAV 的 uncomp_size 是压缩数据长，用块数×每块样本数计算
         if (is_adpcm_wav() && block_align_ > 0 && samples_per_block_ > 0) {
-            return static_cast<double>((body_size_ / block_align_) * samples_per_block_) /
-                   rate_;
+            const size_t blocks = body_size_ / block_align_;
+            return static_cast<double>(blocks * samples_per_block_) / rate_;
         }
-        return rate_ > 0 ? static_cast<double>(uncomp_size_) /
-                               (rate_ * channels_ * (bits_ / 8))
-                         : 0.0;
+        const int frame_bytes = channels_ * (bits_ / 8);
+        return (rate_ > 0 && frame_bytes > 0)
+                   ? static_cast<double>(uncomp_size_) / (rate_ * frame_bytes)
+                   : 0.0;
     }
 
     // 解码为 16 位交错 PCM（样本数 = channels × frames）
