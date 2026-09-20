@@ -185,7 +185,8 @@ void generate_map(StageApp& a, std::string* error) {
         for (auto& b : a.sim.buildings) {
             if (const auto* u = a.rules.unit(b.type)) {
                 if (!u->anim.empty() || !u->anim_two.empty() || !u->anim_three.empty() ||
-                    !u->special.empty() || (u->turret && u->turret_voxel))
+                    !u->idle_anim.empty() || !u->special.empty() ||
+                    (u->turret && u->turret_voxel))
                     b.has_anim = true;
             }
         }
@@ -883,7 +884,19 @@ void draw_bld_anim_frame(StageApp& a, const std::string& art_in, int frame_i, bo
     const auto& lay = anim_layout(a, art, shp);
     const int n = static_cast<int>(shp.frame_count());
     const int L = std::max(1, lay.seg_len);
-    const int fi = ((frame_i % L) + L) % L;
+    // 帧时长按 artmd [<anim>] Rate=（毫秒/帧；缺省 0 = 1 逻辑帧/帧）。逻辑帧
+    // 15Hz = 66.7ms，故 step = round(Rate/66.7)，至少 1（原版建造厂机械臂
+    // NACNST_C/雷达盘 GACNST_A Rate=200 → 3 逻辑帧/动画帧，此前每逻辑帧一帧
+    // 会快 3 倍）。
+    int step = 1;
+    {
+        const std::string rate_s = a.rules.art().get(art, "Rate", "");
+        if (!rate_s.empty()) {
+            const int ms = std::atoi(rate_s.c_str());
+            if (ms > 66) step = std::max(1, (ms + 33) / 67);
+        }
+    }
+    const int fi = (((frame_i / step) % L) + L) % L;
     int base = 0;
     int shadow_base = lay.shadow_start;
     if (damaged && lay.has_damaged) {
@@ -1082,6 +1095,11 @@ void draw_building_anims(StageApp& a, const IsometricGrid& grid, int bw, int bh,
         // ActiveAnimYSort 是**相对其它对象的排序偏移**，不是"在本体之后"。
         if (any_anim && !u->anim.empty())
             draw_anim(u->anim, static_cast<int>(b.anim_clock), dmg);
+        // IdleAnim（空闲配件动画）：苏联/尤里建造厂机械臂（NACNST_C/YACNST_C）、
+        // 战争工厂摇臂、精炼厂设备等——原版常驻循环播放，此前未解析导致机械臂
+        // 整体缺失（不是不转，而是完全没画）。
+        if (!u->idle_anim.empty())
+            draw_anim(u->idle_anim, static_cast<int>(b.anim_clock), dmg);
         if (!u->anim_two.empty()) draw_anim(u->anim_two, static_cast<int>(b.anim_clock), dmg);
         if (!u->anim_three.empty()) draw_anim(u->anim_three, static_cast<int>(b.anim_clock), dmg);
         // SpecialAnim（光棱塔棱镜充能 GAPRIS_A、磁暴塔放电 NATSLA_B 等）是
@@ -1130,7 +1148,8 @@ void adopt_building(StageApp& a, uint32_t id, int dir) {
         }
         a.sim.configure_building(id, dir, w, u && u->refinery);
         if (u && (!u->anim.empty() || !u->anim_two.empty() || !u->anim_three.empty() ||
-                  !u->special.empty() || (u->turret && u->turret_voxel)))
+                  !u->idle_anim.empty() || !u->special.empty() ||
+                  (u->turret && u->turret_voxel)))
             b.has_anim = true;
         return;
     }

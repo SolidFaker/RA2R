@@ -118,6 +118,12 @@ bool RulesDB::load(const uint8_t* rulesmd, size_t rules_n, const uint8_t* artmd,
                 u.anim_two = art_get_fallback(art_, name, u.image, "ActiveAnimTwo");
                 u.anim_three = art_get_fallback(art_, name, u.image, "ActiveAnimThree");
                 u.anim_ysort = !art_get_fallback(art_, name, u.image, "ActiveAnimYSort").empty();
+                // 空闲/生产配件动画（苏联建造厂机械臂 IdleAnim=NACNST_C、
+                // 战争工厂/精炼厂摇臂等；IdleAnimDamaged/ProductionAnim 一并解析）
+                u.idle_anim = art_get_fallback(art_, name, u.image, "IdleAnim");
+                u.idle_anim_dmg = art_get_fallback(art_, name, u.image, "IdleAnimDamaged");
+                u.prod_anim = art_get_fallback(art_, name, u.image, "ProductionAnim");
+                u.prod_anim_dmg = art_get_fallback(art_, name, u.image, "ProductionAnimDamaged");
                 u.special = art_get_fallback(art_, name, u.image, "SpecialAnim");
                 u.special_dmg = art_get_fallback(art_, name, u.image, "SpecialAnimDamaged");
             }

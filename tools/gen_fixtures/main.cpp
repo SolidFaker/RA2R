@@ -466,6 +466,8 @@ std::string make_art_ini() {
         "Image=GGPOWR\n"
         "Buildup=GAPOWRMK\n"
         "ActiveAnim=GAPOWR_A\n"
+        "IdleAnim=GAPOWR_I\n"
+        "ProductionAnim=GAPOWR_P\n"
         "\n"
         "[E1]\n"
         "Image=GI\n"

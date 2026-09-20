@@ -530,6 +530,24 @@
   收起（地基立即解阻、无爆炸、`sold`）→ 重新展开回到**同一锚点**（中心-对称）；
   建造厂渲染截图确认雷达盘可见（此前与本体重叠被完全遮挡）。
 
+### 3.27 苏联基地机械臂缺失：`IdleAnim=` 未解析；动画帧率应按 artmd Rate=
+- **现象**：苏联/尤里建造厂的机械臂（以及战争工厂摇臂、精炼厂设备等）**完全不见**。
+- **根因**：配件动画只解析了 `ActiveAnim/ActiveAnimTwo/Three/SpecialAnim`，而
+  苏联建造厂的机械臂是 `IdleAnim=NACNST_C`（artmd `[NACNST] IdleAnim=NACNST_C`；
+  全库 12 处 `IdleAnim=`：NACNST/YACNST/NAYARD/YAYARD/GAYARD/YAREFN/NAINDP/
+  YAGRND/YAPOWR/GADEPT/CAOUTP/NADEPT）。`NACNST_C.SHP` 6 帧（90×100 臂 +
+  阴影段），此前从未被解析 → 机械臂整体缺失（不是"不动"）。
+- **修复**：`UnitTypeDef` 新增 `idle_anim/idle_anim_dmg/prod_anim/prod_anim_dmg`
+  （`IdleAnim/IdleAnimDamaged/ProductionAnim/ProductionAnimDamaged` 解析；生产
+  动画仅解析备用），`has_anim` 判据与 `draw_building_anims` 均纳入 `idle_anim`
+  （画在本体之上、ActiveAnim 之后）。
+- **顺带**：动画帧时长按 artmd `[<anim>] Rate=`（毫秒/帧）换算——15Hz 逻辑帧下
+  `step = round(Rate/66.7)`（至少 1）。建造厂机械臂/雷达盘 `Rate=200` → 3 逻辑帧/
+  动画帧；此前每逻辑帧推进一帧，动画快 3 倍。
+- **验证**：夹具 `sample.ini` 增加 `IdleAnim=GAPOWR_I / ProductionAnim=GAPOWR_P`，
+  `Fixtures.RulesDbLoadsSyntheticIni` 断言解析；苏联遭遇战截图确认机械臂可见
+  （NACNST 红色吊臂）。
+
 
 ## 4. 构建/工具链类
 
