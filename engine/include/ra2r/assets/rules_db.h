@@ -57,17 +57,21 @@ struct UnitTypeDef {
     int turret_x = 0, turret_y = 0; // rulesmd TurretAnimX/Y（像素近似，M3 档）
     int turret_za = 0;             // TurretAnimZAdjust=（勒普顿，正=上抬）
     // 配件动画（artmd ActiveAnim 系列；键缺失时回退 Image= 的节）
-    std::string anim;      // ActiveAnim=
-    std::string anim_dmg;  // ActiveAnimDamaged=（血量<50% 切换）
-    std::string anim_two;  // ActiveAnimTwo=
-    std::string anim_three;// ActiveAnimThree=
-    bool anim_ysort = false; // ActiveAnimYSort 非空（原版：与其它对象的排序偏移）
-    // IdleAnim=（空闲配件动画；苏联/尤里建造厂机械臂 NACNST_C、战争工厂摇臂等）
-    // / ProductionAnim=（生产中的配件动画；当前未建模生产状态，仅解析备用）
-    std::string idle_anim;
-    std::string idle_anim_dmg;
-    std::string prod_anim;
-    std::string prod_anim_dmg;
+std::string anim;      // ActiveAnim=
+std::string anim_dmg;  // ActiveAnimDamaged=（残血 <50% 切换）
+std::string anim_two;  // ActiveAnimTwo=
+std::string anim_three;// ActiveAnimThree=
+std::string anim_two_dmg;   // ActiveAnimTwoDamaged=（战争工厂流水线等）
+std::string anim_three_dmg; // ActiveAnimThreeDamaged=
+bool anim_ysort = false; // ActiveAnimYSort 非空（原版：相对其它对象的排序偏移）
+// IdleAnim=（常驻装置：苏联/尤里建造厂机械臂 NACNST_C、战争工厂摇臂等）
+// / ProductionAnim=（生产中的动画：机械臂摆动）；受损变体各自独立段
+std::string idle_anim;
+std::string idle_anim_dmg;
+std::string idle_two;       // IdleAnimTwo=（第二常驻装置，如 YAGRND 双摇臂）
+std::string idle_two_dmg;   // IdleAnimTwoDamaged=
+std::string prod_anim;
+std::string prod_anim_dmg;
     std::string special;     // SpecialAnim=（常驻配件，如光棱塔棱镜 GAPRIS_A）
     std::string special_dmg; // SpecialAnimDamaged=
     // ── 遭遇战 / 科技树（rulesmd；阶段 M4 建造流程）──

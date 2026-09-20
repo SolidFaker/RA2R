@@ -549,6 +549,38 @@
   （NACNST 红色吊臂）。
 
 
+### 3.28 动画帧序列语义：`LoopEnd` 开区间、受损独立段、生产动画（`ProductionAnim`）
+- **现象**：苏联基地机械臂（`IdleAnim=NACNST_C`）已能显示，但帧序列是
+  否正确无从判断；且建造中（队列在建）时机械臂应摆动（`ProductionAnim=NACNST_B`）
+  却仍是静止臂。
+- **语义**（原版 ARTMD.INI 实测 + OpenRA ra2 `mods/ra2/sequences/*-structures.yaml`
+  对照，全部锁进单测）：
+  1. 循环区间 = `[LoopStart, LoopEnd)`——**LoopEnd 是开区间上界**：
+     `[NACNST_C] LoopStart=0 LoopEnd=1` → 只播帧 0（静止臂）；
+     `[NACNST_B] LoopStart=0 LoopEnd=21` → 21 帧。
+  2. 受损变体是**独立段**且 `Image=` 可指向同一 SHP：`[NACNST_CD]
+     Image=NACNST_C LoopStart=1 LoopEnd=2` → 只播帧 1；`[NACNST_BD] Start=22
+     LoopStart=22 LoopEnd=42` → 受损生产段 [22,42)。
+  3. 阴影：`Shadow=yes` **或** 总帧数 n%4==0（四段布局）→ 阴影帧 =
+     动画帧 + n/2；`NACNST_A`（22 帧，无 `Shadow=yes`）后半是受损灯，**不是阴影**。
+  4. 帧率 `Rate=`（毫秒/帧）→ 15Hz 逻辑帧 `step = round(Rate/66.7)`（机械臂
+     `Rate=200` → 3 逻辑帧/动画帧）；段内无 `Rate` 回退同段 `Image=` 指向段的 Rate。
+- **修复**：新增 `engine/src/assets/anim_frames.cpp::plan_anim_frames()`（artmd 段 → 帧计划
+  `{first,count,step,shadow}`，元数据缺失回退 `ShpLayout` 分段），stage 统一调用；
+  `draw_building_anims` 增加**生产动画**：该 House 队列有在建项
+  （`!ready && total>0`）时用队列项 `ticks` 作时钟画 `ProductionAnim`，
+  否则画 `IdleAnim`；受损用各自 `*Damaged` 段。
+- **验证**：`stage --skirmish --simsteps 240/250`（同图同色）机械臂区域差 4817 px
+  （帧号 19 → 1）；空闲 100/110 帧臂区 diff=0（恒为帧 0）；新增
+  `tests/test_anim_frames.cpp` 10 例锁死 LoopEnd 开区间/Rate 圆整/Shadow 判定/
+  四段回退/越界钳制（值取自 `[NACNST_C/CD/B/BD]`、`[GACNST_A/B]`、
+  `[GAPOWR_A/AD]`）。
+- **顺带（自检脚本 2N 帧）**：stage 遭遇战分支自带推进循环，但链后
+  “共享推进循环”仍会再推进 `sim_steps` → 实际 2N 帧（`after N ticks`
+  汇总与实际状态不符，也是首次验证生产动画时 `producing=0`
+  的假象来源）。改为 `post_steps = a.sk.active ? 0 : a.sim_steps`
+  （attack/build/demo 模式依赖共享循环，行为不变）。
+
 ## 4. 构建/工具链类
 
 - 无管理员工具链：WinLibs MinGW（免安装）+ pip CMake + SDL3 mingw 预编译包，全部放 `I:\tools\`（不入库）。
@@ -658,6 +690,12 @@
 3. **几何自洽校验**：判定出的参数要能用**另一份数据**验证（炮塔 z=30 对炮塔节 z 范围 22.6–39.7；`YTNKTUR` tz/16=16 对车体高 15）。只靠"看起来对"的修复最容易留下 ±15px 级误差。
 
 ---
+
+### 6.15 动画“帧序列”先查 artmd 段，别只看 SHP 帧数
+`LoopEnd` 是**开区间**、受损/生产是**独立段**（`Image=` 可复用同一 SHP）、
+阴影按 `Shadow=yes`/n%4 判定、`Rate=` 是毫秒/帧——四件事决定“画第几帧”。
+单测 `tests/test_anim_frames.cpp` 用原版实测段值锁死；stage 侧统一走
+`assets::plan_anim_frames()`，不要再在绘制函数里手写区间。
 
 ## 7. 遭遇战流程类（M4 实战沉淀）
 

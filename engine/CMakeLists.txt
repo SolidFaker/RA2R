@@ -10,6 +10,7 @@ add_library(ra2r_engine STATIC
   src/assets/pal_file.cpp
   src/assets/shp_file.cpp
   src/assets/shp_layout.cpp
+  src/assets/anim_frames.cpp
   src/assets/vxl_file.cpp
   src/assets/lcw.cpp
   src/assets/lzo1x.cpp

@@ -9,6 +9,7 @@
 #include <cstring>
 #include <fstream>
 
+#include "ra2r/assets/anim_frames.h"
 #include "ra2r/assets/map_file.h"
 #include "ra2r/assets/shp_file.h"
 #include "ra2r/assets/shp_layout.h"
@@ -185,7 +186,8 @@ void generate_map(StageApp& a, std::string* error) {
         for (auto& b : a.sim.buildings) {
             if (const auto* u = a.rules.unit(b.type)) {
                 if (!u->anim.empty() || !u->anim_two.empty() || !u->anim_three.empty() ||
-                    !u->idle_anim.empty() || !u->special.empty() ||
+                    !u->idle_anim.empty() || !u->idle_two.empty() || !u->prod_anim.empty() ||
+                    !u->special.empty() ||
                     (u->turret && u->turret_voxel))
                     b.has_anim = true;
             }
@@ -864,18 +866,27 @@ void blit_bld_shp_frame(StageApp& a, const std::string& art_in, int f, int ax, i
 // 单个配件动画帧绘制：锚点与建筑同语义（画布中心对顶格顶顶点）；
 // 配件 SHP 画布与建筑同尺寸（实测 GAWEAP 266x224 = GAWEAP_A = GAWEAPBB，
 // GAPOWR 142x110 = GAPOWR_A…），美术已自定位，无需偏移换算。
-// 帧布局由 shp_layout 按帧内容自判：
-//   四段 [空闲 L][受损 L][空闲阴影 L][受损阴影 L]（受损变体在同文件第 2 段）
-//   两段 [动画 L][阴影 L]；单段 [动画 n]。
-// 阴影段起点恒为 n/2；受损帧 = 段 2（不是 n/2 处！旧实现把受损段当阴影画，
-// 造成光棱塔/磁暴塔"空闲动画与受损动画叠加"的观感）。阴影帧像素为索引 1，
-// 已由 PaletteLut 映射为半透明黑，按 alpha 混合垫底。
-void draw_bld_anim_frame(StageApp& a, const std::string& art_in, int frame_i, bool damaged,
+// **帧序列以 artmd 段元数据为准**（原版动画节的 Start/LoopStart/LoopEnd）：
+//   - 循环区间 = [LoopStart, LoopEnd)（**LoopEnd 为开区间上界**，实测：
+//     NAYARD_A LoopEnd=15 → 15 帧、GAPOWR_A LoopEnd=8 → 8 帧、GACNST_A
+//     LoopEnd=3 → 3 帧；三段受害/受益都与此一致）；
+//   - 受损变体是**独立的 artmd 段**（ActiveAnimDamaged=GAPOWR_AD 等，
+//     自带 Image=（同文件）与 Start/LoopStart/LoopEnd，如 GAPOWR_A 帧 8..15）；
+//     无显式受损段时回退"同文件第 2 段"（四段布局）。
+//   - 阴影：文件后半为阴影段（阴影帧号 = 动画帧号 + n/2）；仅当 artmd
+//     Shadow=yes（两段文件，如 NACNST_C 6 帧=臂 3+影 3）或 n%4==0（四段，
+//     如 GAPOWR_A 32 帧）时成立；NACNST_A（22 帧，无 Shadow=yes）后半是
+//     受损灯（与空闲灯一样逐帧解码，非阴影）——按 Shadow 键区分。
+// 段名与 SHP 文件名可能不同（[NACNST_CD] Image=NACNST_C；[GAPOWR_AD]→GAPOWR_A）。
+void draw_bld_anim_frame(StageApp& a, const std::string& section, int frame_i, bool damaged,
                          int col, int row, int height,
                          const ra2r::render::IsometricGrid& grid, int bw, int bh, int ox,
                          int oy, std::vector<uint8_t>& canvas) {
     (void)grid; // 帧位由调用方算好（保留参数以统一绘制函数签名）
-    const std::string art = resolve_art(a, art_in, ".SHP");
+    const auto& art_ini = a.rules.art();
+    std::string img = art_ini.get(section, "Image", "");
+    if (img.empty()) img = section;
+    const std::string art = resolve_art(a, img, ".SHP");
     const auto* raw = load_file(a, art + ".SHP");
     if (!raw) return;
     ra2r::assets::ShpFile shp;
@@ -883,32 +894,18 @@ void draw_bld_anim_frame(StageApp& a, const std::string& art_in, int frame_i, bo
     if (!shp.open(raw->data(), raw->size(), &err) || shp.frame_count() == 0) return;
     const auto& lay = anim_layout(a, art, shp);
     const int n = static_cast<int>(shp.frame_count());
-    const int L = std::max(1, lay.seg_len);
-    // 帧时长按 artmd [<anim>] Rate=（毫秒/帧；缺省 0 = 1 逻辑帧/帧）。逻辑帧
-    // 15Hz = 66.7ms，故 step = round(Rate/66.7)，至少 1（原版建造厂机械臂
-    // NACNST_C/雷达盘 GACNST_A Rate=200 → 3 逻辑帧/动画帧，此前每逻辑帧一帧
-    // 会快 3 倍）。
-    int step = 1;
-    {
-        const std::string rate_s = a.rules.art().get(art, "Rate", "");
-        if (!rate_s.empty()) {
-            const int ms = std::atoi(rate_s.c_str());
-            if (ms > 66) step = std::max(1, (ms + 33) / 67);
-        }
-    }
-    const int fi = (((frame_i / step) % L) + L) % L;
-    int base = 0;
-    int shadow_base = lay.shadow_start;
-    if (damaged && lay.has_damaged) {
-        base = L;                        // 受损变体 = 第 2 段
-        shadow_base = lay.shadow_start + L; // 受损阴影 = 第 4 段
-    }
+    // 帧序列计划：artmd Start/LoopStart/LoopEnd（LoopEnd 开区间）+ Rate= 帧率
+    // + Shadow= 阴影 + 元数据缺失时的分段回退，全部由引擎侧 plan_anim_frames
+    // 统一计算（见 engine/src/assets/anim_frames.cpp）
+    const auto plan = ra2r::assets::plan_anim_frames(art_ini, section, n, lay, damaged);
+    if (plan.count <= 0) return;
+    const int fi = plan.first + ((frame_i / plan.step) % plan.count + plan.count) % plan.count;
+    const int si = plan.shadow && n / 2 > 0 && fi + n / 2 < n ? fi + n / 2 : -1;
     // 建筑锚点（object_layer 建筑段同款）：顶格顶顶点
     const int ax = ox + col * 60 + (row & 1) * 30 + 30;
     const int ay = oy + row * 15 - height * ra2r::render::kHeightLevelPx;
-    if (shadow_base >= 0 && shadow_base + fi < n)
-        blit_bld_shp_frame(a, art, shadow_base + fi, ax, ay, bw, bh, canvas); // 阴影垫底
-    if (base + fi < n) blit_bld_shp_frame(a, art, base + fi, ax, ay, bw, bh, canvas);
+    if (si >= 0) blit_bld_shp_frame(a, art, si, ax, ay, bw, bh, canvas); // 阴影垫底
+    blit_bld_shp_frame(a, art, fi, ax, ay, bw, bh, canvas);
 }
 
 // SHP 炮塔（rulesmd Turret=yes + TurretAnim=，如 GAPILLTUR）：面向帧 =
@@ -1072,36 +1069,51 @@ void draw_building_anims(StageApp& a, const IsometricGrid& grid, int bw, int bh,
         if (!b.has_anim && !u->turret) continue;
         const int hgt = static_cast<int>(a.map.cell(b.col, b.row).height);
         const bool dmg = b.hp < 128;
-        // 受损变体：artmd 的 ActiveAnimDamaged=<名>_AD 在原版数据里并不存在
-        // （NATSLA_AD/GAPRIS_BD/CAOILD_AD 均无文件），受损帧其实是同一 SHP 的
-        // 第 2 段（见 shp_layout）；只有 _AD 文件真的存在时才用它。
-        const auto shp_exists = [&](const std::string& name) {
-            return !name.empty() && load_file(a, name + ".SHP") != nullptr;
-        };
-        const auto draw_anim = [&](const std::string& art, int clock, bool damaged_state) {
-            if (art.empty()) return;
-            if (damaged_state && shp_exists(art + "_AD")) {
-                draw_bld_anim_frame(a, art + "_AD", clock, false, b.col, b.row, hgt, grid, bw,
-                                    bh, ox, oy, canvas);
+        // 受损/生产变体都是**独立的 artmd 段名**（ActiveAnimDamaged=GAPOWR_AD、
+        // IdleAnimDamaged=NACNST_CD、ProductionAnimDamaged=NACNST_BD…）：
+        // Image= 指向同一 SHP，Start/LoopStart/LoopEnd 给出该状态的帧区间。
+        const auto draw_anim = [&](const std::string& sec, const std::string& sec_dmg, int clock,
+                                   bool damaged_state) {
+            if (sec.empty() && sec_dmg.empty()) return;
+            if (damaged_state && !sec_dmg.empty()) {
+                draw_bld_anim_frame(a, sec_dmg, clock, false, b.col, b.row, hgt, grid, bw, bh,
+                                    ox, oy, canvas);
                 return;
             }
-            draw_bld_anim_frame(a, art, clock, damaged_state, b.col, b.row, hgt, grid, bw, bh,
-                                ox, oy, canvas);
+            if (!sec.empty())
+                draw_bld_anim_frame(a, sec, clock, damaged_state, b.col, b.row, hgt, grid, bw,
+                                    bh, ox, oy, canvas);
         };
+        // 生产状态（该 House 队列在建）：生产动画顶替空闲动画——原版建造厂
+        // 机械臂 NACNST_B / 战争工厂吊臂只在生产时摆动，空闲时 IdleAnim 是
+        // 静止帧（artmd [NACNST_C] LoopStart=0 LoopEnd=1 → 仅帧 0）。
+        bool producing = false;
+        int prod_ticks = 0;
+        if (!u->prod_anim.empty()) {
+            const auto qit = a.sim.build_queue.find(b.owner);
+            if (qit != a.sim.build_queue.end() && !qit->second.ready && qit->second.total > 0) {
+                producing = true;
+                prod_ticks = qit->second.ticks;
+            }
+        }
         // ActiveAnim 系列**画在本体之上**：原版把动画作为建筑的附加层合成，
         // 与本体像素同位覆盖（如建造厂雷达盘 GACNST_A 全部像素落在本体画布内，
         // 画在本体之下会完全不可见——旧实现按 ActiveAnimYSort 非空当作"身后类"
         // 画在建筑之下，导致基地/工厂/电厂的配件动画整体消失）。
         // ActiveAnimYSort 是**相对其它对象的排序偏移**，不是"在本体之后"。
         if (any_anim && !u->anim.empty())
-            draw_anim(u->anim, static_cast<int>(b.anim_clock), dmg);
-        // IdleAnim（空闲配件动画）：苏联/尤里建造厂机械臂（NACNST_C/YACNST_C）、
-        // 战争工厂摇臂、精炼厂设备等——原版常驻循环播放，此前未解析导致机械臂
-        // 整体缺失（不是不转，而是完全没画）。
-        if (!u->idle_anim.empty())
-            draw_anim(u->idle_anim, static_cast<int>(b.anim_clock), dmg);
-        if (!u->anim_two.empty()) draw_anim(u->anim_two, static_cast<int>(b.anim_clock), dmg);
-        if (!u->anim_three.empty()) draw_anim(u->anim_three, static_cast<int>(b.anim_clock), dmg);
+            draw_anim(u->anim, u->anim_dmg, static_cast<int>(b.anim_clock), dmg);
+        if (producing)
+            draw_anim(u->prod_anim, u->prod_anim_dmg, prod_ticks, dmg);
+        else if (!u->idle_anim.empty())
+            draw_anim(u->idle_anim, u->idle_anim_dmg, static_cast<int>(b.anim_clock), dmg);
+        // 第二常驻装置（YAGRND 双摇臂 YAGRND_A + YAGRND_C）独立于生产状态播放
+        if (!u->idle_two.empty())
+            draw_anim(u->idle_two, u->idle_two_dmg, static_cast<int>(b.anim_clock), dmg);
+        if (!u->anim_two.empty())
+            draw_anim(u->anim_two, u->anim_two_dmg, static_cast<int>(b.anim_clock), dmg);
+        if (!u->anim_three.empty())
+            draw_anim(u->anim_three, u->anim_three_dmg, static_cast<int>(b.anim_clock), dmg);
         // SpecialAnim（光棱塔棱镜充能 GAPRIS_A、磁暴塔放电 NATSLA_B 等）是
         // 动作动画：artmd 的 IsAnimDelayedFire=yes / DelayedFireDelay=28
         // 表明它在开火前播放，待机时不画（M5 战斗按动作播放）。
@@ -1148,7 +1160,8 @@ void adopt_building(StageApp& a, uint32_t id, int dir) {
         }
         a.sim.configure_building(id, dir, w, u && u->refinery);
         if (u && (!u->anim.empty() || !u->anim_two.empty() || !u->anim_three.empty() ||
-                  !u->idle_anim.empty() || !u->special.empty() ||
+                  !u->idle_anim.empty() || !u->idle_two.empty() || !u->prod_anim.empty() ||
+                  !u->special.empty() ||
                   (u->turret && u->turret_voxel)))
             b.has_anim = true;
         return;

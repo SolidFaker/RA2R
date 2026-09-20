@@ -1360,8 +1360,10 @@ static int run(int argc, char** argv) {
                         skirmish_ai_tick(a);
                         a.sim.tick();
                     }
-                    // 放置预览自检：有就绪建筑时进入放置模式（截图应出现地基菱形）
-                    if (!a.sim.build_ready("Player")) {
+                    // 放置预览自检：有就绪建筑时进入放置模式（截图应出现地基菱形）。
+                    // 队列里有**在建项**时不得覆盖（那会抹掉真实生产状态 → 生产
+                    // 动画/进度归零）；只在队列空时注入一个假的就绪项。
+                    if (!a.sim.build_ready("Player") && !a.sim.build_queue.count("Player")) {
                         // 自检注入：合成一个"就绪"项用于预览渲染（不占资金）
                         const std::string pw = pbuild("power");
                         if (!pw.empty())
@@ -1422,7 +1424,9 @@ static int run(int argc, char** argv) {
                 }
                 a.selection.assign(1, a.sim.units[0].id);
                 // 推进循环（演示脚本按时间轴注入事件）
-                for (int s = 0; s < a.sim_steps; ++s) {
+                // 遭遇战分支自带推进循环，此处不得重复推进（否则实际 2N 帧）
+                const int post_steps = a.sk.active ? 0 : a.sim_steps;
+                for (int s = 0; s < post_steps; ++s) {
                     if (a.sim_demo) {
                         const auto uid_of2 = [&](uint32_t id) -> int {
                             for (int i = 0; i < static_cast<int>(a.sim.units.size()); ++i)

@@ -252,8 +252,14 @@ TEST(Fixtures, RulesDbLoadsSyntheticIni) {
     EXPECT_EQ(powr->image, "GGPOWR");
     EXPECT_EQ(powr->buildup, "GAPOWRMK"); // 来自 artmd 片段
     EXPECT_FALSE(powr->anim.empty());     // ActiveAnim=GAPOWR_A
-    EXPECT_EQ(powr->idle_anim, "GAPOWR_I"); // IdleAnim=（空闲配件动画）
-    EXPECT_EQ(powr->prod_anim, "GAPOWR_P"); // ProductionAnim=
+    EXPECT_EQ(powr->anim_dmg, "GAPOWR_AD");
+    EXPECT_EQ(powr->anim_two, "GAPOWR_B");
+    EXPECT_EQ(powr->anim_two_dmg, "GAPOWR_BD"); // ActiveAnimTwoDamaged=
+    EXPECT_EQ(powr->idle_anim, "GAPOWR_I");     // IdleAnim=（空闲配件动画）
+    EXPECT_EQ(powr->idle_anim_dmg, "GAPOWR_ID");
+    EXPECT_EQ(powr->idle_two, "GAPOWR_J");      // IdleAnimTwo=（第二常驻装置）
+    EXPECT_EQ(powr->prod_anim, "GAPOWR_P");     // ProductionAnim=
+    EXPECT_EQ(powr->prod_anim_dmg, "GAPOWR_PD");
     // 建造厂
     const auto* cnst = db.unit("GACNST");
     ASSERT_NE(cnst, nullptr);
