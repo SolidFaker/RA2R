@@ -260,11 +260,28 @@ TEST(SimBuild, SpawnBlocksFootprintAndCompletesOnTime) {
     const uint32_t id = s.spawn_building("Player", "GAPOWR", 10, 10, 2, 2, 300, 100, true, 54,
                                          750);
     ASSERT_NE(id, 0u);
-    // 地基 2×2 → 4 格阻挡
-    for (int j = 0; j < 2; ++j)
-        for (int i = 0; i < 2; ++i)
-            EXPECT_EQ(s.blocked[(10 + j) * 32 + (10 + i)], 1);
-    EXPECT_FALSE(s.can_place(11, 11, 1, 1));
+    // 地基 2×2（地图空间）→ 引擎格菱形：顶格 (10,10) + 左 (9,11) / 右 (10,11) + 底 (10,12)
+    // （引擎网格矩形是沿行错位的平行四边形，不是原版地基形状）
+    const std::pair<int, int> want[] = {{10, 10}, {10, 11}, {9, 11}, {10, 12}};
+    for (const auto& c : want) EXPECT_EQ(s.blocked[c.second * 32 + c.first], 1);
+    EXPECT_EQ(s.blocked[11 * 32 + 10], 1);     // (col 10, row 11)
+    EXPECT_EQ(s.blocked[11 * 32 + 11], 0);     // 引擎矩形位置不应阻挡
+    EXPECT_EQ(s.blocked[10 * 32 + 9], 0);
+    EXPECT_FALSE(s.can_place(10, 12, 1, 1)); // 底格被占
+    EXPECT_TRUE(s.can_place(11, 11, 1, 1));  // 原矩形角点其实是空的
+    // 奇数行锚点：菱形镜像（顶格 (11,11)，右/下 (12,12)，左 (11,12)，底 (11,13)）
+    {
+        sim::SimWorld s2;
+        s2.w = 32;
+        s2.h = 32;
+        s2.blocked.assign(32 * 32, 0);
+        ASSERT_NE(s2.spawn_building("Player", "GAPOWR", 11, 11, 2, 2, 300, 100, true, 54, 750),
+                  0u);
+        for (const auto& c : {std::pair<int, int>{11, 11}, {12, 12}, {11, 12}, {11, 13}})
+            EXPECT_EQ(s2.blocked[c.second * 32 + c.first], 1);
+        EXPECT_EQ(s2.blocked[12 * 32 + 12], 1); // (col 12, row 12)
+        EXPECT_EQ(s2.blocked[11 * 32 + 12], 0); // (col 12, row 11) 不是地基
+    }
     // 建造中：hp=1 且不计电力
     const auto& b = s.buildings[0];
     EXPECT_TRUE(b.under_construction);
@@ -276,6 +293,47 @@ TEST(SimBuild, SpawnBlocksFootprintAndCompletesOnTime) {
     EXPECT_FALSE(s.buildings[0].under_construction) << "第 54 帧应完工";
     EXPECT_EQ(s.buildings[0].hp, 750);
     EXPECT_EQ(s.power_net["Player"], 100);
+}
+
+TEST(SimBuild, FoundationShapeIsMapSpaceRectangle) {
+    // 现场放置与地图装载必须产生同一地基形状：地图空间矩形 → 引擎格菱形。
+    // 用非零 min_d/min_s（含奇偶偏移）覆盖换算的奇偶分支。
+    sim::SimWorld s;
+    s.w = 40;
+    s.h = 40;
+    s.min_d = -15; // 与夹具地图一致（rx-ry ∈ [-15,15]）
+    s.min_s = 0;
+    s.blocked.assign(40 * 40, 0);
+    // 锚点 (10,10) 的引擎格 → 地图空间，再按地图空间枚举 → 应与 foundation_cells 一致
+    int rx = 0, ry = 0;
+    s.cell_to_map(10, 10, rx, ry);
+    for (int fw = 1; fw <= 4; ++fw)
+        for (int fh = 1; fh <= 3; ++fh) {
+            std::vector<std::pair<int, int>> cells;
+            s.foundation_cells(10, 10, fw, fh, cells);
+            ASSERT_EQ(cells.size(), static_cast<size_t>(fw) * fh);
+            // 逐格与地图空间换算对齐
+            for (int j = 0; j < fh; ++j)
+                for (int i = 0; i < fw; ++i) {
+                    int c = 0, r = 0;
+                    s.map_to_cell(rx + i, ry + j, c, r);
+                    const auto& got = cells[static_cast<size_t>(j) * fw + i];
+                    EXPECT_EQ(got.first, c) << "fw=" << fw << " fh=" << fh;
+                    EXPECT_EQ(got.second, r) << "fw=" << fw << " fh=" << fh;
+                }
+            // 顶格 = 锚点（行号最小且在锚行）
+            EXPECT_EQ(cells[0].first, 10);
+            EXPECT_EQ(cells[0].second, 10);
+        }
+    // 引擎格 ↔ 地图空间往返
+    for (int row = 0; row < 40; ++row)
+        for (int col = 0; col < 40; ++col) {
+            int mx = 0, my = 0, c = 0, r = 0;
+            s.cell_to_map(col, row, mx, my);
+            s.map_to_cell(mx, my, c, r);
+            ASSERT_EQ(c, col);
+            ASSERT_EQ(r, row);
+        }
 }
 
 TEST(SimBuild, NoBuildupInstantComplete) {

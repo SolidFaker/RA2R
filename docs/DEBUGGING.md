@@ -468,6 +468,25 @@
   大图上全局位移在统计上不可见（bbox 都会被内容多样性骗过）。
 - **教训**：cache-miss 与 cache-hit 两条渲染路径**都要**逐像素回归（本轮加进无头自检基线）。
 
+### 3.24 建筑地基必须是"地图空间矩形"（引擎砖墙格里是菱形，不是矩形）
+- **现象**：摆放建筑时绿色占格预览呈"对角线错位"——每横向一格就向下偏半格，整体是沿行
+  错位的平行四边形；与建筑精灵/base 不符，原版 2×2 地基的菱形观感也不对。
+- **根因**：现场放置路径（`can_place`/`spawn_building`/预览/选中描边）把地基当作**引擎
+  砖墙格矩形** `{(col+i,row+j)}` 遍历；而地图装载建筑（`load_map`）用的是**地图空间
+  矩形** `(rx+i,ry+j)` 逐格换算。二者在砖墙排布里形状不同：
+  - 地图空间 2×2 → 引擎菱形：顶格 `(c,r)`、左 `(c-1,r+1)`、右 `(c,r+1)`、底 `(c,r+2)`
+    （奇数行锚点镜像：左 `(c,r+1)`、右/底 `(c+1,r+1)`、`(c,r+2)`）——与原版一致；
+  - 引擎矩形 → 屏幕平行四边形（`(0,0),(60,0),(30,15),(90,15)` 相对位置），故"横向一格、
+    竖向偏移"可见。
+- **手法**：新增 `SimWorld::cell_to_map/map_to_cell/foundation_cells`（与 MapFile 的
+  `col=(rx−ry−min_d)/2, row=rx+ry−min_s` 互逆，含奇偶位 `e=(row+min_s−min_d)&1`），
+  `can_place/spawn_building/死亡解阻/放置预览/选中描边/MCV 展开`全部改走这一套；
+  `rect_footprint` 标志删除（地图/现场两路统一为 `footprint_cells`）。
+- **验证**：`SimBuild.SpawnBlocksFootprintAndCompletesOnTime`（偶数/奇数锚点菱形）、
+  `SimBuild.FoundationShapeIsMapSpaceRectangle`（1..4×1..3 逐格与地图空间换算一致 +
+  引擎↔地图往返）、`FixtureIntegration.LoadsMapIntoSimWorld`（现场放置与地图装载
+  `footprint_cells` 完全相等）。输出确定性基线（dttd simbuild/simattack）不变。
+
 
 ## 4. 构建/工具链类
 

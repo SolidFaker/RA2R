@@ -24,13 +24,22 @@ TEST(SkirmishDeploy, McvDeploysIntoConyardAndRemovesUnit) {
     EXPECT_TRUE(s.units.empty()) << "展开消耗车体";
     ASSERT_EQ(s.buildings.size(), 1u);
     const auto& b = s.buildings[0];
-    EXPECT_EQ(b.col, 31); // 4×4 地基：左上 = 车格 −(fw−1)/2 = −1（车格落在中央四格之一）
-    EXPECT_EQ(b.row, 31);
+    // 4×4 地基以基地车格为（地图空间）中心：锚 = 中心 −1,−1 换算回引擎格。
+    // min_d = min_s = 0 时车格 (32,32) 对应地图 (48,−16)，锚 → (32,30)。
+    EXPECT_EQ(b.col, 32);
+    EXPECT_EQ(b.row, 30);
     EXPECT_EQ(b.max_hp, 1000);
     EXPECT_TRUE(b.under_construction) << "展开动画期间在建";
-    // 4×4 地基全部阻挡
-    for (int j = 0; j < 4; ++j)
-        for (int i = 0; i < 4; ++i) EXPECT_EQ(s.blocked[(31 + j) * 64 + (31 + i)], 1);
+    // 地基格全阻挡，且基地车原格在覆盖范围内
+    std::vector<std::pair<int, int>> cells;
+    s.foundation_cells(b.col, b.row, 4, 4, cells);
+    ASSERT_EQ(cells.size(), 16u);
+    bool unit_cell_covered = false;
+    for (const auto& c : cells) {
+        EXPECT_EQ(s.blocked[static_cast<size_t>(c.second) * 64 + c.first], 1);
+        if (c.first == 32 && c.second == 32) unit_cell_covered = true;
+    }
+    EXPECT_TRUE(unit_cell_covered) << "展开后车格应落在地基内";
     for (int t = 0; t < 54; ++t) s.tick();
     EXPECT_FALSE(s.buildings[0].under_construction);
     EXPECT_EQ(s.buildings[0].hp, 1000);

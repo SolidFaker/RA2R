@@ -395,27 +395,28 @@ void render_all(StageApp& a, std::string* error) {
                                           : std::string());
         const int fw = bt ? bt->fw : 1, fh = bt ? bt->fh : 1;
         const bool ok = a.sim.can_place(a.hover_cx, a.hover_cy, fw, fh);
-        for (int j = 0; j < fh; ++j)
-            for (int i = 0; i < fw; ++i) {
-                int px, py;
-                grid.cell_to_pixel(a.hover_cx + i, a.hover_cy + j, px, py);
-                const int cxp = ox + px + grid.tile_w / 2;
-                const int cyp = oy + py + grid.tile_h / 2;
-                const uint8_t r = ok ? 60 : 220, g = ok ? 255 : 40, b = 60;
-                const auto dot = [&](int x, int y) {
-                    if (x < 0 || y < 0 || x >= bw || y >= bh) return;
-                    uint8_t* d = canvas.data() + (static_cast<size_t>(y) * bw + x) * 4;
-                    d[0] = r;
-                    d[1] = g;
-                    d[2] = b;
-                    d[3] = 255;
-                };
-                // 菱形描边（每 2px 一点，虚线观感）
-                for (int t = -30; t <= 30; t += 2) {
-                    dot(cxp + t, cyp - 15 + std::abs(t) / 2);
-                    dot(cxp + t, cyp + 15 - std::abs(t) / 2);
-                }
+        std::vector<std::pair<int, int>> cells;
+        a.sim.foundation_cells(a.hover_cx, a.hover_cy, fw, fh, cells);
+        for (const auto& c : cells) {
+            int px, py;
+            grid.cell_to_pixel(c.first, c.second, px, py);
+            const int cxp = ox + px + grid.tile_w / 2;
+            const int cyp = oy + py + grid.tile_h / 2;
+            const uint8_t r = ok ? 60 : 220, g = ok ? 255 : 40, b = 60;
+            const auto dot = [&](int x, int y) {
+                if (x < 0 || y < 0 || x >= bw || y >= bh) return;
+                uint8_t* d = canvas.data() + (static_cast<size_t>(y) * bw + x) * 4;
+                d[0] = r;
+                d[1] = g;
+                d[2] = b;
+                d[3] = 255;
+            };
+            // 菱形描边（每 2px 一点，虚线观感）
+            for (int t = -30; t <= 30; t += 2) {
+                dot(cxp + t, cyp - 15 + std::abs(t) / 2);
+                dot(cxp + t, cyp + 15 - std::abs(t) / 2);
             }
+        }
     }
     const auto t2 = std::chrono::steady_clock::now();
     // 上传纹理（呈现后端抽象：OpenGL / SDLRenderer）
@@ -630,17 +631,16 @@ void draw_selection_markers(StageApp& a, const IsometricGrid& grid, int bw, int 
         for (const auto& b : a.sim.buildings) {
             if (b.id != a.sel_building_id || !b.alive) continue;
             const int hgt = static_cast<int>(a.map.cell(b.col, b.row).height);
-            for (int j = 0; j < b.fh; ++j)
-                for (int i = 0; i < b.fw; ++i) {
-                    int px, py;
-                    grid.cell_to_pixel(b.col + i, b.row + j, px, py);
-                    const int cx0 = ox + px + grid.tile_w / 2;
-                    const int cy0 = oy + py + grid.tile_h / 2 - hgt * 15;
-                    line(cx0, cy0 - 15, cx0 + 30, cy0);
-                    line(cx0 + 30, cy0, cx0, cy0 + 15);
-                    line(cx0, cy0 + 15, cx0 - 30, cy0);
-                    line(cx0 - 30, cy0, cx0, cy0 - 15);
-                }
+            for (const auto& c : b.footprint_cells) {
+                int px, py;
+                grid.cell_to_pixel(c.first, c.second, px, py);
+                const int cx0 = ox + px + grid.tile_w / 2;
+                const int cy0 = oy + py + grid.tile_h / 2 - hgt * 15;
+                line(cx0, cy0 - 15, cx0 + 30, cy0);
+                line(cx0 + 30, cy0, cx0, cy0 + 15);
+                line(cx0, cy0 + 15, cx0 - 30, cy0);
+                line(cx0 - 30, cy0, cx0, cy0 - 15);
+            }
             break;
         }
     }

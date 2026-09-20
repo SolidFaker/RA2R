@@ -66,6 +66,23 @@ TEST(FixtureIntegration, LoadsMapIntoSimWorld) {
     ASSERT_EQ(s.buildings[0].footprint_cells.size(), 4u);
     for (const auto& c : s.buildings[0].footprint_cells)
         EXPECT_EQ(s.blocked[static_cast<size_t>(c.second) * s.w + c.first], 1);
+    // 现场放置（同锚点/同地基）必须与地图装载产生**完全相同**的引擎格地基——
+    // 否则摆放预览/阻挡与地图建筑错位（曾用引擎矩形，同行错位呈对角线）
+    {
+        sim::SimWorld s2;
+        s2.w = s.w;
+        s2.h = s.h;
+        s2.min_d = s.min_d;
+        s2.min_s = s.min_s;
+        s2.blocked.assign(static_cast<size_t>(s.w) * s.h, 0);
+        const uint32_t id = s2.spawn_building("Americans", "GAPOWR", s.buildings[0].col,
+                                              s.buildings[0].row, 2, 2, 300, 200, false, 1,
+                                              750);
+        ASSERT_NE(id, 0u);
+        EXPECT_EQ(s2.buildings[0].footprint_cells, s.buildings[0].footprint_cells);
+        EXPECT_EQ(s2.buildings[0].rx, s.buildings[0].rx);
+        EXPECT_EQ(s2.buildings[0].ry, s.buildings[0].ry);
+    }
     // 电力净值（建筑落成即计入；夹具建筑非在建）
     s.tick();
     EXPECT_EQ(s.power_net["Americans"], 200);

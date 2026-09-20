@@ -10,6 +10,9 @@
 namespace ra2r::sim {
 
 namespace {
+// 向下取整的 /2（负数也正确：引擎格 ↔ 地图空间的 floor 语义）
+int floor_div2(int v) { return v >= 0 ? v / 2 : -((-v + 1) / 2); }
+
 // 屏幕 8 向**单位**向量（×256）：45° = (229,±114)（(30,15)/33.54），
 // 水平 = (±256,0)（60px），垂直 = (0,±256)（30px）。
 // 必须用归一化向量做点积：屏幕 8 向的规范长度不等（60/33.5/30px），用未归一
@@ -669,22 +672,10 @@ bool SimWorld::tick() {
                 remap_b[i] = static_cast<int>(nb.size());
                 nb.push_back(std::move(buildings[i]));
             } else {
-                // 解除地基阻挡
-                for (int j = 0; j < buildings[i].fh; ++j) {
-                    for (int k = 0; k < buildings[i].fw; ++k) {
-                        int col = 0, row = 0;
-                        if (buildings[i].rect_footprint) {
-                            col = buildings[i].col + k;
-                            row = buildings[i].row + j;
-                        } else {
-                            const int rx = buildings[i].rx + k;
-                            const int ry = buildings[i].ry + j;
-                            col = (rx - ry - min_d) / 2;
-                            row = rx + ry - min_s;
-                        }
-                        if (col >= 0 && row >= 0 && col < w && row < h)
-                            blocked[static_cast<size_t>(row) * w + col] = 0;
-                    }
+                // 解除地基阻挡（footprint_cells 对地图装载/现场建造统一有效）
+                for (const auto& c : buildings[i].footprint_cells) {
+                    if (c.first >= 0 && c.second >= 0 && c.first < w && c.second < h)
+                        blocked[static_cast<size_t>(c.second) * w + c.first] = 0;
                 }
             }
         }
@@ -825,12 +816,40 @@ bool SimWorld::issue_build(const std::string& owner, const std::string& type, in
 
 // ── 遭遇战流程（M4）──
 
+void SimWorld::cell_to_map(int col, int row, int& rx, int& ry) const {
+    const int sum = row + min_s;              // rx + ry
+    const int e = (row + min_s - min_d) & 1;  // rx - ry - min_d 的奇偶位
+    const int diff = 2 * col + min_d + e;     // rx - ry
+    rx = (sum + diff) / 2;
+    ry = (sum - diff) / 2;
+}
+
+void SimWorld::map_to_cell(int rx, int ry, int& col, int& row) const {
+    row = rx + ry - min_s;
+    col = floor_div2(rx - ry - min_d);
+}
+
+void SimWorld::foundation_cells(int col, int row, int fw, int fh,
+                                std::vector<std::pair<int, int>>& out) const {
+    out.clear();
+    if (fw < 1) fw = 1;
+    if (fh < 1) fh = 1;
+    // 地图空间 (rx+i, ry+j) → 引擎格：行 = row+i+j，列 = col + floor((e+i-j)/2)
+    const int e = (row + min_s - min_d) & 1;
+    out.reserve(static_cast<size_t>(fw) * fh);
+    for (int j = 0; j < fh; ++j)
+        for (int i = 0; i < fw; ++i)
+            out.emplace_back(col + floor_div2(e + i - j), row + i + j);
+}
+
 bool SimWorld::can_place(int col, int row, int fw, int fh) const {
     if (fw < 1) fw = 1;
     if (fh < 1) fh = 1;
+    const int e = (row + min_s - min_d) & 1;
     for (int j = 0; j < fh; ++j)
         for (int i = 0; i < fw; ++i) {
-            const int x = col + i, y = row + j;
+            const int x = col + floor_div2(e + i - j);
+            const int y = row + i + j;
             if (x < 0 || y < 0 || x >= w || y >= h) return false;
             if (blocked[static_cast<size_t>(y) * w + x]) return false;
         }
@@ -890,7 +909,7 @@ uint32_t SimWorld::spawn_building(const std::string& owner, const std::string& t
     b.row = row;
     b.fw = fw;
     b.fh = fh;
-    b.rect_footprint = true;
+    cell_to_map(col, row, b.rx, b.ry); // 地图空间锚（顶格）
     b.cost = cost;
     b.power = power;
     b.max_hp = max_hp > 0 ? max_hp : 256;
@@ -898,11 +917,9 @@ uint32_t SimWorld::spawn_building(const std::string& owner, const std::string& t
     b.build_total = build_total > 0 ? build_total : 1;
     b.build_ticks = 0;
     b.hp = under_construction ? 1 : b.max_hp;
-    for (int j = 0; j < fh; ++j)
-        for (int i = 0; i < fw; ++i) {
-            blocked[static_cast<size_t>(row + j) * w + (col + i)] = 1;
-            b.footprint_cells.emplace_back(col + i, row + j);
-        }
+    foundation_cells(col, row, fw, fh, b.footprint_cells);
+    for (const auto& c : b.footprint_cells)
+        blocked[static_cast<size_t>(c.second) * w + c.first] = 1;
     if (!credits.count(owner)) credits[owner] = 10000;
     buildings.push_back(std::move(b));
     return buildings.back().id;

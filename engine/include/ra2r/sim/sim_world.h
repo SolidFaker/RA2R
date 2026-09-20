@@ -86,15 +86,14 @@ struct SimBuilding {
     uint32_t id = 0;
     std::string owner;
     std::string type;
-    int col = 0, row = 0; // 存储格（顶格，引擎坐标）
-    int rx = 0, ry = 0;   // 存储格（地图空间，地基解除阻挡用）
+    int col = 0, row = 0; // 存储格（地基顶格，引擎坐标）
+    int rx = 0, ry = 0;   // 存储格（地图空间；地基换算/调试用）
     int fw = 1, fh = 1;   // 地基尺寸（地图空间格）
     std::vector<std::pair<int, int>> footprint_cells; // 地基引擎格（邻接判定/寻路目标用）
     int hp = 256;
     bool alive = true;
     bool is_refinery = false;
     uint8_t dir = 0; // 地图存储朝向（0..255；炮塔 SHP 帧/体素 yaw 用）
-    bool rect_footprint = false; // true = 引擎矩形地基（现场建造）；false = 地图空间地基换算
     // 建造（M3 基础档：Cost/2 帧工期、半透明+进度条表现；原版生长动画待 M4）
     bool under_construction = false;
     int build_ticks = 0;   // 已建造帧
@@ -203,7 +202,16 @@ struct SimWorld {
     uint32_t spawn_building(const std::string& owner, const std::string& type, int col, int row,
                             int fw, int fh, int cost, int power, bool under_construction,
                             int build_total, int max_hp);
-    // 地基是否可放置（矩形、全图内、无阻挡）
+    // ── 地基几何 ──
+    // 引擎格 ↔ 地图空间格（与 MapFile 的 rx/ry 换算互逆；锚点语义：地基顶格）
+    void cell_to_map(int col, int row, int& rx, int& ry) const;
+    void map_to_cell(int rx, int ry, int& col, int& row) const;
+    // 地基格枚举（引擎坐标；锚 = 顶格）：地图空间 fw×fh 矩形 → 引擎格菱形。
+    // **不是引擎网格矩形**：引擎矩形在砖墙排布里是沿行错位的平行四边形，
+    // 与地图装载建筑的菱形地基和原版观感都不符（曾致摆放占格呈对角线错位）。
+    void foundation_cells(int col, int row, int fw, int fh,
+                          std::vector<std::pair<int, int>>& out) const;
+    // 地基是否可放置（地图空间菱形、全图内、无阻挡）
     bool can_place(int col, int row, int fw, int fh) const;
 
     // 建造队列（立即扣款；同一 House 单队列）

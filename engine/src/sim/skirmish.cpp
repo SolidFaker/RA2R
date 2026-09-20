@@ -178,9 +178,12 @@ uint32_t deploy_mcv(SimWorld& world, size_t unit_idx, const std::string& buildin
     if (unit_idx >= world.units.size()) return 0;
     const SimUnit u = world.units[unit_idx]; // 拷贝：spawn 后 units 可能重分配
     const std::string owner = u.owner;
-    // 地基以基地车格为中心（4×4 → 左上 = 车格 −1,−1，车格落在 4 个中心格之一）
-    const int base_col = u.col - (fw - 1) / 2;
-    const int base_row = u.row - (fh - 1) / 2;
+    // 地基以基地车格为中心：在地图空间对齐（锚 = 中心 −(fw−1)/2, −(fh−1)/2），
+    // 再换算回引擎锚格——引擎网格的"矩形"在砖墙排布里不是地基形状。
+    int mrx = 0, mry = 0;
+    world.cell_to_map(u.col, u.row, mrx, mry);
+    int base_col = 0, base_row = 0;
+    world.map_to_cell(mrx - (fw - 1) / 2, mry - (fh - 1) / 2, base_col, base_row);
     static const int kOff[9][2] = {{0, 0},  {1, 0},  {-1, 0}, {0, 1}, {0, -1},
                                    {1, 1}, {-1, 1}, {1, -1}, {-1, -1}};
     for (const auto& o : kOff) {
