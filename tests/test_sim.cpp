@@ -336,6 +336,33 @@ TEST(SimBuild, FoundationShapeIsMapSpaceRectangle) {
         }
 }
 
+TEST(SimBuild, PlacementRejectsUnitsOverlaysAndOre) {
+    // 建造只能在空地上：建筑地基（blocked）、覆盖物（no_build）、矿石（ore）、
+    // 单位占格都会拒绝；ignore_unit_id 用于基地车展开忽略自身。
+    sim::SimWorld s;
+    s.w = 16;
+    s.h = 16;
+    s.blocked.assign(16 * 16, 0);
+    s.no_build.assign(16 * 16, 0);
+    s.ore.assign(16 * 16, 0);
+    const uint32_t uid = s.spawn_unit("Player", "MTNK", 1, 5, 5, 0, {}, false, 0, 68);
+    ASSERT_NE(uid, 0u);
+    EXPECT_FALSE(s.cell_buildable(5, 5));                    // 单位占格
+    EXPECT_FALSE(s.can_place(5, 5, 1, 1));                   // 单格地基同样拒绝
+    EXPECT_TRUE(s.can_place(5, 5, 1, 1, uid));               // 展开：忽略自身
+    EXPECT_EQ(s.spawn_building("Player", "GAPOWR", 5, 5, 1, 1, 0, 0, false, 1, 100), 0u);
+    s.no_build[6 * 16 + 6] = 1;                              // 覆盖物（桥/墙/栅栏）
+    EXPECT_FALSE(s.cell_buildable(6, 6));
+    s.ore[7 * 16 + 7] = 50;                                  // 矿石：有矿不可建
+    EXPECT_FALSE(s.cell_buildable(7, 7));
+    s.ore[7 * 16 + 7] = 0;                                   // 采完可建
+    EXPECT_TRUE(s.cell_buildable(7, 7));
+    s.blocked[8 * 16 + 8] = 1;                               // 建筑地基/地形
+    EXPECT_FALSE(s.cell_buildable(8, 8));
+    EXPECT_FALSE(s.cell_buildable(-1, 0));                   // 越界
+    EXPECT_FALSE(s.cell_buildable(16, 0));
+}
+
 TEST(SimBuild, NoBuildupInstantComplete) {
     sim::SimWorld s;
     s.w = 16;

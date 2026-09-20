@@ -61,10 +61,17 @@ int spawn_start(SimWorld& world, const assets::RulesDB& rules, const std::string
                 const UnitFactory& f, uint32_t seed);
 
 // 展开基地车 → 建造厂：地基以基地车格为中心（4×4 → 左上 = 车格 −1,−1），
-// 中心不可放置时按固定邻序试近旁落点；成功后移除车体、建造厂进入展开动画
-// （build_total = Buildup 帧数）。返回新建筑 id（0 = 失败）。
+// 中心不可放置时按固定邻序试近旁落点（校验忽略车体自身占格）；成功后移除
+// 车体、建造厂进入展开动画（build_total = Buildup 帧数）。返回新建筑 id（0 = 失败）。
 uint32_t deploy_mcv(SimWorld& world, size_t unit_idx, const std::string& building_type, int fw,
                     int fh, int cost, int power, int buildup_frames, int max_hp);
+
+// 收起建筑 → 单位（rulesmd UndeploysInto= 语义，如建造厂 → 基地车）：仅对已建成
+// 建筑有效；立即解除地基阻挡并在建筑位置（地基中心 → 锚点 → 地基格，取空位）
+// 生成单位，朝向沿用建筑朝向；建筑按"出售"路径无爆炸移除。返回新单位 id
+// （0 = 失败：建筑不存在/在建/无空位）。unit_type 属性由 UnitFactory 注入。
+uint32_t pack_building(SimWorld& world, size_t building_idx, const std::string& unit_type,
+                       const UnitFactory& f);
 
 // 建造前置条件判定（返回未满足原因；空 = 可造）
 struct BuildCheck {

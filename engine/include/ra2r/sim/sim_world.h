@@ -141,6 +141,9 @@ struct SimWorld {
     int w = 0, h = 0;
     int min_d = 0, min_s = 0; // 地图空间 → 引擎格线性映射基准（建筑地基换算）
     std::vector<uint8_t> blocked; // 1 = 不可通过（建筑地基；出界另行判定）
+    // 覆盖物阻挡（非矿石：桥梁/围墙/栅栏等）：不可在其上建造；矿石格用 ore 动态
+    // 判定（采完后可建）。与 blocked 分离——覆盖物不阻挡通行。
+    std::vector<uint8_t> no_build;
     std::vector<SimBuilding> buildings;
     std::vector<SimUnit> units;
     std::vector<SimExplosion> explosions;
@@ -201,7 +204,7 @@ struct SimWorld {
     // 完成后血量 = max_hp（rulesmd Strength=）。
     uint32_t spawn_building(const std::string& owner, const std::string& type, int col, int row,
                             int fw, int fh, int cost, int power, bool under_construction,
-                            int build_total, int max_hp);
+                            int build_total, int max_hp, uint32_t ignore_unit_id = 0);
     // ── 地基几何 ──
     // 引擎格 ↔ 地图空间格（与 MapFile 的 rx/ry 换算互逆；锚点语义：地基顶格）
     void cell_to_map(int col, int row, int& rx, int& ry) const;
@@ -211,8 +214,12 @@ struct SimWorld {
     // 与地图装载建筑的菱形地基和原版观感都不符（曾致摆放占格呈对角线错位）。
     void foundation_cells(int col, int row, int fw, int fh,
                           std::vector<std::pair<int, int>>& out) const;
-    // 地基是否可放置（地图空间菱形、全图内、无阻挡）
-    bool can_place(int col, int row, int fw, int fh) const;
+    // 地基是否可放置（地图空间菱形、全图内、无阻挡/覆盖物/单位）。
+    // ignore_unit_id：忽略该单位所占格（基地车展开时忽略车体自身）。
+    bool can_place(int col, int row, int fw, int fh, uint32_t ignore_unit_id = 0) const;
+    // 单格是否可建造（放置预览逐格标红/绿用）：图内、非地形/建筑阻挡、无
+    // 覆盖物（桥梁/围墙等）、无矿石、无单位（ignore_unit_id 例外同上）。
+    bool cell_buildable(int col, int row, uint32_t ignore_unit_id = 0) const;
 
     // 建造队列（立即扣款；同一 House 单队列）
     bool queue_build(const std::string& owner, const std::string& type, int cost, int total_ticks);

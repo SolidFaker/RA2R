@@ -372,29 +372,28 @@ void render_all(StageApp& a, std::string* error) {
     }
     const ra2r::render::UnitPaletteCfg upal{cfg.unit_pal, a.map.theater,
                                             a.sk.ramps.empty() ? nullptr : &a.sk.ramps};
-    // 身后类配件动画（YSort）画在全部对象之下
-    if (a.sim_active) draw_building_anims(a, grid, bw, bh, ox, oy, canvas, true);
     a.obj_stats = ra2r::render::render_objects(objs, upal, grid,
                                                [&](const std::string& n) {
                                                    return load_file(a, n);
                                                },
                                                bw, bh, ox, oy, canvas, a.obj_scale,
                                                &a.obj_cache);
-    // 身前类配件动画（门/火焰）画在对象之上
-    if (a.sim_active) draw_building_anims(a, grid, bw, bh, ox, oy, canvas, false);
+    // 建筑配件动画（ActiveAnim/Two/Three/炮塔）画在对象之上：原版把动画作为
+    // 建筑附加层与本体同位合成（ActiveAnimYSort 只影响与其它对象的排序）
+    if (a.sim_active) draw_building_anims(a, grid, bw, bh, ox, oy, canvas);
     if (a.sim_active) {
         if (!a.selection.empty() || a.sel_building_id != 0)
             draw_selection_markers(a, grid, bw, bh, ox, oy, canvas);
         draw_sim_fx(a, grid, bw, bh, ox, oy, canvas);
         draw_building_hp_bars(a, grid, bw, bh, ox, oy, canvas);
     }
-    // 建造落点预览（待放置建筑的地基格：绿色可放 / 红色被占）
+    // 建造落点预览：**逐格**标记——可建格绿色、被占（建筑/覆盖物/矿石/单位/
+    // 地形）格红色；任一格红即拒绝放置（place_player_build 再校验一次）
     if (a.placing && a.hover_cx >= 0 && a.hover_cy >= 0) {
         const auto* bt = a.rules.unit(a.sim.build_queue.count("Player")
                                           ? a.sim.build_queue["Player"].type
                                           : std::string());
         const int fw = bt ? bt->fw : 1, fh = bt ? bt->fh : 1;
-        const bool ok = a.sim.can_place(a.hover_cx, a.hover_cy, fw, fh);
         std::vector<std::pair<int, int>> cells;
         a.sim.foundation_cells(a.hover_cx, a.hover_cy, fw, fh, cells);
         for (const auto& c : cells) {
@@ -402,7 +401,8 @@ void render_all(StageApp& a, std::string* error) {
             grid.cell_to_pixel(c.first, c.second, px, py);
             const int cxp = ox + px + grid.tile_w / 2;
             const int cyp = oy + py + grid.tile_h / 2;
-            const uint8_t r = ok ? 60 : 220, g = ok ? 255 : 40, b = 60;
+            const bool cell_ok = a.sim.cell_buildable(c.first, c.second);
+            const uint8_t r = cell_ok ? 60 : 220, g = cell_ok ? 255 : 40, b = 60;
             const auto dot = [&](int x, int y) {
                 if (x < 0 || y < 0 || x >= bw || y >= bh) return;
                 uint8_t* d = canvas.data() + (static_cast<size_t>(y) * bw + x) * 4;
@@ -1047,7 +1047,7 @@ void draw_bld_turret_voxel(StageApp& a, const ra2r::assets::UnitTypeDef& u,
 } // namespace
 
 void draw_building_anims(StageApp& a, const IsometricGrid& grid, int bw, int bh, int ox, int oy,
-                         std::vector<uint8_t>& canvas, bool behind) {
+                         std::vector<uint8_t>& canvas) {
     for (const auto& b : a.sim.buildings) {
         if (!b.alive || b.under_construction) continue;
         if (b.col < 0 || b.row < 0 || b.col >= a.map.w || b.row >= a.map.h) continue;
@@ -1075,26 +1075,23 @@ void draw_building_anims(StageApp& a, const IsometricGrid& grid, int bw, int bh,
             draw_bld_anim_frame(a, art, clock, damaged_state, b.col, b.row, hgt, grid, bw, bh,
                                 ox, oy, canvas);
         };
-        if (behind) {
-            // 身后类（ActiveAnimYSort，如电厂后侧天线/油井摇臂）：画在建筑之下
-            if (any_anim && !u->anim.empty() && u->anim_ysort)
-                draw_anim(u->anim, static_cast<int>(b.anim_clock), dmg);
-        } else {
-            // 身前类（工厂门/油井火焰等）
-            if (any_anim && !u->anim.empty() && !u->anim_ysort)
-                draw_anim(u->anim, static_cast<int>(b.anim_clock), dmg);
-            if (!u->anim_two.empty()) draw_anim(u->anim_two, static_cast<int>(b.anim_clock), dmg);
-            if (!u->anim_three.empty())
-                draw_anim(u->anim_three, static_cast<int>(b.anim_clock), dmg);
-            // SpecialAnim（光棱塔棱镜充能 GAPRIS_A、磁暴塔放电 NATSLA_B 等）是
-            // 动作动画：artmd 的 IsAnimDelayedFire=yes / DelayedFireDelay=28
-            // 表明它在开火前播放，待机时不画（M5 战斗按动作播放）。
-            if (u->turret) {
-                if (u->turret_voxel)
-                    draw_bld_turret_voxel(a, *u, b, hgt, grid, bw, bh, ox, oy, canvas);
-                else
-                    draw_bld_turret_shp(a, *u, b, hgt, grid, bw, bh, ox, oy, canvas);
-            }
+        // ActiveAnim 系列**画在本体之上**：原版把动画作为建筑的附加层合成，
+        // 与本体像素同位覆盖（如建造厂雷达盘 GACNST_A 全部像素落在本体画布内，
+        // 画在本体之下会完全不可见——旧实现按 ActiveAnimYSort 非空当作"身后类"
+        // 画在建筑之下，导致基地/工厂/电厂的配件动画整体消失）。
+        // ActiveAnimYSort 是**相对其它对象的排序偏移**，不是"在本体之后"。
+        if (any_anim && !u->anim.empty())
+            draw_anim(u->anim, static_cast<int>(b.anim_clock), dmg);
+        if (!u->anim_two.empty()) draw_anim(u->anim_two, static_cast<int>(b.anim_clock), dmg);
+        if (!u->anim_three.empty()) draw_anim(u->anim_three, static_cast<int>(b.anim_clock), dmg);
+        // SpecialAnim（光棱塔棱镜充能 GAPRIS_A、磁暴塔放电 NATSLA_B 等）是
+        // 动作动画：artmd 的 IsAnimDelayedFire=yes / DelayedFireDelay=28
+        // 表明它在开火前播放，待机时不画（M5 战斗按动作播放）。
+        if (u->turret) {
+            if (u->turret_voxel)
+                draw_bld_turret_voxel(a, *u, b, hgt, grid, bw, bh, ox, oy, canvas);
+            else
+                draw_bld_turret_shp(a, *u, b, hgt, grid, bw, bh, ox, oy, canvas);
         }
     }
 }
@@ -1140,6 +1137,63 @@ void adopt_building(StageApp& a, uint32_t id, int dir) {
 }
 
 std::vector<std::pair<int, int>> map_waypoints(const StageApp& a) { return a.map.waypoints; }
+
+// 收起建筑为基地车（rulesmd UndeploysInto=；M4 基地生命周期）：选中建筑 →
+// 移除建筑（无爆炸）→ 原地生成基地车并选中。返回是否成功。
+bool pack_selected_building(StageApp& a) {
+    if (!a.sim_active) return false;
+    ensure_rules(a);
+    for (size_t i = 0; i < a.sim.buildings.size(); ++i) {
+        const auto& b = a.sim.buildings[i];
+        if (b.id != a.sel_building_id || !b.alive) continue;
+        if (b.under_construction || b.owner != "Player") {
+            std::printf("[stage] %s 无法收起（在建/非玩家建筑）\n", b.type.c_str());
+            return false;
+        }
+        const auto* ut = a.rules.unit(b.type);
+        if (!ut || ut->undeploys_into.empty()) {
+            std::printf("[stage] %s 没有 UndeploysInto=（不可收起）\n", b.type.c_str());
+            return false;
+        }
+        const auto* mcv = a.rules.unit(ut->undeploys_into);
+        if (!mcv) {
+            std::printf("[stage] %s 的 UndeploysInto=%s 在 rulesmd 无定义\n", b.type.c_str(),
+                        ut->undeploys_into.c_str());
+            return false;
+        }
+        ra2r::sim::UnitFactory uf;
+        uf.kind_of = [&](const std::string& type) {
+            const auto* u = a.rules.unit(type);
+            return u ? u->kind : 1;
+        };
+        uf.weapon = [&](const std::string& type, ra2r::sim::SimWeapon& w) {
+            const auto* u = a.rules.unit(type);
+            if (!u) return;
+            const auto* wp = a.rules.weapon(u->primary);
+            if (wp) w = {wp->damage, wp->rof, wp->range};
+        };
+        uf.miner = [&](const std::string& type, bool& is_miner, int& cap) {
+            const auto* u = a.rules.unit(type);
+            if (!u) return;
+            is_miner = u->harvester;
+            cap = u->capacity;
+        };
+        const std::string btype = b.type;
+        const uint32_t uid =
+            ra2r::sim::pack_building(a.sim, i, ut->undeploys_into, uf);
+        if (!uid) {
+            std::printf("[stage] %s 收起失败（无空位）\n", btype.c_str());
+            return false;
+        }
+        a.sel_building_id = 0;
+        a.selection.assign(1, uid);
+        a.dirty = true;
+        std::printf("[stage] %s 收起 → %s id=%u\n", btype.c_str(), ut->undeploys_into.c_str(),
+                    uid);
+        return true;
+    }
+    return false;
+}
 
 // 现场建造/展开时长（逻辑帧）：原版 [General] BuildupTime = 建筑建造/展开动画
 // 运行的平均分钟数（YR rulesmd = .06 → 3.6s = 54 逻辑帧 @15Hz；ModEnc）。
@@ -1375,6 +1429,7 @@ bool deploy_selected_mcv(StageApp& a) {
         if (bid) {
             any = true;
             a.selection.clear();
+            a.sel_building_id = bid; // 展开后选中建造厂（标准建筑：可建造/修理/出售/收起）
         }
         break; // 展开后 units 下标失效，一帧只处理一台
     }

@@ -156,7 +156,7 @@ void draw_sim_fx(StageApp& a, const ra2r::render::IsometricGrid& grid, int bw, i
 // 建筑配件动画（ActiveAnim 帧序列）：behind=true 画在建筑身后（YSort 类），
 // false 画在建筑之上（门/火焰等）；帧 = 建筑 anim_clock % 帧数（15fps）
 void draw_building_anims(StageApp& a, const ra2r::render::IsometricGrid& grid, int bw, int bh,
-                         int ox, int oy, std::vector<uint8_t>& canvas, bool behind);
+                         int ox, int oy, std::vector<uint8_t>& canvas);
 
 // 扫描游戏目录顶层地图文件（.map/.yrm/.yro/.mmx）
 void scan_map_files(StageApp& a, const std::filesystem::path& dir);
@@ -170,6 +170,8 @@ std::vector<std::pair<int, int>> map_waypoints(const StageApp& a);
 bool start_skirmish(StageApp& a, std::string* error);
 // 展开选中的基地车（DeploysInto=；播放 Buildup 动画）
 bool deploy_selected_mcv(StageApp& a);
+// 收起选中建筑为基地车（UndeploysInto=，如建造厂 → 基地车）；成功后选中新车
+bool pack_selected_building(StageApp& a);
 // 现场建造/展开逻辑帧时长 = [General] BuildupTime（YR .06 分钟 → 54 帧 @15Hz）；
 // 无 Buildup 美术返回 0（原版不进入建造状态，即放即完成）
 int onsite_ticks(StageApp& a, const std::string& type);

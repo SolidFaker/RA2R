@@ -30,7 +30,7 @@ bool TerrainTileset::build(const uint8_t* ini, size_t size, const std::string& e
     if (!f.parse(ini, size, error)) return false;
     // 遍历 [TileSet0000]..[TileSetNNNN]；缺失的节号终止遍历
     for (int set = 0;; ++set) {
-        char sec[16];
+        char sec[24]; // 前缀 7 字节 + int 最长 11 位 + NUL：防止 -Wformat-truncation
         std::snprintf(sec, sizeof(sec), "TileSet%04d", set);
         if (!f.has_section(sec)) break;
         TileSetInfo info;

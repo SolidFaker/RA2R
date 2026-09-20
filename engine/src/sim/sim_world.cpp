@@ -131,6 +131,28 @@ bool SimWorld::load_map(const assets::MapFile& map,
             // 水面/悬崖等不可通行地形（M3 基础档按 TileSet 分类名判定）
             if (terrain_block(x, y)) blocked[static_cast<size_t>(y) * w + x] = 1;
         }
+    // 覆盖物阻挡建造（矿石除外：矿石采完即空，归 ore 动态判定；桥梁/围墙/栅栏
+    // 等覆盖物一律不可建造）。矿石由 ore_at 回调给出（TIB*/GEM*），故此处只标
+    // "有覆盖物且非矿石"的格。与 blocked 分离：覆盖物不阻挡通行，只挡建造。
+    no_build.assign(static_cast<size_t>(w) * h, 0);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            if (ore[static_cast<size_t>(y) * w + x] > 0) continue;
+            int rx = 0, ry = 0;
+            cell_to_map(x, y, rx, ry);
+            if (map.overlay_type(rx, ry) != 0xFF) no_build[static_cast<size_t>(y) * w + x] = 1;
+        }
+    // 覆盖物阻挡建造（矿石格除外：矿石可由采矿车采完，采完后可建；其余覆盖物
+    // ——桥梁/围墙/栅栏等——一律不可建造）。矿石的判定复用 ore_at 回调
+    // （TIB*/GEM* 归矿石），故这里只处理"有覆盖物但不是矿石"的格。
+    no_build.assign(static_cast<size_t>(w) * h, 0);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            if (ore[static_cast<size_t>(y) * w + x] > 0) continue;
+            int rx = 0, ry = 0;
+            cell_to_map(x, y, rx, ry);
+            if (map.overlay_type(rx, ry) != 0xFF) no_build[static_cast<size_t>(y) * w + x] = 1;
+        }
     next_id = 1;
     // 各 House 初始资金（遭遇战 $10000，M3 基础档）
     const auto seed_credits = [&](const std::string& owner) {
@@ -842,7 +864,20 @@ void SimWorld::foundation_cells(int col, int row, int fw, int fh,
             out.emplace_back(col + floor_div2(e + i - j), row + i + j);
 }
 
-bool SimWorld::can_place(int col, int row, int fw, int fh) const {
+bool SimWorld::cell_buildable(int col, int row, uint32_t ignore_unit_id) const {
+    if (col < 0 || row < 0 || col >= w || row >= h) return false;
+    const size_t i = static_cast<size_t>(row) * w + col;
+    if (i < blocked.size() && blocked[i]) return false; // 地形/建筑地基
+    if (i < no_build.size() && no_build[i]) return false; // 覆盖物（桥梁/围墙等）
+    if (i < ore.size() && ore[i] > 0) return false;       // 矿石（采完后可建）
+    for (const auto& u : units) {
+        if (!u.alive || (ignore_unit_id && u.id == ignore_unit_id)) continue;
+        if (u.col == col && u.row == row) return false; // 单位占格
+    }
+    return true;
+}
+
+bool SimWorld::can_place(int col, int row, int fw, int fh, uint32_t ignore_unit_id) const {
     if (fw < 1) fw = 1;
     if (fh < 1) fh = 1;
     const int e = (row + min_s - min_d) & 1;
@@ -850,8 +885,7 @@ bool SimWorld::can_place(int col, int row, int fw, int fh) const {
         for (int i = 0; i < fw; ++i) {
             const int x = col + floor_div2(e + i - j);
             const int y = row + i + j;
-            if (x < 0 || y < 0 || x >= w || y >= h) return false;
-            if (blocked[static_cast<size_t>(y) * w + x]) return false;
+            if (!cell_buildable(x, y, ignore_unit_id)) return false;
         }
     return true;
 }
@@ -899,8 +933,9 @@ bool SimWorld::remove_unit(size_t idx) {
 
 uint32_t SimWorld::spawn_building(const std::string& owner, const std::string& type, int col,
                                   int row, int fw, int fh, int cost, int power,
-                                  bool under_construction, int build_total, int max_hp) {
-    if (!can_place(col, row, fw, fh)) return 0;
+                                  bool under_construction, int build_total, int max_hp,
+                                  uint32_t ignore_unit_id) {
+    if (!can_place(col, row, fw, fh, ignore_unit_id)) return 0;
     SimBuilding b;
     b.id = next_id++;
     b.owner = owner;

@@ -487,6 +487,49 @@
   引擎↔地图往返）、`FixtureIntegration.LoadsMapIntoSimWorld`（现场放置与地图装载
   `footprint_cells` 完全相等）。输出确定性基线（dttd simbuild/simattack）不变。
 
+### 3.25 建筑必须建在空地上（建筑/覆盖物/矿石/单位均拒绝，逐格标红）
+- **现象**：建筑可以摆在矿石/桥梁/围墙覆盖物上，也能直接压住单位；落点预览只有
+  整块绿/红，看不出是**哪一格**被占。
+- **实现**：
+  1. `SimWorld.no_build` 新阻挡层（与 `blocked` 分离：覆盖物不挡通行、只挡建造）：
+     `load_map` 逐格用 `cell_to_map` 反查地图原始坐标，`overlay_type != 0xFF` 且
+     非矿石（`ore_at` 回调为 0）→ `no_build = 1`（桥梁/围墙/栅栏等）。
+     矿石走 **ore 动态判定**（`ore > 0` 拒绝）——采完即空，立即变为可建。
+  2. `cell_buildable(col,row, ignore_unit_id)`：图内 + `blocked`（地形/建筑地基）+
+     `no_build` + `ore` + **单位当前格**（遍历 `units`）。`can_place` 逐地基格调用；
+     `spawn_building` 复用（新增 `ignore_unit_id` 透传）。
+  3. 基地车展开传 `ignore_unit_id = 车体 id`：展开落点以车格为中心，车体自身
+     必然占住地基中心格——不忽略自己会导致展开永远失败。
+  4. 放置预览（`stage_app`）改为**逐格** `cell_buildable` 上色：被占格单独标红；
+     `place_player_build` 仍以 `can_place` 终审并拒绝（退回队列保持就绪）。
+- **验证**：`SimBuild.PlacementRejectsUnitsOverlaysAndOre`（单位/覆盖物/矿石/越界，
+  及 `ignore_unit_id` 例外）、`SkirmishDeploy.ConyardPacksBackIntoMcvAndFreesFootprint`
+  的展开路径（车体在中心格时仍可展开）。自检脚本里的手写"2×2 空格"改走
+  `can_place`（旧写法会选中被单位占据的格）。
+
+### 3.26 基地车 ↔ 建造厂完整生命周期 + 配件动画被画到本体之下
+- **现象**：① 基地车展开出的建造厂不能收回（原版 `UndeploysInto=`）；② 建造厂
+  （以及战争工厂等）看不到配件动画——基地完全没有雷达盘等部件。
+- **根因（②）**：`draw_building_anims` 把 `ActiveAnimYSort` 非空一律当作"身后类"
+  画在建筑本体**之下**。实测像素重叠：`GACNST_A.SHP` 的 823 个非透明像素**全部**
+  被 `GACNST.SHP` 本体覆盖（GAWEAP_A 335 个同理）——画在下面就是完全不可见。
+  `ActiveAnimYSort`（362/543/650/724 全为正）在原版是**与其它对象的排序偏移**，
+  不是"在本体之后"；动画始终与本体同位合成。
+- **修复（②）**：删除"身后画"分支，ActiveAnim/Two/Three 统一画在本体之上
+  （`draw_building_anims` 去掉 `behind` 参数）。
+- **实现（①）**：
+  1. `sim::pack_building(world, idx, unit_type, factory)`（`skirmish`）：仅已建成
+     建筑；**立即解除地基阻挡**（不等 tick 清扫，落点与寻路马上可用）→ 在地基
+     **中心格**（展开的对称位置；被占则锚点 → 地基格）生成单位、朝向 = 建筑朝向
+     →建筑按**出售路径**（`sold=true`，无爆炸）标记移除。
+  2. stage：选中建筑侧栏"收起基地车 (D)"按钮（`undeploys_into` 非空时出现）+
+     `D` 键优先展开选中的基地车、否则收起选中的建造厂（`deploy_selected_mcv`
+     返回 false 时 fallback）；展开成功后自动选中新建造厂（标准建筑可修理/出售/
+     收起）；收起成功后自动选中新基地车。
+- **验证**：`SkirmishDeploy.ConyardPacksBackIntoMcvAndFreesFootprint`：展开 → 完工 →
+  收起（地基立即解阻、无爆炸、`sold`）→ 重新展开回到**同一锚点**（中心-对称）；
+  建造厂渲染截图确认雷达盘可见（此前与本体重叠被完全遮挡）。
+
 
 ## 4. 构建/工具链类
 

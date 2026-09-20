@@ -188,15 +188,69 @@ uint32_t deploy_mcv(SimWorld& world, size_t unit_idx, const std::string& buildin
                                    {1, 1}, {-1, 1}, {1, -1}, {-1, -1}};
     for (const auto& o : kOff) {
         const int c = base_col + o[0], r = base_row + o[1];
-        if (!world.can_place(c, r, fw, fh)) continue;
+        // 车体自身占住地基中心格之一 → 展开校验忽略自己（展开后车体移除）
+        if (!world.can_place(c, r, fw, fh, u.id)) continue;
         const uint32_t id = world.spawn_building(owner, building_type, c, r, fw, fh, cost, power,
-                                                true, buildup_frames, max_hp);
+                                                true, buildup_frames, max_hp, u.id);
         if (id) {
             world.remove_unit(unit_idx);
             return id;
         }
     }
     return 0;
+}
+
+uint32_t pack_building(SimWorld& world, size_t building_idx, const std::string& unit_type,
+                       const UnitFactory& f) {
+    if (building_idx >= world.buildings.size()) return 0;
+    // 拷贝：spawn_unit 可能让 units 重分配，建筑随后只做"标记移除"
+    const SimBuilding b = world.buildings[building_idx];
+    if (!b.alive || b.under_construction) return 0;
+    // 立即解除地基阻挡：落点判定与打包后寻路都要立即可用（tick 清扫会再解除一次，幂等）
+    const auto in_bounds = [&](int c, int r) {
+        return c >= 0 && r >= 0 && c < world.w && r < world.h;
+    };
+    for (const auto& c : b.footprint_cells)
+        if (in_bounds(c.first, c.second))
+            world.blocked[static_cast<size_t>(c.second) * world.w + c.first] = 0;
+    const auto cell_has_unit = [&](int c, int r) {
+        for (const auto& u : world.units)
+            if (u.alive && u.col == c && u.row == r) return true;
+        return false;
+    };
+    // 落点：地基中心（展开时的对称位置，重新展开可放回原处）→ 锚点 → 地基格
+    int mrx = 0, mry = 0;
+    world.cell_to_map(b.col, b.row, mrx, mry);
+    int cc = 0, cr = 0;
+    world.map_to_cell(mrx + (b.fw - 1) / 2, mry + (b.fh - 1) / 2, cc, cr);
+    int sc = -1, sr = -1;
+    if (in_bounds(cc, cr) && !cell_has_unit(cc, cr)) {
+        sc = cc;
+        sr = cr;
+    } else if (in_bounds(b.col, b.row) && !cell_has_unit(b.col, b.row)) {
+        sc = b.col;
+        sr = b.row;
+    } else {
+        for (const auto& c : b.footprint_cells)
+            if (in_bounds(c.first, c.second) && !cell_has_unit(c.first, c.second)) {
+                sc = c.first;
+                sr = c.second;
+                break;
+            }
+    }
+    if (sc < 0) return 0;
+    // 建筑移除：sold 标记 = 无爆炸；tick 清扫时统一重映射引用
+    world.buildings[building_idx].alive = false;
+    world.buildings[building_idx].sold = true;
+    const uint32_t id = make_unit(world, b.owner, unit_type, sc, sr, f);
+    if (id) {
+        for (auto& u : world.units)
+            if (u.id == id) {
+                u.dir = static_cast<uint8_t>(b.dir / 32); // 朝向沿用建筑（0..255 → 0..7）
+                break;
+            }
+    }
+    return id;
 }
 
 BuildCheck check_buildable(const SimWorld& world, const assets::RulesDB& rules,

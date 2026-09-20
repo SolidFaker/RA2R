@@ -12,6 +12,15 @@ using namespace ra2r;
 
 // ── 基地车展开（纯逻辑）──────────────────────────────────────────────────────
 
+// 展开时的固定 UnitFactory（无武器/非矿车；kind 按类型名）
+static sim::UnitFactory test_factory() {
+    sim::UnitFactory f;
+    f.kind_of = [](const std::string&) { return 1; };
+    f.weapon = [](const std::string&, sim::SimWeapon&) {};
+    f.miner = [](const std::string&, bool& m, int& c) { m = false, c = 20; };
+    return f;
+}
+
 TEST(SkirmishDeploy, McvDeploysIntoConyardAndRemovesUnit) {
     sim::SimWorld s;
     s.w = 64;
@@ -43,6 +52,45 @@ TEST(SkirmishDeploy, McvDeploysIntoConyardAndRemovesUnit) {
     for (int t = 0; t < 54; ++t) s.tick();
     EXPECT_FALSE(s.buildings[0].under_construction);
     EXPECT_EQ(s.buildings[0].hp, 1000);
+}
+
+TEST(SkirmishDeploy, ConyardPacksBackIntoMcvAndFreesFootprint) {
+    // UndeploysInto= 语义：收起建造厂 → 基地车；地基阻挡立即解除、建筑按出售
+    // 路径无爆炸移除，重新展开可放回同一位置（落点 = 地基中心）。
+    sim::SimWorld s;
+    s.w = 64;
+    s.h = 64;
+    s.blocked.assign(64 * 64, 0);
+    s.no_build.assign(64 * 64, 0);
+    s.ore.assign(64 * 64, 0);
+    s.spawn_unit("Player", "AMCV", 1, 32, 32, 64, {}, false, 0, 68);
+    const uint32_t bid = sim::deploy_mcv(s, 0, "GACNST", 4, 4, 2000, 0, 54, 1000);
+    ASSERT_NE(bid, 0u);
+    for (int t = 0; t < 54; ++t) s.tick(); // 完工
+    ASSERT_EQ(s.buildings.size(), 1u);
+    const std::vector<std::pair<int, int>> cells = s.buildings[0].footprint_cells;
+    const int anchor_col = s.buildings[0].col, anchor_row = s.buildings[0].row;
+
+    const uint32_t uid = sim::pack_building(s, 0, "AMCV", test_factory());
+    ASSERT_NE(uid, 0u);
+    ASSERT_EQ(s.units.size(), 1u);
+    EXPECT_EQ(s.units[0].type, "AMCV");
+    EXPECT_EQ(s.units[0].owner, "Player");
+    // 地基格立即解除阻挡（不等 tick 清扫）
+    for (const auto& c : cells)
+        EXPECT_EQ(s.blocked[static_cast<size_t>(c.second) * 64 + c.first], 0);
+    // 被移除建筑标记 dead 且是出售路径（无爆炸）
+    EXPECT_FALSE(s.buildings[0].alive);
+    EXPECT_TRUE(s.buildings[0].sold);
+    EXPECT_TRUE(s.explosions.empty()) << "收起不应有爆炸";
+    // 重新展开：可放回同一锚点（中心格空、车体忽略自身）
+    const size_t mcv_idx = 0;
+    const uint32_t bid2 = sim::deploy_mcv(s, mcv_idx, "GACNST", 4, 4, 2000, 0, 54, 1000);
+    ASSERT_NE(bid2, 0u);
+    s.tick(); // 清扫已移除的旧建筑
+    ASSERT_EQ(s.buildings.size(), 1u);
+    EXPECT_EQ(s.buildings[0].col, anchor_col);
+    EXPECT_EQ(s.buildings[0].row, anchor_row);
 }
 
 TEST(SkirmishDeploy, OccupiedCenterIsRetriedAtNeighbors) {

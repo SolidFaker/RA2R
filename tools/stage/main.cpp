@@ -48,6 +48,7 @@ using stage::kCatNames;
 using stage::kModeNames;
 using stage::kTheaters;
 using stage::load_type_lists;
+using stage::pack_selected_building;
 using stage::place_player_build;
 using stage::queue_player_build;
 using stage::rebuild_resources;
@@ -391,9 +392,8 @@ static int run(int argc, char** argv) {
             if (ev.type == SDL_EVENT_QUIT) running = false;
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_ESCAPE) running = false;
             // 展开基地车（D）/ 取消放置（Esc 之外的右键）
-            if (ev.type == SDL_EVENT_KEY_DOWN && (ev.key.key == SDLK_D) && a.sim_active &&
-                a.sk.active) {
-                deploy_selected_mcv(a);
+            if (ev.type == SDL_EVENT_KEY_DOWN && (ev.key.key == SDLK_D) && a.sim_active) {
+                if (!deploy_selected_mcv(a)) pack_selected_building(a);
             }
             // 编队：Ctrl+1..9 存队，1..9 取队（模拟模式）
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key >= SDLK_1 && ev.key.key <= SDLK_9 &&
@@ -660,6 +660,13 @@ static int run(int argc, char** argv) {
                                 a.dirty = true;
                                 std::fprintf(stderr, "[stage] 出售 %s 退款 $%lld\n",
                                              b.type.c_str(), static_cast<long long>(refund));
+                            }
+                            // 基地收起（UndeploysInto= 非空，如建造厂 → 基地车）
+                            if (const auto* ut = a.rules.unit(b.type);
+                                ut && !ut->undeploys_into.empty()) {
+                                ImGui::SameLine();
+                                if (ImGui::Button("收起基地车 (D)"))
+                                    pack_selected_building(a);
                             }
                             if (b.repairing)
                                 ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f),
@@ -1188,16 +1195,8 @@ static int run(int argc, char** argv) {
                         for (int dy = -rad; dy <= rad && bx < 0; ++dy) {
                             for (int dx = -rad; dx <= rad && bx < 0; ++dx) {
                                 const int x = u0.col + dx, y = u0.row + dy;
-                                bool free = true;
-                                for (int j = 0; j < 2 && free; ++j)
-                                    for (int i = 0; i < 2 && free; ++i) {
-                                        if (x + i < 0 || y + j < 0 || x + i >= a.sim.w ||
-                                            y + j >= a.sim.h ||
-                                            a.sim.blocked[static_cast<size_t>(y + j) *
-                                                                       a.sim.w + (x + i)])
-                                            free = false;
-                                    }
-                                if (free) {
+                                // 空地基校验走 can_place（含单位/覆盖物/矿石占格）
+                                if (a.sim.can_place(x, y, 2, 2)) {
                                     bx = x;
                                     by = y;
                                 }

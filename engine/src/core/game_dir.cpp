@@ -135,9 +135,9 @@ std::string find_game_dir() {
     }
 #else
     // Linux：/proc/self/exe 解析可执行文件路径（wmain 入口在非 Windows 不存在）
-    std::error_code ec;
-    const auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (!ec) {
+    std::error_code exe_ec;
+    const auto exe = std::filesystem::read_symlink("/proc/self/exe", exe_ec);
+    if (!exe_ec) {
         const std::filesystem::path exe_dir = exe.parent_path();
         for (const char* rel : {"Yuri", "RA2", "Red Alert 2", "Yuri's Revenge", "../Yuri",
                                 "../RA2", "../../Yuri", "../../RA2", "../Red Alert 2",
