@@ -512,9 +512,28 @@ static int run(int argc, char** argv) {
                     ImGui::EndCombo();
                 }
             };
-            combo_str("玩家国家", a.sk.cfg.player.country, a.sk.player_countries);
+            // 国家下拉：显示"国家（阵营）"，玩家改选后自动把对手换到不同阵营
+            const auto combo_country = [&](const char* label, std::string& value, bool is_player) {
+                if (a.sk.player_countries.empty()) {
+                    ImGui::Text("%s: %s", label, value.c_str());
+                    return;
+                }
+                const auto disp = [&](const std::string& name) {
+                    const std::string side = stage::country_side_of(a, name);
+                    return side.empty() ? name : name + "（" + side + "）";
+                };
+                if (ImGui::BeginCombo(label, disp(value).c_str())) {
+                    for (const auto& s : a.sk.player_countries)
+                        if (ImGui::Selectable(disp(s).c_str(), s == value)) {
+                            value = s;
+                            if (is_player) stage::skirmish_auto_opponent(a);
+                        }
+                    ImGui::EndCombo();
+                }
+            };
+            combo_country("玩家国家", a.sk.cfg.player.country, true);
             combo_str("玩家颜色", a.sk.cfg.player.color, a.sk.color_names);
-            combo_str("对手国家", a.sk.cfg.opponent.country, a.sk.player_countries);
+            combo_country("对手国家", a.sk.cfg.opponent.country, false);
             combo_str("对手颜色", a.sk.cfg.opponent.color, a.sk.color_names);
             static const char* kClassNames[4] = {"仅基地车", "轻装", "中装", "重装"};
             ImGui::Combo("开局兵力", &a.sk.class_sel, kClassNames, 4);
@@ -557,10 +576,16 @@ static int run(int argc, char** argv) {
             if (a.sk.active) {
                 const auto cit = a.sim.credits.find("Player");
                 const auto pit = a.sim.power_net.find("Player");
-                ImGui::Text("玩家 %s / %s   $%lld   电力 %+d", a.sk.cfg.player.country.c_str(),
+                const std::string pside = stage::country_side_of(a, a.sk.cfg.player.country);
+                const std::string oside = stage::country_side_of(a, a.sk.cfg.opponent.country);
+                ImGui::Text("玩家 %s%s / %s   $%lld   电力 %+d", a.sk.cfg.player.country.c_str(),
+                            pside.empty() ? "" : ("（" + pside + "）").c_str(),
                             a.sk.cfg.player.color.c_str(),
                             static_cast<long long>(cit != a.sim.credits.end() ? cit->second : 0),
                             pit != a.sim.power_net.end() ? pit->second : 0);
+                ImGui::Text("对手 %s%s / %s", a.sk.cfg.opponent.country.c_str(),
+                            oside.empty() ? "" : ("（" + oside + "）").c_str(),
+                            a.sk.cfg.opponent.color.c_str());
                 const auto qit = a.sim.build_queue.find("Player");
                 if (qit != a.sim.build_queue.end()) {
                     const auto& item = qit->second;

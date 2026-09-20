@@ -581,6 +581,43 @@
   的假象来源）。改为 `post_steps = a.sk.active ? 0 : a.sim_steps`
   （attack/build/demo 模式依赖共享循环，行为不变）。
 
+### 3.29 遭遇战阵营区分 / 配件动画阵营色 / 2.5D 遮挡 / 斜血条
+- **遭遇战区分阵营**：
+  - 默认对手此前硬编码 `Russians`——玩家选苏军时两边同阵
+    营同色。现按**阵营配对**：玩家盟军 → 对手 Russians，玩家非盟军 → 对手
+    Americans（找不到才取该阵营第一个 Multiplay 国家）；颜色未显式指定且
+    与玩家相同时改用 DarkRed/DarkBlue 区分色；UI 国家下拉显示“国家（阵营）”、
+    侧栏显示双方阵营；玩家改选国家时自动把同阵营的对手换走。
+  - **AI 基地此前根本不存在**：`spawn_start` 只在 waypoint 上找“可通行”格
+    （`cell_free`），而 dttd.yrm 的对手 waypoint (67,190) 在水里 → AI 展开返回
+    `id=0` 且只试一次 → 全程 0 建筑（模拟日志可见 Opponent 0/0）。现在
+    `spawn_start(..., base_fw, base_fh)` 按**能展开完整地基**（deploy_mcv 同款地图空间
+    锚点换算 + `can_place`）选最近可展开出生格，AI 展开失败再 60 帧重试。
+    回归：`SkirmishRules.SpawnStartFindsDeployableSpotWhenWaypointBlocked`（7×7 全堵
+    → 仍能就地展开出建造厂）。
+- **配件动画阵营色**：`blit_bld_shp_frame` 此前用无重映射的 `unit_lut`
+  解码——Remap 段（索引 16..31）按原盘默认**红色**渐变上色，盟军基地
+  的雷达盘/机械臂因此发红。现按建筑所属 House 取 `remap_lut()`
+  （`PaletteLut::build(unit_pal, ramp)`，与 object_layer 本体/载具一致），SHP 帧缓存
+  键加 remap；体素炮塔走 `VoxelView.remap`。实测：盟军（Gold）基地动画
+  红色像素 869 px 中 706 px 变金色（其余为 ramp 暗端）。
+- **2.5D 遮挡**：配件动画/炮塔此前是**全局后画一遍**（所有对象画完再
+  画所有动画），等于把配件层提到最上层——站在建筑**前方**的单位被
+  机械臂/雷达盘盖住。`render_objects` 新增 `post_draw` 回调：每个对象画完立即
+  回调，stage 用它把该建筑的动画/炮塔插进同一深度序。排序键从“锚点行”
+  改为**靠下边行**（`cy+fh−1`，多格建筑按前沿排）。A/B 实测（900 帧双
+  基地场景，`RA2R_ANIM_OVERLAY` 临时开关复现旧画序，验证后已移除）：2033 px 差异集中在苏联建造厂
+  左侧——旧画序下站在电厂前的步兵被电厂动画盖住，新画序完整显示。
+- **斜血条**：建筑血条从 1px 水平线改为 **5px 厚、2:1 斜向**
+  （与格子菱形边平行）的粗条（描边 + 暗红空槽 + 亮绿血量），长度随地基
+  放大（2×2 → 52px、4×4 → 76px）；锚点按 object_layer 建筑 blit 同款几何
+  （锚在精灵底边，`top = ay + fy − canvas_h/2`），旧公式 `ay − 帧高` 会把血条
+  画到建筑上方一百多像素的空中。
+- **顺带（阴影不透明）**：`shp_frame_rgba` 把 LUT alpha 写死为 255，
+  建筑/步兵的阴影帧（索引 1，alpha 140）被画成**不透明黑色块**
+  （截图里建筑右侧的纯黑斑）；保留 LUT alpha 后变回半透明投影
+  （实测 (2260,1775) 从 (0,0,0) → 与草地混合的 (81,84,37)）。
+
 ## 4. 构建/工具链类
 
 - 无管理员工具链：WinLibs MinGW（免安装）+ pip CMake + SDL3 mingw 预编译包，全部放 `I:\tools\`（不入库）。
@@ -696,6 +733,13 @@
 阴影按 `Shadow=yes`/n%4 判定、`Rate=` 是毫秒/帧——四件事决定“画第几帧”。
 单测 `tests/test_anim_frames.cpp` 用原版实测段值锁死；stage 侧统一走
 `assets::plan_anim_frames()`，不要再在绘制函数里手写区间。
+
+### 6.16 遮挡与阴影：动画要进深度序，LUT alpha 不能丢
+“属于建筑的附加层”（配件动画/炮塔）必须在**该建筑画完时立即**
+画（`render_objects` 的 `post_draw`）；全局后画一遍会把它们提到最上层、盖住
+前方单位。多格建筑的排序取**前沿行**（cy+fh−1）而非锚点行。
+SHP 帧缓存必须保留 LUT 的 alpha（索引 1 = 阴影 140）——写死 255 会把所有
+阴影变成纯黑色块。
 
 ## 7. 遭遇战流程类（M4 实战沉淀）
 

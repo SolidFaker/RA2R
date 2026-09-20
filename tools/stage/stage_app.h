@@ -36,6 +36,7 @@ struct SkirmishState {
     int ai_build_at = 420;                      // AI 起造首个建筑的时刻
     bool ai_done = false;                       // AI 脚本已跑完
     std::vector<std::string> player_countries;  // 可选国家（Multiplay=yes）
+    std::map<std::string, std::string> country_side; // 国家 → 阵营中文标签（盟军/苏军/尤里）
     std::vector<std::string> color_names;       // 可选阵营色（[Colors]）
     int country_sel = 0, color_sel = 0, class_sel = 2; // UI 选择（对应上面两张表）
     int tech_level = 10;
@@ -49,6 +50,10 @@ struct StageApp {
     ra2r::assets::TerrainTileset tileset;
     ra2r::render::PaletteLut terrain_lut, unit_lut;
     ra2r::render::PaletteLut resource_lut; // TEMPERAT.PAL（矿石/宝石资源盘）
+    // 阵营色重映射 LUT（按 house_remap 下标缓存；建筑配件动画/炮塔按所属阵营色）：
+    // key = remap（1-based），由 unit_pal_bytes + HouseRamp 构建
+    std::vector<uint8_t> unit_pal_bytes; // 单位调色盘原始 768B（重映射 LUT 原料）
+    std::map<int, ra2r::render::PaletteLut> remap_luts;
     ra2r::cache::CacheManager cache;
     std::map<std::string, std::vector<uint8_t>> file_cache;
     std::map<int, std::string> overlay_names; // RULESMD [OverlayTypes] 类型号 → 名
@@ -153,10 +158,12 @@ void draw_selection_markers(StageApp& a, const ra2r::render::IsometricGrid& grid
 void draw_sim_fx(StageApp& a, const ra2r::render::IsometricGrid& grid, int bw, int bh, int ox,
                  int oy, std::vector<uint8_t>& canvas);
 
-// 建筑配件动画（ActiveAnim 帧序列）：behind=true 画在建筑身后（YSort 类），
-// false 画在建筑之上（门/火焰等）；帧 = 建筑 anim_clock % 帧数（15fps）
-void draw_building_anims(StageApp& a, const ra2r::render::IsometricGrid& grid, int bw, int bh,
-                         int ox, int oy, std::vector<uint8_t>& canvas);
+// 建筑配件动画（ActiveAnim/IdleAnim/ProductionAnim 帧序列）——按建筑逐个画在
+// 其本体之后、同一深度序内（由 render_objects 的 post_draw 回调调用），
+// 帧计划见 engine/assets/anim_frames.h；阵营色用建筑所属 House 的 ramp。
+void draw_building_anims_for(StageApp& a, const ra2r::sim::SimBuilding& b,
+                             const ra2r::render::IsometricGrid& grid, int bw, int bh, int ox,
+                             int oy, std::vector<uint8_t>& canvas);
 
 // 扫描游戏目录顶层地图文件（.map/.yrm/.yro/.mmx）
 void scan_map_files(StageApp& a, const std::filesystem::path& dir);
@@ -181,6 +188,11 @@ std::vector<const ra2r::assets::UnitTypeDef*> buildable_for(StageApp& a, const s
 // role = "conyard" / "power" / "refinery" / "barracks" / "weapon"；无匹配返回 nullptr
 const ra2r::assets::UnitTypeDef* faction_building(StageApp& a, const std::string& owner,
                                                   const std::string& country, const char* role);
+// 国家所属阵营（rulesmd [Countries] Side= → 中文标签；未知返回空）
+std::string country_side_of(StageApp& a, const std::string& country);
+// 玩家改选国家后：对手若与玩家同阵营则自动换到不同阵营的默认国家；两者阵营色
+// 相同时换一个区分色（仅在对手未显式指定时——遭遇战"区分阵营"的默认行为）
+void skirmish_auto_opponent(StageApp& a);
 // AI 脚本推进（展开基地车 → 起造 → 自动落点），按逻辑帧时刻触发
 void skirmish_ai_tick(StageApp& a);
 // 玩家建造：排队（扣款）→ 推进 → 就绪后在 (col,row) 放置

@@ -58,7 +58,8 @@ std::vector<uint8_t> shp_frame_rgba(const ra2r::assets::ShpFile& shp, int frame_
         d[0] = r;
         d[1] = g;
         d[2] = b;
-        d[3] = 255;
+        d[3] = a; // 索引 1 = 阴影（alpha 140，半透明黑）；其余 255。写死 255
+                  // 会把建筑/步兵的阴影帧画成不透明黑色块（原版是半透明投影）
     }
     return rgba;
 }
@@ -99,7 +100,7 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                                  const ra2r::render::IsometricGrid& grid, const FileLoader& load,
                                  int bw, int bh, int ox, int oy,
                                  std::vector<uint8_t>& canvas, float obj_scale,
-                                 ObjectRenderCache* cache) {
+                                 ObjectRenderCache* cache, const PostObjectDraw& post_draw) {
     ObjectRenderStats stats;
     // artmd 覆盖表：Image=（美术名）、Foundation=（地基尺寸）、Sequence=（序列节名）；
     // 有缓存时跨帧复用。缓存必须连**解析结果本体**一起存：只缓存 art_images 会让
@@ -186,6 +187,7 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
         uint32_t anim_clock = 0;  // 动画时钟（逻辑帧）
         uint8_t idle_kind = 0;    // 步兵 idle 动作（1=Idle1 2=Idle2 0=无）
         uint32_t idle_start = 0;  // idle 动作触发逻辑帧
+        int fw = 1, fh = 1;       // 地基尺寸（深度排序取靠下边行）
     };
     std::vector<Obj> sorted;
     for (size_t i = 0; i < objs.size(); ++i) {
@@ -193,13 +195,22 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
         sorted.push_back({o.cx, o.cy, o.cx + o.cy, o.kind, o.id, o.dir, o.subcell, o.height,
                           o.off_x, o.off_y, o.alpha, o.hp, o.build_p, o.remap,
                           static_cast<int>(i), o.build_ticks, o.build_total, o.moving,
-                          o.anim_clock, o.idle_kind, o.idle_start});
+                          o.anim_clock, o.idle_kind, o.idle_start, o.fw, o.fh});
     }
+    // 深度序：**靠下（南）边行**在前，同行的靠右在前（原版按精灵底部屏幕 Y、
+    // 再按 X 排序的等价形式）。多格建筑用 cy+fh−1——用锚点行会把建筑画在
+    // 站在其前方（同一行序）的单位之上，出现"建筑被穿透"的遮挡错误。
     std::sort(sorted.begin(), sorted.end(), [](const Obj& a, const Obj& b) {
-        if (a.cy != b.cy) return a.cy < b.cy; // 砖墙行序（后行盖前行）
+        const int af = a.cy + (a.fh > 1 ? a.fh - 1 : 0);
+        const int bf = b.cy + (b.fh > 1 ? b.fh - 1 : 0);
+        if (af != bf) return af < bf;
         if (a.cx != b.cx) return a.cx < b.cx;
         return a.seq < b.seq; // 同格：按调用方给定顺序（确定性）
     });
+    // 对象画完的附加层回调（把配件动画插进同一深度序）
+    const auto notify = [&](const Obj& o) {
+        if (post_draw) post_draw(objs[static_cast<size_t>(o.seq)], canvas);
+    };
     for (const Obj& o : sorted) {
         int px, py;
         grid.cell_to_pixel(o.cx, o.cy, px, py);
@@ -291,6 +302,7 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                         }
                     }
                     ++stats.units;
+                    notify(o);
                     continue;
                 }
             }
@@ -303,6 +315,7 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                 }
             }
             ++stats.units;
+            notify(o);
         } else if (o.kind == 2) {
             // 步兵：美术名 = artmd/rulesmd Image=（缺省 id）；
             // 序列 = artmd [id] Sequence= → [seq] Guard=Start,Length,Stride
@@ -436,6 +449,7 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                 }
             }
             ++stats.infantry;
+            notify(o);
         } else {
             // 建筑：帧语义按 OpenRA ra2 ^Structure 约定（defaults.yaml）——
             //   idle=帧0、damaged-idle=帧1、make(建造)=帧2；阴影帧 = 3+i
@@ -553,6 +567,7 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                 if (entry_of(bshp, buildup_name, bf, o.remap, bsprite))
                     blit_entry(bsprite, 1.0f, o.alpha);
                 ++stats.buildings;
+                notify(o);
                 continue;
             }
             ObjectRenderCache::BldEntry shadow, sprite;
@@ -580,6 +595,7 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
             // 建筑体素炮塔：由 stage 侧 draw_bld_turret_voxel 统一绘制
             // （rulesmd Turret=/TurretAnim=/TurretAnimX/Y 驱动 + HVA 动画时钟）。
             ++stats.buildings;
+            notify(o);
         }
     }
     return stats;

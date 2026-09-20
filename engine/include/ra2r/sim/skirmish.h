@@ -55,10 +55,13 @@ struct StartUnitPlan {
 StartUnitPlan start_unit_plan(const assets::RulesDB& rules, const std::string& country,
                               int start_class);
 
-// 在出生点生成基地车 + 开局兵力；返回生成单位数（0 = 失败）
+// 在出生点生成基地车 + 开局兵力；返回生成单位数（0 = 失败）。
+// base_fw/base_fh = 基地车展开后建造厂的地基（如 4×4）：出生格按"该格自身可通行
+// 且以它为中心能放下完整地基"选择（原地不行则向外找最近可展开格）——避免基地车
+// 落在水面/树丛/窄地导致展开失败（原版遭遇战出生点由地图保证，这里做兜底）。
 int spawn_start(SimWorld& world, const assets::RulesDB& rules, const std::string& house,
                 const std::string& country, int start_class, int col, int row,
-                const UnitFactory& f, uint32_t seed);
+                const UnitFactory& f, uint32_t seed, int base_fw = 1, int base_fh = 1);
 
 // 展开基地车 → 建造厂：地基以基地车格为中心（4×4 → 左上 = 车格 −1,−1），
 // 中心不可放置时按固定邻序试近旁落点（校验忽略车体自身占格）；成功后移除

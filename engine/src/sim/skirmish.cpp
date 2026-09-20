@@ -55,14 +55,30 @@ bool cell_free(const SimWorld& world, int col, int row) {
     return world.blocked[static_cast<size_t>(row) * world.w + col] == 0;
 }
 
-// 从 (col,row) 起按固定环序找最近可放置格；找不到返回 false
-bool nearest_free(const SimWorld& world, int col, int row, int& out_col, int& out_row) {
+// 地基锚点：以车格为中心在地图空间对齐（与 deploy_mcv 同一换算）
+void deploy_anchor(const SimWorld& world, int col, int row, int fw, int fh, int& ac, int& ar) {
+    int mrx = 0, mry = 0;
+    world.cell_to_map(col, row, mrx, mry);
+    world.map_to_cell(mrx - (fw - 1) / 2, mry - (fh - 1) / 2, ac, ar);
+}
+
+// (col,row) 是否可作为基地车格：本格可通行，且以它为中心能放下完整地基
+bool deployable_at(const SimWorld& world, int col, int row, int fw, int fh) {
+    if (!cell_free(world, col, row)) return false;
+    int ac = 0, ar = 0;
+    deploy_anchor(world, col, row, fw, fh, ac, ar);
+    return world.can_place(ac, ar, fw, fh);
+}
+
+// 从出生点起按固定环序找最近可展开格（基地车落点兜底）；找不到返回 false
+bool nearest_deployable(const SimWorld& world, int col, int row, int fw, int fh, int& out_col,
+                        int& out_row) {
     const int maxr = std::max(world.w, world.h);
     for (int rad = 0; rad <= maxr; ++rad) {
         for (int dy = -rad; dy <= rad; ++dy)
             for (int dx = -rad; dx <= rad; ++dx) {
                 if (rad > 0 && std::abs(dx) != rad && std::abs(dy) != rad) continue;
-                if (cell_free(world, col + dx, row + dy)) {
+                if (deployable_at(world, col + dx, row + dy, fw, fh)) {
                     out_col = col + dx;
                     out_row = row + dy;
                     return true;
@@ -141,13 +157,15 @@ StartUnitPlan start_unit_plan(const assets::RulesDB& rules, const std::string& c
 
 int spawn_start(SimWorld& world, const assets::RulesDB& rules, const std::string& house,
                 const std::string& country, int start_class, int col, int row,
-                const UnitFactory& f, uint32_t seed) {
+                const UnitFactory& f, uint32_t seed, int base_fw, int base_fh) {
     const StartUnitPlan plan = start_unit_plan(rules, country, start_class);
     if (plan.base_actor.empty()) return 0;
     if (!world.credits.count(house)) world.credits[house] = 10000;
-    // 基地车：出生点（不可放置时取最近可放置格）
+    // 基地车：出生点（不可放置或无法展开时取最近可展开格）
     int bc = col, br = row;
-    if (!cell_free(world, bc, br) && !nearest_free(world, col, row, bc, br)) return 0;
+    if (!deployable_at(world, bc, br, base_fw, base_fh) &&
+        !nearest_deployable(world, col, row, base_fw, base_fh, bc, br))
+        return 0;
     if (!make_unit(world, house, plan.base_actor, bc, br, f)) return 0;
     int placed = 1;
     // 支援兵力：以基地车为心的环形 [inner, outer] 内确定性散布（不与已放格重叠）
@@ -180,10 +198,8 @@ uint32_t deploy_mcv(SimWorld& world, size_t unit_idx, const std::string& buildin
     const std::string owner = u.owner;
     // 地基以基地车格为中心：在地图空间对齐（锚 = 中心 −(fw−1)/2, −(fh−1)/2），
     // 再换算回引擎锚格——引擎网格的"矩形"在砖墙排布里不是地基形状。
-    int mrx = 0, mry = 0;
-    world.cell_to_map(u.col, u.row, mrx, mry);
     int base_col = 0, base_row = 0;
-    world.map_to_cell(mrx - (fw - 1) / 2, mry - (fh - 1) / 2, base_col, base_row);
+    deploy_anchor(world, u.col, u.row, fw, fh, base_col, base_row);
     static const int kOff[9][2] = {{0, 0},  {1, 0},  {-1, 0}, {0, 1}, {0, -1},
                                    {1, 1}, {-1, 1}, {1, -1}, {-1, -1}};
     for (const auto& o : kOff) {

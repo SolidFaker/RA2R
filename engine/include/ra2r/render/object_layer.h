@@ -73,17 +73,26 @@ struct PlacedObject {
     uint32_t anim_clock = 0;
     uint8_t idle_kind = 0;
     uint32_t idle_start = 0;
+    // 地基尺寸（多格建筑用；排序取**靠下（南）边行**作深度，使靠下的对象遮挡
+    // 靠上的对象，如建筑挡住站在其身前的单位）。1×1 对象保持默认。
+    int fw = 1, fh = 1;
 };
 
 // 渲染对象到画布（画在地形之后，按 (cx+cy, cx) 深度排序）。
 // 画布为全图 RGBA（bw×bh），坐标经 (ox, oy) 偏移。
 // obj_scale：载具体素比例（默认 0.3 ≈ 原版一格 tile 观感，对照 OpenRA ra2
 // RenderVoxels Scale=11.7；范围 0.1..4）。
+// post_draw（可选）：每个对象画完时立即回调（含排序后的紧邻位置）。用于把
+// "属于该对象的附加层"（建筑配件动画/炮塔）插进同一深度序，避免全局后画导致
+// 靠前的单位被建筑动画盖住。画布是回调中可直接写像素的 RGBA 画布。
+using PostObjectDraw =
+    std::function<void(const PlacedObject& obj, std::vector<uint8_t>& canvas)>;
 ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                                  const UnitPaletteCfg& cfg, const IsometricGrid& grid,
                                  const FileLoader& load, int bw, int bh, int ox, int oy,
                                  std::vector<uint8_t>& canvas, float obj_scale = 0.3f,
-                                 ObjectRenderCache* cache = nullptr);
+                                 ObjectRenderCache* cache = nullptr,
+                                 const PostObjectDraw& post_draw = {});
 
 // 建筑美术名解析（NewTheater 回退链，artmd NewTheater=yes 的建筑）：
 //   第 2 字母换剧场代号（见 assets::theater_code）→ 换 'G'（通用）→ 原名

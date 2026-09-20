@@ -202,3 +202,36 @@ TEST(SkirmishRules, SpawnStartPlaceBaseAndSupport) {
         if (u.kind == 1) has_mcv = true;
     EXPECT_TRUE(has_mcv);
 }
+
+// 出生点落在水面/树丛等"展不开"的地形上时，基地车落到最近的**可展开**
+// 格（原版遭遇战由地图保证出生点，本引擎按 waypoint 出生需要兜底）：
+// 此前 dttd.yrm 的对手 waypoint 在水里 → AI 永远展不开、没有基地。
+TEST(SkirmishRules, SpawnStartFindsDeployableSpotWhenWaypointBlocked) {
+    RA2R_REQUIRE_RULES();
+    const assets::RulesDB& rules = *test::rules_db();
+    sim::SimWorld s;
+    s.w = 64;
+    s.h = 64;
+    s.blocked.assign(64 * 64, 0);
+    // 出生点周围 7×7 全不可通行（模拟 waypoint 落在水面）
+    for (int dy = -3; dy <= 3; ++dy)
+        for (int dx = -3; dx <= 3; ++dx) s.blocked[(32 + dy) * 64 + (32 + dx)] = 1;
+    sim::UnitFactory f;
+    f.kind_of = [](const std::string&) { return 1; };
+    f.weapon = [](const std::string&, sim::SimWeapon&) {};
+    f.miner = [](const std::string&, bool&, int&) {};
+    const int n = sim::spawn_start(s, rules, "Player", "Americans", 2, 32, 32, f, 1234, 4, 4);
+    ASSERT_GT(n, 0);
+    ASSERT_FALSE(s.units.empty());
+    const auto& mcv = s.units[0];
+    EXPECT_EQ(s.blocked[static_cast<size_t>(mcv.row) * 64 + mcv.col], 0) << "基地车不能在水里";
+    // 以基地车格为中心能放下完整 4×4 地基（deploy_mcv 的锚点换算）
+    int mrx = 0, mry = 0;
+    s.cell_to_map(mcv.col, mcv.row, mrx, mry);
+    int ac = 0, ar = 0;
+    s.map_to_cell(mrx - 1, mry - 1, ac, ar);
+    EXPECT_TRUE(s.can_place(ac, ar, 4, 4, mcv.id));
+    // 完整链路：基地车展开成建造厂成功（AI 开局的第一步）
+    const uint32_t bid = sim::deploy_mcv(s, 0, "GACNST", 4, 4, 2000, 0, 54, 1000);
+    EXPECT_GT(bid, 0u);
+}
