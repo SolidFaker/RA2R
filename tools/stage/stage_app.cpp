@@ -543,11 +543,12 @@ void ensure_rules(StageApp& a) {
     }
     a.sk.color_names.clear();
     for (const auto& c : a.rules.colors()) a.sk.color_names.push_back(c.name);
-    // 默认阵营：玩家 = 列表首项；对手 = **不同阵营**（此前硬编码 Russians，
-    // 玩家选苏军时两边同阵营同色）
+    // 默认阵营：玩家 = 列表首项；对手未选时按**不同阵营**配对（此前硬编码
+    // Russians，玩家选苏军时两边同阵营同色）。显式同阵营的对手（CLI/UI 指定，
+    // 如镜像局）不覆盖——同阵营自动切换只发生在玩家改选国家时
     if (a.sk.cfg.player.country.empty() && !a.sk.player_countries.empty())
         a.sk.cfg.player.country = a.sk.player_countries[0];
-    skirmish_auto_opponent(a);
+    if (a.sk.cfg.opponent.country.empty()) skirmish_auto_opponent(a);
     // 阵营色：未选时用国家节 Color=（国家未定时留空，等开局/配对后再解析）
     const auto init_color = [&](ra2r::sim::SkirmishPlayerCfg& p) {
         if (!p.color.empty() || p.country.empty()) return;
