@@ -42,3 +42,4 @@ __pycache__/
 *.bmp
 *.tar.gz
 *.zip
+.vscode/
