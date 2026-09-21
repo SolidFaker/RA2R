@@ -153,6 +153,7 @@ bool SimWorld::load_map(const assets::MapFile& map,
             cell_to_map(x, y, rx, ry);
             if (map.overlay_type(rx, ry) != 0xFF) no_build[static_cast<size_t>(y) * w + x] = 1;
         }
+    note_nav_change(); // 新地图的 blocked 全量重建 → 流场缓存失效
     next_id = 1;
     // 各 House 初始资金（遭遇战 $10000，M3 基础档）
     const auto seed_credits = [&](const std::string& owner) {
@@ -286,7 +287,70 @@ bool SimWorld::advance_segment(SimUnit& u) {
     return true;
 }
 
-// 朝目标格寻路（失败 → 清路径并驻停，返回是否可达）
+// 目标槽位表：目标格优先，再按固定环序取周围可走格（确定性）；最多 slots 个。
+// 目标被建筑/水面挡住或编队人数多于 1 时，单位按流场就近落到这些槽位。
+std::vector<std::pair<int, int>> SimWorld::nav_sources(int tc, int tr, int slots) const {
+    std::vector<std::pair<int, int>> out;
+    if (slots < 1) slots = 1;
+    if (slots > 16) slots = 16;
+    const auto walkable = [&](int c, int r) {
+        if (c < 0 || r < 0 || c >= w || r >= h) return false;
+        const size_t i = static_cast<size_t>(r) * w + c;
+        return i >= blocked.size() || blocked[i] == 0;
+    };
+    if (walkable(tc, tr)) out.emplace_back(tc, tr);
+    static const int kRing[16][2] = {{1, 0},  {-1, 0},  {0, 1},   {0, -1}, {1, 1},   {-1, 1},
+                                     {1, -1}, {-1, -1}, {2, 0},   {-2, 0}, {0, 2},   {0, -2},
+                                     {2, 1},  {-2, 1},  {2, -1},  {-2, -1}};
+    for (int rad = 0; rad < 4 && static_cast<int>(out.size()) < slots; ++rad) {
+        for (const auto& d : kRing) {
+            if (static_cast<int>(out.size()) >= slots) break;
+            const int c = tc + d[0], r = tr + d[1];
+            if (!walkable(c, r)) continue;
+            bool dup = false;
+            for (const auto& e : out)
+                if (e.first == c && e.second == r) {
+                    dup = true;
+                    break;
+                }
+            if (!dup) out.emplace_back(c, r);
+        }
+        // 环序表已覆盖 ±2 半径；rad 只用于"多圈时继续加长"，这里固定一张表
+        break;
+    }
+    return out;
+}
+
+const FlowField* SimWorld::flow_for(int tc, int tr, int slots) {
+    if (slots < 1) slots = 1;
+    if (slots > 16) slots = 16;
+    for (size_t i = 0; i < flow_cache.size(); ++i) {
+        FlowCacheEntry& e = flow_cache[i];
+        if (e.tc == tc && e.tr == tr && e.slots == slots && e.version == nav_version) {
+            if (i + 1 != flow_cache.size()) {
+                FlowCacheEntry hit = std::move(e);
+                flow_cache.erase(flow_cache.begin() + static_cast<std::ptrdiff_t>(i));
+                flow_cache.push_back(std::move(hit));
+            }
+            return &flow_cache.back().field;
+        }
+    }
+    std::vector<std::pair<int, int>> sources = nav_sources(tc, tr, slots);
+    if (sources.empty()) return nullptr;
+    FlowCacheEntry entry;
+    entry.tc = tc;
+    entry.tr = tr;
+    entry.slots = slots;
+    entry.version = nav_version;
+    if (!build_flow_field(blocked, w, h, (min_s + min_d) & 1, sources, entry.field))
+        return nullptr;
+    if (flow_cache.size() >= 8) flow_cache.erase(flow_cache.begin());
+    flow_cache.push_back(std::move(entry));
+    return &flow_cache.back().field;
+}
+
+// 朝目标格寻路（失败 → 清路径并驻停，返回是否可达）。目标被挡住时由流场多源
+// 落到最近可走邻格；单位已在目标（槽位）上时视为到达。
 bool SimWorld::set_move_target(SimUnit& u, int tc, int tr) {
     // 移动中重下令（反复右键改目标）：从当前段**终点**续接并保留段内进度 frac，
     // 否则 frac 归零会让单位视觉上"复位到格心"（OpenRA 同思路：重寻路不改变
@@ -294,18 +358,25 @@ bool SimWorld::set_move_target(SimUnit& u, int tc, int tr) {
     const bool mid = u.frac > 0 && (u.next_col != u.col || u.next_row != u.row);
     const int sc = mid ? u.next_col : u.col;
     const int sr = mid ? u.next_row : u.row;
+    const FlowField* f = flow_for(tc, tr, 1);
+    const auto at_goal = [&](int c, int r) {
+        if (!f) return false;
+        const size_t i = static_cast<size_t>(r) * w + c;
+        return i < f->goal.size() && f->goal[i] != 0;
+    };
+    const bool start_at_goal = at_goal(sc, sr);
     std::vector<std::pair<int, int>> path =
-        find_path(blocked, w, h, sc, sr, tc, tr, (min_s + min_d) & 1);
+        (f && !start_at_goal) ? flow_path(*f, sc, sr) : std::vector<std::pair<int, int>>{};
     if (mid) {
         u.path = std::move(path); // 当前段（col/next/frac/prev）保持不动
-        return !u.path.empty();
+        return !u.path.empty() || start_at_goal;
     }
     if (path.empty()) {
         u.path.clear();
         u.next_col = u.col;
         u.next_row = u.row;
         u.frac = 0;
-        return false;
+        return start_at_goal;
     }
     u.path = std::move(path);
     u.prev_col = u.col; // 该段为路径起点（渲染端按直线外推，转角平滑端点精确）
@@ -318,47 +389,55 @@ bool SimWorld::set_move_target(SimUnit& u, int tc, int tr) {
     return true;
 }
 
-// 目标格被阻挡（建筑自身地基）时，在 8 邻格中选路径最短的可达格（确定性）
-bool SimWorld::set_move_target_near(SimUnit& u, int tc, int tr) {
-    const bool blocked_target = tc < 0 || tr < 0 || tc >= w || tr >= h ||
-                                blocked[static_cast<size_t>(tr) * w + tc] != 0;
-    if (!blocked_target) return set_move_target(u, tc, tr);
-    // 移动中：从当前段终点续接（与 set_move_target 同规，避免复位到格心）
-    const bool mid = u.frac > 0 && (u.next_col != u.col || u.next_row != u.row);
-    const int sc = mid ? u.next_col : u.col;
-    const int sr = mid ? u.next_row : u.row;
-    static const int kN[8][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {-1, 1}, {1, -1}, {-1, -1}};
-    std::vector<std::pair<int, int>> best;
-    for (const auto& d : kN) {
-        const int nc = tc + d[0], nr = tr + d[1];
-        if (nc < 0 || nr < 0 || nc >= w || nr >= h) continue;
-        if (blocked[static_cast<size_t>(nr) * w + nc]) continue;
-        std::vector<std::pair<int, int>> path =
-            find_path(blocked, w, h, sc, sr, nc, nr, (min_s + min_d) & 1);
-        if (path.empty()) continue;
-        if (best.empty() || path.size() < best.size()) best = std::move(path);
-    }
-    if (mid) {
-        u.path = std::move(best); // 当前段保持不动
-        return !u.path.empty();
-    }
-    if (best.empty()) {
-        u.path.clear();
-        u.next_col = u.col;
-        u.next_row = u.row;
+// 编队移动：一次流场构建，多单位各自沿场取路径；点击格被占则就近落位。
+size_t SimWorld::issue_move_group(const std::vector<size_t>& unit_idx, int tc, int tr) {
+    std::vector<size_t> valid;
+    valid.reserve(unit_idx.size());
+    for (const size_t i : unit_idx)
+        if (i < units.size() && units[i].alive) valid.push_back(i);
+    if (valid.empty()) return 0;
+    const FlowField* f = flow_for(tc, tr, static_cast<int>(valid.size()));
+    size_t ordered = 0;
+    for (const size_t i : valid) {
+        SimUnit& u = units[i];
+        u.order = kOrderMove;
+        u.target = -1;
+        const auto at_goal = [&](int c, int r) {
+            if (!f) return false;
+            const size_t gi = static_cast<size_t>(r) * w + c;
+            return gi < f->goal.size() && f->goal[gi] != 0;
+        };
+        if (!f || at_goal(u.col, u.row)) {
+            // 不可达/已在目标槽位：原地驻停（仍算指令已下达）
+            u.path.clear();
+            u.next_col = u.col;
+            u.next_row = u.row;
+            u.frac = 0;
+            ++ordered;
+            continue;
+        }
+        std::vector<std::pair<int, int>> path = flow_path(*f, u.col, u.row);
+        if (path.empty()) {
+            u.path.clear();
+            u.next_col = u.col;
+            u.next_row = u.row;
+            u.frac = 0;
+            ++ordered; // 不可达也计入（单位按指令驻停）
+            continue;
+        }
+        u.path = std::move(path);
+        u.prev_col = u.col;
+        u.prev_row = u.row;
+        u.next_col = u.path.front().first;
+        u.next_row = u.path.front().second;
+        u.path.erase(u.path.begin());
         u.frac = 0;
-        return false;
+        u.dir = dir_of(u.col, u.row, u.next_col, u.next_row);
+        ++ordered;
     }
-    u.path = std::move(best);
-    u.prev_col = u.col; // 该段为路径起点（渲染端按直线外推）
-    u.prev_row = u.row;
-    u.next_col = u.path.front().first;
-    u.next_row = u.path.front().second;
-    u.path.erase(u.path.begin());
-    u.frac = 0;
-    u.dir = dir_of(u.col, u.row, u.next_col, u.next_row);
-    return true;
+    return ordered;
 }
+
 
 bool SimWorld::tick() {
     bool changed = false;
@@ -399,7 +478,7 @@ bool SimWorld::tick() {
                     }
                 } else if (stand) {
                     // 仅在驻停（段走完）时（重）寻路，避免段中反复重置进度
-                    if (!set_move_target_near(u, tc, tr)) {
+                    if (!set_move_target(u, tc, tr)) {
                         u.target = -1;
                         continue;
                     }
@@ -488,7 +567,7 @@ bool SimWorld::tick() {
                     continue;
                 }
             } else if (stand) {
-                if (!set_move_target_near(u, tc, tr)) {
+                if (!set_move_target(u, tc, tr)) {
                     u.order = kOrderNone;
                     continue;
                 }
@@ -699,6 +778,7 @@ bool SimWorld::tick() {
                     if (c.first >= 0 && c.second >= 0 && c.first < w && c.second < h)
                         blocked[static_cast<size_t>(c.second) * w + c.first] = 0;
                 }
+                note_nav_change(); // 地基解阻 → 路网变化
             }
         }
         buildings = std::move(nb);
@@ -809,8 +889,23 @@ bool SimWorld::issue_guard(size_t unit_idx, size_t target_idx) {
     return true;
 }
 
-void SimWorld::add_waypoint(size_t unit_idx, int tc, int tr) {
-    if (unit_idx >= units.size()) return;
+// 停止（S 键）：清指令/目标/路径，原地驻停（保留采矿车自动采矿的 kOrderHarvest
+// 语义：停采矿车 = 清路径，下一 tick 会重新回到采矿循环）
+bool SimWorld::stop_unit(size_t unit_idx) {
+    if (unit_idx >= units.size() || !units[unit_idx].alive) return false;
+    SimUnit& u = units[unit_idx];
+    u.order = kOrderNone;
+    u.target = -1;
+    u.waypoints.clear();
+    u.wp_idx = 0;
+    u.path.clear();
+    u.next_col = u.col;
+    u.next_row = u.row;
+    u.frac = 0;
+    return true;
+}
+
+void SimWorld::add_waypoint(size_t unit_idx, int tc, int tr) {    if (unit_idx >= units.size()) return;
     SimUnit& u = units[unit_idx];
     u.waypoints.push_back({tc, tr});
     if (u.order != kOrderPatrol) {
@@ -955,6 +1050,7 @@ uint32_t SimWorld::spawn_building(const std::string& owner, const std::string& t
     foundation_cells(col, row, fw, fh, b.footprint_cells);
     for (const auto& c : b.footprint_cells)
         blocked[static_cast<size_t>(c.second) * w + c.first] = 1;
+    note_nav_change(); // 新地基阻挡 → 路网变化
     if (!credits.count(owner)) credits[owner] = 10000;
     buildings.push_back(std::move(b));
     return buildings.back().id;

@@ -194,6 +194,114 @@ TEST(SimMove, UnreachableTargetStopsWithoutMoving) {
     EXPECT_EQ(s.units[0].row, 32);
 }
 
+// 停止指令：清指令/路径并原地驻停（多选"停止"用）
+TEST(SimMove, StopUnitClearsOrderAndPath) {
+    sim::SimWorld s = make_world();
+    ASSERT_TRUE(s.issue_move(0, 40, 32));
+    for (int t = 0; t < 5; ++t) s.tick();
+    ASSERT_TRUE(s.stop_unit(0));
+    EXPECT_EQ(s.units[0].order, sim::kOrderNone);
+    EXPECT_TRUE(s.units[0].path.empty());
+    EXPECT_EQ(s.units[0].next_col, s.units[0].col);
+    const int c = s.units[0].col, r = s.units[0].row;
+    for (int t = 0; t < 10; ++t) s.tick();
+    EXPECT_EQ(s.units[0].col, c); // 原地
+    EXPECT_EQ(s.units[0].row, r);
+    EXPECT_FALSE(s.stop_unit(99)); // 越界
+}
+
+// ── 编队移动（多单位共享流场）────────────────────────────────────────────────
+
+namespace {
+// 三辆车间隔摆放（同一 House）；返回车下标
+std::vector<size_t> spawn_three(sim::SimWorld& s, int c0, int r0) {
+    s.spawn_unit("Player", "HTNK", 1, c0, r0, 0, {}, false, 0, 68);
+    s.spawn_unit("Player", "HTNK", 1, c0 + 2, r0 + 2, 0, {}, false, 0, 68);
+    s.spawn_unit("Player", "HTNK", 1, c0, r0 + 4, 0, {}, false, 0, 68);
+    return {0, 1, 2};
+}
+bool any_moving(const sim::SimWorld& s) {
+    for (size_t i = 0; i < s.units.size(); ++i)
+        if (s.unit_moving(i)) return true;
+    return false;
+}
+} // namespace
+
+// 一条编队指令 → 所有选中单位都接到移动指令并各自落位（就近槽位）
+TEST(SimMove, GroupMoveOrdersAllSelectedUnits) {
+    sim::SimWorld s;
+    s.w = 64;
+    s.h = 64;
+    s.blocked.assign(64 * 64, 0);
+    const auto idx = spawn_three(s, 10, 10);
+    const size_t ordered = s.issue_move_group(idx, 40, 40);
+    EXPECT_EQ(ordered, 3u);
+    for (const size_t i : idx) {
+        EXPECT_EQ(s.units[i].order, sim::kOrderMove);
+        EXPECT_FALSE(s.units[i].path.empty()); // 都有路径（而不是只动第一辆）
+    }
+    int t = 0;
+    while (t < 3000 && any_moving(s)) {
+        s.tick();
+        ++t;
+    }
+    ASSERT_FALSE(any_moving(s)) << "编队未在限时内全部到位";
+    for (const size_t i : idx) {
+        const auto& u = s.units[i];
+        // 到位：落在目标格或其邻格槽位（编队散开）
+        EXPECT_LE(std::abs(u.col - 40) + std::abs(u.row - 40), 3);
+    }
+}
+
+// 绕障：一道带缺口的墙 → 编队路径不得穿墙，且全部到达
+TEST(SimMove, GroupMoveDetoursAroundWall) {
+    sim::SimWorld s;
+    s.w = 64;
+    s.h = 64;
+    s.blocked.assign(64 * 64, 0);
+    for (int r = 0; r < 40; ++r) s.blocked[r * 64 + 30] = 1; // 竖墙（下半留缺口）
+    const auto idx = spawn_three(s, 10, 10);
+    EXPECT_EQ(s.issue_move_group(idx, 40, 10), 3u);
+    for (const size_t i : idx) {
+        ASSERT_FALSE(s.units[i].path.empty());
+        for (const auto& c : s.units[i].path)
+            EXPECT_EQ(s.blocked[static_cast<size_t>(c.second) * 64 + c.first], 0)
+                << "路径不得经过阻挡格";
+    }
+    int t = 0;
+    while (t < 6000 && any_moving(s)) {
+        s.tick();
+        ++t;
+    }
+    ASSERT_FALSE(any_moving(s));
+    for (const size_t i : idx) {
+        EXPECT_EQ(s.units[i].row, 10) << "应经缺口绕行到目标行";
+        EXPECT_GE(s.units[i].col, 38);
+    }
+}
+
+// 目标格被建筑占据 → 单位走到旁边可走格停驻（不穿建筑、不再报"不可达"）
+TEST(SimMove, GroupMoveApproachesBlockedTargetCell) {
+    sim::SimWorld s;
+    s.w = 64;
+    s.h = 64;
+    s.blocked.assign(64 * 64, 0);
+    const auto idx = spawn_three(s, 10, 10);
+    for (int dr = -1; dr <= 1; ++dr)
+        for (int dc = -1; dc <= 1; ++dc) s.blocked[(30 + dr) * 64 + (30 + dc)] = 1;
+    EXPECT_EQ(s.issue_move_group(idx, 30, 30), 3u);
+    int t = 0;
+    while (t < 3000 && any_moving(s)) {
+        s.tick();
+        ++t;
+    }
+    for (const size_t i : idx) {
+        const auto& u = s.units[i];
+        EXPECT_EQ(s.blocked[static_cast<size_t>(u.row) * 64 + u.col], 0) << "不得停在障碍格上";
+        EXPECT_LE(std::abs(u.col - 30) + std::abs(u.row - 30), 3) << "应停在目标附近";
+    }
+}
+
 // ── 步兵 idle 动作（IdleActionFrequency 语义）────────────────────────────────
 
 TEST(SimIdle, TriggersInExpectedWindowAndIsDeterministic) {

@@ -118,6 +118,47 @@ void load_type_lists(StageApp& a) {
     }
 }
 
+// 地图寻路障碍（引擎格坐标逐格判定）：水面/悬崖/冰 + [Terrain] 树木/岩石 +
+// 墙/围栏/沙袋覆盖物（桥面、矿石/宝石、弹坑可通行）。围墙类覆盖物用 art 判定
+// （overlay_type_art_name → is_unit_palette_art，含 240-247 段的原版硬编码表），
+// BARB/WOOD/FENC/CYCL 等名字兜底。load_map 的 terrain_block 回调直接用它。
+std::function<bool(int, int)> make_terrain_block(const StageApp& a,
+                                                 const ra2r::assets::MapFile& mf) {
+    const char theater_letter = ra2r::render::wall_theater_letter(a.map.theater);
+    const std::string ext = ra2r::assets::theater_config(a.map.theater).ext;
+    // [Terrain] 对象（树木/岩石）：格 → 阻挡（原版树木/岩石阻挡地面通行）
+    std::vector<uint8_t> decor_block(static_cast<size_t>(mf.cell_w()) * mf.cell_h(), 0);
+    for (const auto& t : mf.terrain_objects())
+        if (t.cx >= 0 && t.cy >= 0 && t.cx < mf.cell_w() && t.cy < mf.cell_h())
+            decor_block[static_cast<size_t>(t.cy) * mf.cell_w() + t.cx] = 1;
+    return [&a, &mf, decor_block, theater_letter, ext](int x, int y) -> bool {
+        if (x < 0 || y < 0 || x >= mf.cell_w() || y >= mf.cell_h()) return false;
+        if (decor_block[static_cast<size_t>(y) * mf.cell_w() + x]) return true;
+        const auto& c = mf.cell(x, y);
+        if (!c.present) return false;
+        // 覆盖物：墙/围栏/沙袋 → 阻挡通行（桥面/矿石/宝石/弹坑不阻挡）
+        const uint8_t ot = mf.overlay_type(c.x, c.y);
+        if (ot != 0xFF) {
+            const auto it = a.overlay_names.find(ot);
+            const std::string name = it != a.overlay_names.end() ? it->second : std::string();
+            const std::string art =
+                ra2r::render::overlay_type_art_name(ot, name, ext, theater_letter);
+            if (ra2r::render::is_unit_palette_art(art)) return true;
+            if (name == "BARB" || name == "WOOD" || name == "FENC" || name == "CYCL")
+                return true; // 铁丝网/木栅栏等（原版硬编码表外的普通墙）
+            if (name.rfind("TROCK", 0) == 0 || name.rfind("ROCK", 0) == 0)
+                return true; // 岩石类覆盖物（TROCK01 等：不可跨越）
+        }
+        const auto* info = a.tileset.set_info(a.tileset.set_index_for(c.tile_id));
+        if (!info) return false;
+        const std::string& n = info->set_name;
+        if (n.find("Bridge") != std::string::npos || n.find("bridge") != std::string::npos)
+            return false;
+        return n.find("Water") != std::string::npos ||
+               n.find("Cliff") != std::string::npos || n.find("Ice") != std::string::npos;
+    };
+}
+
 // 生成/加载地图（模式 0=算法 1=平坦 2=加载）
 void generate_map(StageApp& a, std::string* error) {
     if (a.mode == 1) {
@@ -188,22 +229,15 @@ void generate_map(StageApp& a, std::string* error) {
                     return 50; // 原版每格 50 单位（M3 基础档，宝石价值待 M4）
                 return 0;
             },
-            [&](int x, int y) -> bool {
-                // 地形通过性：TileSet 分类名含 Water/Cliff/Ice 即不可通行
-                //（桥类除外；M3 基础档，MovementZones 精确语义待 M4）
-                if (x < 0 || y < 0 || x >= mf.cell_w() || y >= mf.cell_h()) return false;
-                const auto& c = mf.cell(x, y);
-                if (!c.present) return false;
-                const auto* info = a.tileset.set_info(a.tileset.set_index_for(c.tile_id));
-                if (!info) return false;
-                const std::string& n = info->set_name;
-                if (n.find("Bridge") != std::string::npos ||
-                    n.find("bridge") != std::string::npos)
-                    return false;
-                return n.find("Water") != std::string::npos ||
-                       n.find("Cliff") != std::string::npos ||
-                       n.find("Ice") != std::string::npos;
-            });
+            // 地形通过性：水面/悬崖/冰 + 树木/岩石 + 墙/围栏（见 make_terrain_block）
+            make_terrain_block(a, mf));
+        // 路网统计（自检诊断）：阻挡 = 水面/悬崖/冰 + 树木/岩石 + 墙/围栏 + 建筑地基
+        if (a.sim_active) {
+            int nav_blocked = 0;
+            for (const uint8_t v : a.sim.blocked) nav_blocked += v ? 1 : 0;
+            std::printf("[stage] 路网：不可通行格 %d（树木/岩石/墙/围栏/水面/建筑地基）\n",
+                        nav_blocked);
+        }
         // 配件动画标记（油井摇臂/工厂门/常驻配件/体素炮塔旋转的时钟由 sim
         // 推进；SHP 炮塔静态朝向不推进时钟，跟踪转向归 M5 战斗）
         for (auto& b : a.sim.buildings) {
@@ -1520,20 +1554,8 @@ bool start_skirmish(StageApp& a, std::string* error) {
                 return 50;
             return 0;
         },
-        [&](int x, int y) -> bool {
-            if (x < 0 || y < 0 || x >= mf.cell_w() || y >= mf.cell_h()) return false;
-            const auto& c = mf.cell(x, y);
-            if (!c.present) return false;
-            const auto* info = a.tileset.set_info(a.tileset.set_index_for(c.tile_id));
-            if (!info) return false;
-            const std::string& n = info->set_name;
-            if (n.find("Bridge") != std::string::npos ||
-                n.find("bridge") != std::string::npos)
-                return false;
-            return n.find("Water") != std::string::npos ||
-                   n.find("Cliff") != std::string::npos ||
-                   n.find("Ice") != std::string::npos;
-        });
+        // 地形通过性：水面/悬崖/冰 + 树木/岩石 + 墙/围栏（见 make_terrain_block）
+        make_terrain_block(a, mf));
     // 清掉地图自带对象（遭遇战从零开始）
     a.sim.buildings.clear();
     a.sim.units.clear();

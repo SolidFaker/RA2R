@@ -395,6 +395,20 @@ static int run(int argc, char** argv) {
             if (ev.type == SDL_EVENT_KEY_DOWN && (ev.key.key == SDLK_D) && a.sim_active) {
                 if (!deploy_selected_mcv(a)) pack_selected_building(a);
             }
+            // 停止（S）：多选全体清指令原地驻停
+            if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_S && a.sim_active &&
+                !a.selection.empty()) {
+                size_t stopped = 0;
+                for (const uint32_t sid : a.selection) {
+                    for (size_t i = 0; i < a.sim.units.size(); ++i)
+                        if (a.sim.units[i].id == sid) {
+                            if (a.sim.stop_unit(i)) ++stopped;
+                            break;
+                        }
+                }
+                std::fprintf(stderr, "[stage] 停止 %zu 单位\n", stopped);
+                a.dirty = true;
+            }
             // 编队：Ctrl+1..9 存队，1..9 取队（模拟模式）
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key >= SDLK_1 && ev.key.key <= SDLK_9 &&
                 a.sim_active) {
@@ -838,6 +852,8 @@ static int run(int argc, char** argv) {
                     }
                 }
                 if (hit >= 0) {
+                    const bool shift = ImGui::GetIO().KeyShift;
+                    const bool ctrl = ImGui::GetIO().KeyCtrl;
                     if (a.last_click_unit == hit &&
                         ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                         a.selection.clear();
@@ -846,8 +862,19 @@ static int run(int argc, char** argv) {
                                 a.sim.units[i].owner == a.sim.units[hit].owner)
                                 a.selection.push_back(a.sim.units[i].id);
                         }
+                    } else if (shift && !ctrl) {
+                        // Shift+左键：追加选中（多选）
+                        const uint32_t id = a.sim.units[hit].id;
+                        if (std::find(a.selection.begin(), a.selection.end(), id) ==
+                            a.selection.end())
+                            a.selection.push_back(id);
+                    } else if (ctrl && !shift) {
+                        // Ctrl+左键：从选择中移除
+                        const uint32_t id = a.sim.units[hit].id;
+                        a.selection.erase(std::remove(a.selection.begin(), a.selection.end(), id),
+                                          a.selection.end());
                     } else if (std::find(a.selection.begin(), a.selection.end(),
-                                          a.sim.units[hit].id) == a.selection.end() ||
+                                         a.sim.units[hit].id) == a.selection.end() ||
                                a.selection.size() != 1) {
                         a.selection.assign(1, a.sim.units[hit].id);
                     }
@@ -1003,20 +1030,17 @@ static int run(int argc, char** argv) {
                                                             static_cast<size_t>(hit_bld));
                         }
                     } else {
-                        // 移动指令：选中单位以点击格为中心散开（环形布点）
-                        static const int kSpread[16][2] = {
-                            {0, 0},  {1, 0},   {-1, 0},  {0, 1},   {0, -1},
-                            {1, 1},  {-1, 1},  {1, -1},  {-1, -1}, {2, 0},
-                            {-2, 0}, {0, 2},   {0, -2},  {2, 1},   {-2, 1},
-                            {2, -1},
-                        };
-                        for (size_t k = 0; k < a.selection.size(); ++k) {
-                            const int ui = uid_of(a.selection[k]);
-                            if (ui < 0) continue;
-                            const int tx = cx + kSpread[k % 16][0];
-                            const int ty = cy + kSpread[k % 16][1];
-                            a.sim.issue_move(static_cast<size_t>(ui), tx, ty);
+                        // 移动指令：编队流场——点击格 + 周围可走格为槽位，多单位
+                        // 一次流场构建后就近落位（不再逐单位散开到可能被挡的格）
+                        std::vector<size_t> idx;
+                        idx.reserve(a.selection.size());
+                        for (const uint32_t sid : a.selection) {
+                            const int ui = uid_of(sid);
+                            if (ui >= 0) idx.push_back(static_cast<size_t>(ui));
                         }
+                        const size_t n = a.sim.issue_move_group(idx, cx, cy);
+                        std::fprintf(stderr, "[stage] 编队移动 %zu 单位 → (%d,%d)：%zu 下达\n",
+                                     idx.size(), cx, cy, n);
                     }
                     a.dirty = true;
                     std::fprintf(stderr, "[stage] 指令: 单位%d 建筑%d shift=%d\n", hit_unit,
@@ -1054,10 +1078,13 @@ static int run(int argc, char** argv) {
                     const int x0 = std::min(c0x, c1x), x1 = std::max(c0x, c1x);
                     const int y0 = std::min(c0y, c1y), y1 = std::max(c0y, c1y);
                     a.selection.clear();
-                    for (const auto& u : a.sim.units)
-                        if (u.alive && u.col >= x0 && u.col <= x1 && u.row >= y0 &&
-                            u.row <= y1)
+                    for (const auto& u : a.sim.units) {
+                        if (!u.alive) continue;
+                        // 遭遇战只框选己方（Player）；沙盘（地图装载）模式不过滤
+                        if (a.sk.active && u.owner != "Player") continue;
+                        if (u.col >= x0 && u.col <= x1 && u.row >= y0 && u.row <= y1)
                             a.selection.push_back(u.id);
+                    }
                     std::fprintf(stderr, "[stage] 框选 (%d,%d)-(%d,%d) → %zu 单位\n", x0, y0,
                                  x1, y1, a.selection.size());
                 }

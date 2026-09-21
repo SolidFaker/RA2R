@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "ra2r/assets/map_file.h"
+#include "ra2r/sim/pathfind.h"
 
 namespace ra2r::sim {
 
@@ -181,10 +182,15 @@ struct SimWorld {
     // 指令：单位 idx 移动到格 (tc,tr)（为当前格/无路径时原地停止）。
     // 目标不可达返回 false 并保持原指令。
     bool issue_move(size_t unit_idx, int tc, int tr);
+    // **编队移动**：一组单位共享一次流场构建（目标 = 点击格 + 其周围可走格，
+    // 单位各自就近落位），返回成功下达（含就地驻停）的单位数。多选命令用。
+    size_t issue_move_group(const std::vector<size_t>& unit_idx, int tc, int tr);
     // 攻击敌方单位/建筑（进入射程后驻停开火）；护卫跟随友军单位
     bool issue_attack_unit(size_t unit_idx, size_t target_idx);
     bool issue_attack_building(size_t unit_idx, size_t building_idx);
     bool issue_guard(size_t unit_idx, size_t target_idx);
+    // 停止（S 键）：清指令/目标/路径，原地驻停
+    bool stop_unit(size_t unit_idx);
     // 追加巡逻点（首个点立即生效；到达末点后循环回第一点）
     void add_waypoint(size_t unit_idx, int tc, int tr);
 
@@ -262,11 +268,31 @@ struct SimWorld {
     bool issue_build(const std::string& owner, const std::string& type, int col, int row,
                      int fw, int fh, int cost, int build_total, int power);
 
-    // 内部：段推进（到达落格 + 余量进下一段）；朝目标格寻路（失败驻停）；
-    // 目标格被阻挡（建筑自身地基）时改选最近可达邻格（确定性固定邻序）
+    // ── 导航（多源流场；缓存按 目标格+槽位数+路网版本）──
+    // nav_version 在 blocked 变化时自增（建筑落成/移除/地图装载）；流场缓存
+    // 随之失效。blocked 变化必须调用 note_nav_change()（外部直接改 blocked 时，
+    // 如 skirmish::pack_building 解阻）。
+    uint32_t nav_version = 1;
+    struct FlowCacheEntry {
+        int tc = -1, tr = -1, slots = 0;
+        uint32_t version = 0;
+        FlowField field;
+    };
+    std::vector<FlowCacheEntry> flow_cache; // 最近使用（LRU：命中/插入移到末尾）
+    void note_nav_change() {
+        ++nav_version;
+        flow_cache.clear();
+    }
+    // 取（必要时构建）目标格 (tc,tr) 的流场：slots = 目标槽位数（1 = 仅目标格；
+    // 目标格被阻挡/槽位>1 时用"目标 + 周围可走格"作多源，单位就近落位）。
+    const FlowField* flow_for(int tc, int tr, int slots);
+    // 目标槽位表（确定性：目标格优先，再按环序取周围可走格；最多 slots 个）
+    std::vector<std::pair<int, int>> nav_sources(int tc, int tr, int slots) const;
+
+    // 内部：段推进（到达落格 + 余量进下一段）；朝目标格寻路（失败驻停）。
+    // 目标格被建筑挡住时由流场多源自动落到最近可达邻格（无需单独分支）。
     bool advance_segment(SimUnit& u);
     bool set_move_target(SimUnit& u, int tc, int tr);
-    bool set_move_target_near(SimUnit& u, int tc, int tr);
 
     // 单位是否在行进中（移动/追赶段）
     bool unit_moving(size_t i) const {

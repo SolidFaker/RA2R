@@ -229,6 +229,7 @@ uint32_t pack_building(SimWorld& world, size_t building_idx, const std::string& 
     for (const auto& c : b.footprint_cells)
         if (in_bounds(c.first, c.second))
             world.blocked[static_cast<size_t>(c.second) * world.w + c.first] = 0;
+    world.note_nav_change(); // 直接改 blocked → 让流场缓存失效
     const auto cell_has_unit = [&](int c, int r) {
         for (const auto& u : world.units)
             if (u.alive && u.col == c && u.row == r) return true;

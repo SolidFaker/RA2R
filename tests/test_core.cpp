@@ -183,13 +183,70 @@ TEST(PaletteLut, LevelsGetDarkerMonotonically) {
     }
 }
 
-// ── 8 向寻路（sim/pathfind）──────────────────────────────────────────────────
+// ── 寻路：多源流场（sim/pathfind）────────────────────────────────────────────
 
 namespace {
 std::vector<uint8_t> open_grid(int w, int h) { return std::vector<uint8_t>(w * h, 0); }
 
 // 注意：brick 格的 8 邻接依赖行奇偶（par = (min_s+min_d)&1）；测试统一 par=0。
 } // namespace
+
+// 流场：一次 Dijkstra 得代价场 + 每格"下一步"，沿场取路径到最近目标
+TEST(FlowField, BuildsCostsAndDirectionsTowardSources) {
+    const int w = 16, h = 16;
+    auto grid = open_grid(w, h);
+    sim::FlowField f;
+    ASSERT_TRUE(sim::build_flow_field(grid, w, h, 0, {{8, 8}}, f));
+    EXPECT_TRUE(f.valid);
+    EXPECT_EQ(f.cost[8 * w + 8], 0);
+    EXPECT_NE(f.goal[8 * w + 8], 0);
+    // 代价模型（与旧 A* 一致）：同行 5 列 = 5 个"屏幕水平"步 ×14 = 70；
+    // 同列 5 行可由轴向步（10）组合，代价 38 < 5×14（证明场走便宜的地图轴向组合）
+    EXPECT_EQ(f.cost[8 * w + 3], 70);
+    EXPECT_EQ(f.cost[8 * w + 13], 70);
+    EXPECT_EQ(f.cost[13 * w + 8], 38);
+    const auto p = sim::flow_path(f, 3, 8);
+    ASSERT_FALSE(p.empty());
+    EXPECT_EQ(p.back().first, 8);
+    EXPECT_EQ(p.back().second, 8);
+    EXPECT_TRUE(sim::flow_path(f, 8, 8).empty()); // 已在目标
+}
+
+// 多源：单位夹在两个目标之间时走向流场代价更低的那个（就近落位）
+TEST(FlowField, NearestSourceWinsForMultipleSources) {
+    const int w = 16, h = 16;
+    auto grid = open_grid(w, h);
+    sim::FlowField f;
+    ASSERT_TRUE(sim::build_flow_field(grid, w, h, 0, {{2, 8}, {14, 8}}, f));
+    EXPECT_EQ(f.cost[8 * w + 2], 0);
+    EXPECT_EQ(f.cost[8 * w + 14], 0);
+    const auto p = sim::flow_path(f, 6, 8);
+    ASSERT_FALSE(p.empty());
+    EXPECT_EQ(p.back().first, 2); // 距 (2,8) 4 格 < 距 (14,8) 8 格
+    EXPECT_EQ(p.back().second, 8);
+}
+
+// 阻挡：目标被阻挡则不入场（流场仍可从周围源构建）；被阻挡的起点可先迈出
+TEST(FlowField, BlockedCellsAreNotWalkedAndBlockedStartEscapes) {
+    const int w = 16, h = 16;
+    auto grid = open_grid(w, h);
+    grid[8 * w + 8] = 1; // 目标格被阻挡
+    sim::FlowField f;
+    EXPECT_FALSE(sim::build_flow_field(grid, w, h, 0, {{8, 8}}, f)); // 唯一源被挡
+    // 以旁边可走格为源：路径不得经过阻挡格
+    grid[8 * w + 8] = 1;
+    ASSERT_TRUE(sim::build_flow_field(grid, w, h, 0, {{7, 8}}, f));
+    const auto p = sim::flow_path(f, 12, 8);
+    ASSERT_FALSE(p.empty());
+    for (const auto& c : p) EXPECT_EQ(grid[c.second * w + c.first], 0);
+    // 起点被阻挡（卡进障碍）→ 仍能迈出并沿场前进
+    grid[12 * w + 8] = 1;
+    ASSERT_TRUE(sim::build_flow_field(grid, w, h, 0, {{7, 8}}, f));
+    const auto q = sim::flow_path(f, 12, 8);
+    ASSERT_FALSE(q.empty());
+    EXPECT_EQ(q.back().first, 7);
+    EXPECT_EQ(q.back().second, 8);
+}
 
 TEST(PathFind, SameCellReturnsTargetCell) {
     auto grid = open_grid(16, 16);
