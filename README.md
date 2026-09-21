@@ -78,15 +78,41 @@ ctest --test-dir build --output-on-failure      # 或直接跑 build\tests\ra2r_
 build\tests\ra2r_tests.exe --gtest_filter=SimMove.*   # 按套件过滤
 ```
 
-覆盖：INI 解析 / 等距几何 / 调色板 LUT / 8 向 A* 寻路；移动（8 向朝向·恒速直线·
-重下令·idle 调度）·建造（工期/电力/队列/修理出售）·经济（采矿卸货）·防御建筑攻击·
-确定性哈希；遭遇战（展开/科技树/阵营色）；资产解析（MIX/SHP/地图/rulesmd/VXL/HVA）；
-格式夹具（PAL/SHP/VXL/HVA/MIX/地图/INI/PCX/CSF/FNT/AUD，无需素材）；渲染功能
-（步兵朝向块序与速率·idle·Buildup 进度·体素光栅）。
+覆盖：INI 解析 / 等距几何 / 调色板 LUT / 多源流场寻路；移动（8 向朝向·恒速直线·
+重下令·编队移动·停止·idle 调度）·建造（工期/电力/队列/修理出售）·经济（采矿卸货）·
+防御建筑攻击·确定性哈希；遭遇战（展开/科技树/阵营色）；资产解析（MIX/SHP/地图/
+rulesmd/VXL/HVA）；格式夹具（PAL/SHP/VXL/HVA/MIX/地图/INI/PCX/CSF/FNT/AUD，无需素材）；
+渲染功能（步兵朝向块序与速率·idle·Buildup 进度·体素光栅）。
 
 内存安全三层检查已接入 CI（详见 `docs/DEBUGGING.md` §8）：ASan+UBSan（`-DRA2R_SANITIZE=address,undefined`）、
 cppcheck 与 clang-tidy（`tools/ci/cppcheck.sh`、`tools/ci/tidy.sh`）、编译期加固
 （默认 `RA2R_HARDEN=ON`：栈保护 + libstdc++ 边界断言 + `_FORTIFY_SOURCE`，全量 `-Wconversion -Wshadow` 零告警）。
+
+## 提交信息规范
+
+格式：`<类型>(<范围>): <标题>`——标题 ≤ 50 字、不加句号；正文用 `-` 分条说明
+**为什么/做了什么**（每行 ≤ 72 字），末尾可加 `验证：…`。**标题只写概要，细节进正文**，
+不要把所有内容堆成一行超长标题。启用模板：`git config commit.template .gitmessage`。
+
+| 类型 | 用途 |
+| --- | --- |
+| `feat` / `fix` | 新功能 / 缺陷修复 |
+| `refactor` / `perf` | 行为不变的重构 / 性能 |
+| `test` / `docs` | 测试 / 文档 |
+| `build` / `ci` / `chore` | 构建 / 流水线 / 杂项 |
+
+范围（可省略）：`sim` `render` `assets` `core` `ui` `stage` `tools` `ci` `docs`。
+
+```
+fix(sim): 编队重下令不再重置段内进度
+
+- issue_move_group 曾按"从当前格重新起步"布置路径（frac 归零、next 改回当前格）
+- 统一走 set_move_target_field：段中从当前段终点续接并保留 frac/prev/next
+- 回归：SimMove.GroupRepathKeepsMidSegmentProgress
+
+验证：111/111 gtest；三个场景截图 SHA256 跨 Windows/Linux 一致
+```
+
 
 ## 格式规格文档
 

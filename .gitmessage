@@ -1,0 +1,12 @@
+# 提交信息规范（git config commit.template .gitmessage 后生效；详见 README）
+#
+# <类型>(<范围>): <标题 ≤ 50 字，不加句号>
+#
+# 正文：用 "-" 分条，说明"为什么/做了什么"（每行 ≤ 72 字；细节进正文，
+# 不要把全部内容堆成一行超长标题）
+#
+# 验证：测试/确定性/CI 结果（可选）
+#
+# 类型：feat 新功能 | fix 缺陷 | refactor 重构 | perf 性能 | test 测试
+#       docs 文档 | build 构建 | ci 流水线 | chore 杂项
+# 范围：sim render assets core ui stage tools ci docs（可省略）
