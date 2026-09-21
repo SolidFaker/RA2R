@@ -291,8 +291,11 @@ struct SimWorld {
 
     // 内部：段推进（到达落格 + 余量进下一段）；朝目标格寻路（失败驻停）。
     // 目标格被建筑挡住时由流场多源自动落到最近可达邻格（无需单独分支）。
+    // set_move_target_field：已建好的流场 → 给单位布置路径（段中重下令从当前段
+    // 终点续接并保留 frac，避免"复位到格心"的闪现）；单/编队指令共用此逻辑。
     bool advance_segment(SimUnit& u);
     bool set_move_target(SimUnit& u, int tc, int tr);
+    bool set_move_target_field(SimUnit& u, const FlowField* f);
 
     // 单位是否在行进中（移动/追赶段）
     bool unit_moving(size_t i) const {

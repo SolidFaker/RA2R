@@ -194,6 +194,31 @@ TEST(SimMove, UnreachableTargetStopsWithoutMoving) {
     EXPECT_EQ(s.units[0].row, 32);
 }
 
+// 编队（多选）重下令：移动中的单位保留段内进度 —— 不再"闪现"弹回格心。
+// 回归：issue_move_group 曾对每个单位按"从当前格重新起步"布置路径（frac 归零、
+// next 改回当前格），段中反复改目的地时单位视觉上反复弹回。
+TEST(SimMove, GroupRepathKeepsMidSegmentProgress) {
+    sim::SimWorld s = make_world();
+    ASSERT_TRUE(s.issue_move(0, 50, 32));
+    int t = 0;
+    while (t < 30 && s.units[0].frac == 0) { // 推进到段中
+        s.tick();
+        ++t;
+    }
+    ASSERT_GT(s.units[0].frac, 0);
+    const int col = s.units[0].col, row = s.units[0].row;
+    const int nc = s.units[0].next_col, nr = s.units[0].next_row;
+    const int frac = s.units[0].frac;
+    // 反向改目的地（编队 API）：段起点/终点/进度都必须保持
+    EXPECT_EQ(s.issue_move_group({0}, 20, 32), 1u);
+    EXPECT_EQ(s.units[0].col, col);
+    EXPECT_EQ(s.units[0].row, row);
+    EXPECT_EQ(s.units[0].next_col, nc);
+    EXPECT_EQ(s.units[0].next_row, nr);
+    EXPECT_EQ(s.units[0].frac, frac);
+    EXPECT_FALSE(s.units[0].path.empty());
+}
+
 // 停止指令：清指令/路径并原地驻停（多选"停止"用）
 TEST(SimMove, StopUnitClearsOrderAndPath) {
     sim::SimWorld s = make_world();

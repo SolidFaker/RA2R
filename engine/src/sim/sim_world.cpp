@@ -349,16 +349,14 @@ const FlowField* SimWorld::flow_for(int tc, int tr, int slots) {
     return &flow_cache.back().field;
 }
 
-// 朝目标格寻路（失败 → 清路径并驻停，返回是否可达）。目标被挡住时由流场多源
-// 落到最近可走邻格；单位已在目标（槽位）上时视为到达。
-bool SimWorld::set_move_target(SimUnit& u, int tc, int tr) {
-    // 移动中重下令（反复右键改目标）：从当前段**终点**续接并保留段内进度 frac，
-    // 否则 frac 归零会让单位视觉上"复位到格心"（OpenRA 同思路：重寻路不改变
-    // 已走位置，只是替换剩余路径）。目标不可达时也先走完当前这一步再停。
+// 用已建好的流场给单位布置路径（失败 → 清路径并驻停，返回是否可达）。
+// 移动中重下令（反复右键改目标 / 编队反复改点）：从当前段**终点**续接并保留
+// 段内进度 frac，否则 frac 归零会让单位视觉上"复位到格心"（OpenRA 同思路：
+// 重寻路不改变已走位置，只是替换剩余路径）。目标不可达时也先走完当前这一步再停。
+bool SimWorld::set_move_target_field(SimUnit& u, const FlowField* f) {
     const bool mid = u.frac > 0 && (u.next_col != u.col || u.next_row != u.row);
     const int sc = mid ? u.next_col : u.col;
     const int sr = mid ? u.next_row : u.row;
-    const FlowField* f = flow_for(tc, tr, 1);
     const auto at_goal = [&](int c, int r) {
         if (!f) return false;
         const size_t i = static_cast<size_t>(r) * w + c;
@@ -389,7 +387,13 @@ bool SimWorld::set_move_target(SimUnit& u, int tc, int tr) {
     return true;
 }
 
+// 单目标移动：流场（目标 + 必要时周围可走格）→ 布置路径
+bool SimWorld::set_move_target(SimUnit& u, int tc, int tr) {
+    return set_move_target_field(u, flow_for(tc, tr, 1));
+}
+
 // 编队移动：一次流场构建，多单位各自沿场取路径；点击格被占则就近落位。
+// 每单位走 set_move_target_field（段中重下令保留进度，不再闪现回格心）。
 size_t SimWorld::issue_move_group(const std::vector<size_t>& unit_idx, int tc, int tr) {
     std::vector<size_t> valid;
     valid.reserve(unit_idx.size());
@@ -402,37 +406,7 @@ size_t SimWorld::issue_move_group(const std::vector<size_t>& unit_idx, int tc, i
         SimUnit& u = units[i];
         u.order = kOrderMove;
         u.target = -1;
-        const auto at_goal = [&](int c, int r) {
-            if (!f) return false;
-            const size_t gi = static_cast<size_t>(r) * w + c;
-            return gi < f->goal.size() && f->goal[gi] != 0;
-        };
-        if (!f || at_goal(u.col, u.row)) {
-            // 不可达/已在目标槽位：原地驻停（仍算指令已下达）
-            u.path.clear();
-            u.next_col = u.col;
-            u.next_row = u.row;
-            u.frac = 0;
-            ++ordered;
-            continue;
-        }
-        std::vector<std::pair<int, int>> path = flow_path(*f, u.col, u.row);
-        if (path.empty()) {
-            u.path.clear();
-            u.next_col = u.col;
-            u.next_row = u.row;
-            u.frac = 0;
-            ++ordered; // 不可达也计入（单位按指令驻停）
-            continue;
-        }
-        u.path = std::move(path);
-        u.prev_col = u.col;
-        u.prev_row = u.row;
-        u.next_col = u.path.front().first;
-        u.next_row = u.path.front().second;
-        u.path.erase(u.path.begin());
-        u.frac = 0;
-        u.dir = dir_of(u.col, u.row, u.next_col, u.next_row);
+        set_move_target_field(u, f); // 不可达/已在槽位 → 原地驻停（仍算指令已下达）
         ++ordered;
     }
     return ordered;
