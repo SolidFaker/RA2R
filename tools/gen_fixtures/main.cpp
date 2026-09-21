@@ -464,6 +464,7 @@ std::string make_art_ini() {
     return
         "[GAPOWR]\n"
         "Image=GGPOWR\n"
+        "Height=4\n"
         "Buildup=GAPOWRMK\n"
         "ActiveAnim=GAPOWR_A\n"
         "ActiveAnimDamaged=GAPOWR_AD\n"

@@ -111,6 +111,10 @@ bool RulesDB::load(const uint8_t* rulesmd, size_t rules_n, const uint8_t* artmd,
                 u.turret_y = std::atoi(rules_.get(name, "TurretAnimY", "0").c_str());
                 // TurretAnimZAdjust=（勒普顿；正=上抬）。屏幕 y 抬升量 = z·格高/256
                 u.turret_za = std::atoi(rules_.get(name, "TurretAnimZAdjust", "0").c_str());
+                // artmd Height=（单位：格）：建筑高度——选中虚线框高度 / 飞行单位
+                // 飞越升高的量；建筑节缺失时回退 Image= 美术节
+                u.height_cells =
+                    std::atoi(art_get_fallback(art_, name, u.image, "Height").c_str());
                 // 配件动画（artmd；键缺失时回退 Image= 美术节——如 ATESLA 的
                 // Image=GAPRIS，棱镜/摇臂等键在 [GAPRIS] 节）
                 u.anim = art_get_fallback(art_, name, u.image, "ActiveAnim");

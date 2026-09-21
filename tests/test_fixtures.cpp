@@ -251,6 +251,7 @@ TEST(Fixtures, RulesDbLoadsSyntheticIni) {
     EXPECT_EQ(powr->fh, 2);
     EXPECT_EQ(powr->image, "GGPOWR");
     EXPECT_EQ(powr->buildup, "GAPOWRMK"); // 来自 artmd 片段
+    EXPECT_EQ(powr->height_cells, 4);     // artmd Height=（单位：格）
     EXPECT_FALSE(powr->anim.empty());     // ActiveAnim=GAPOWR_A
     EXPECT_EQ(powr->anim_dmg, "GAPOWR_AD");
     EXPECT_EQ(powr->anim_two, "GAPOWR_B");

@@ -209,6 +209,7 @@ TEST(SimMove, GroupRepathKeepsMidSegmentProgress) {
     const int col = s.units[0].col, row = s.units[0].row;
     const int nc = s.units[0].next_col, nr = s.units[0].next_row;
     const int frac = s.units[0].frac;
+    const int n2c = s.units[0].next2_col, n2r = s.units[0].next2_row;
     // 反向改目的地（编队 API）：段起点/终点/进度都必须保持
     EXPECT_EQ(s.issue_move_group({0}, 20, 32), 1u);
     EXPECT_EQ(s.units[0].col, col);
@@ -216,6 +217,9 @@ TEST(SimMove, GroupRepathKeepsMidSegmentProgress) {
     EXPECT_EQ(s.units[0].next_col, nc);
     EXPECT_EQ(s.units[0].next_row, nr);
     EXPECT_EQ(s.units[0].frac, frac);
+    // 渲染转角平滑的控制点也必须不变（否则当前段的画面会跳变＝闪现）
+    EXPECT_EQ(s.units[0].next2_col, n2c);
+    EXPECT_EQ(s.units[0].next2_row, n2r);
     EXPECT_FALSE(s.units[0].path.empty());
 }
 
@@ -252,6 +256,91 @@ bool any_moving(const sim::SimWorld& s) {
 
 
 // ── 格占用：一格 1 载具 或 ≤3 步兵（子格 0..2 等腰三角）──────────────────────
+
+// 动态障碍：前车占住目标格 → 被挡单位立即绕行到相邻格（不是原地等位死等）
+TEST(SimMove, BlockedUnitReplansImmediatelyAroundDynamicObstacle) {
+    sim::SimWorld s;
+    s.w = 64;
+    s.h = 64;
+    s.blocked.assign(64 * 64, 0);
+    EXPECT_GT(s.spawn_unit("Player", "HTNK", 1, 20, 20, 0, {}, false, 0, 68), 0u); // A（先到）
+    EXPECT_GT(s.spawn_unit("Player", "HTNK", 1, 10, 20, 0, {}, false, 0, 68), 0u); // B（后到）
+    ASSERT_TRUE(s.issue_move(0, 30, 20));
+    ASSERT_TRUE(s.issue_move(1, 30, 20)); // 同一目标格 → A 占住后 B 必须另找落点
+    int t = 0;
+    while (t < 1200 && any_moving(s)) {
+        s.tick();
+        ++t;
+    }
+    ASSERT_FALSE(any_moving(s));
+    EXPECT_EQ(s.units[0].col, 30); // A 占住目标
+    EXPECT_EQ(s.units[0].row, 20);
+    EXPECT_TRUE(s.units[1].col != 30 || s.units[1].row != 20) << "B 不得与 A 同格";
+    EXPECT_LE(std::abs(s.units[1].col - 30) + std::abs(s.units[1].row - 20), 3)
+        << "B 应绕行到目标附近";
+}
+
+// 绕行重规划保留段内进度：被动态障碍挡住而重算路径时，不弹回格心（无闪现）
+TEST(SimMove, ReplanKeepsMidSegmentProgressNoSnapBack) {
+    sim::SimWorld s;
+    s.w = 64;
+    s.h = 64;
+    s.blocked.assign(64 * 64, 0);
+    EXPECT_GT(s.spawn_unit("Player", "HTNK", 1, 30, 20, 0, {}, false, 0, 68), 0u); // A
+    EXPECT_GT(s.spawn_unit("Player", "HTNK", 1, 16, 20, 0, {}, false, 0, 68), 0u); // B
+    ASSERT_TRUE(s.issue_move(0, 30, 20));
+    ASSERT_TRUE(s.issue_move(1, 30, 20)); // A 先占住 → B 半路被挡后重算
+    int t = 0;
+    bool replanned = false;
+    while (t < 1200 && any_moving(s)) {
+        const int bc = s.units[1].col, br = s.units[1].row;
+        const int bnc = s.units[1].next_col, bnr = s.units[1].next_row;
+        const int bpc = s.units[1].prev_col, bpr = s.units[1].prev_row;
+        s.tick();
+        ++t;
+        const auto& b = s.units[1];
+        // 重规划的特征：同一格内 next 被换掉（正常跨格时 col 会变）
+        if (!replanned && b.col == bc && b.row == br &&
+            (b.next_col != bnc || b.next_row != bnr)) {
+            replanned = true;
+            EXPECT_GT(b.frac, 0) << "重算后不得弹回格心（frac 应为投影保留值）";
+            EXPECT_EQ(b.prev_col, bpc) << "来向应保留（转角平滑用）";
+            EXPECT_EQ(b.prev_row, bpr);
+        }
+    }
+    ASSERT_FALSE(any_moving(s));
+    EXPECT_TRUE(replanned) << "应发生一次绕行重规划";
+    EXPECT_TRUE(s.units[1].col != 30 || s.units[1].row != 20) << "B 绕行到别的格";
+}
+
+// 重下令不改变渲染位置：段中改目的地后，单位绘制像素位置逐像素不变
+//（不闪现）；其后一帧只按步长前进。
+TEST(SimMove, ReorderKeepsRenderedPixelPosition) {
+    sim::SimWorld s;
+    s.w = 64;
+    s.h = 64;
+    s.blocked.assign(64 * 64, 0);
+    EXPECT_GT(s.spawn_unit("Player", "HTNK", 1, 10, 20, 0, {}, false, 0, 68), 0u);
+    EXPECT_GT(s.spawn_unit("Player", "HTNK", 1, 10, 24, 0, {}, false, 0, 68), 0u);
+    EXPECT_EQ(s.issue_move_group({0, 1}, 40, 22), 2u);
+    int t = 0;
+    while (t < 20 && s.units[0].frac == 0) { // 推进到段中
+        s.tick();
+        ++t;
+    }
+    ASSERT_GT(s.units[0].frac, 0);
+    int o0x = 0, o0y = 0;
+    sim::unit_render_offset(s.units[0], o0x, o0y);
+    EXPECT_EQ(s.issue_move_group({0, 1}, 30, 44), 2u); // 段中重下令
+    int o1x = 0, o1y = 0;
+    sim::unit_render_offset(s.units[0], o1x, o1y);
+    EXPECT_EQ(o1x, o0x) << "重下令后绘制位置不得变化";
+    EXPECT_EQ(o1y, o0y);
+    s.tick(); // 下一帧：位移应 ≤ 一步（而非弹回格心）
+    int o2x = 0, o2y = 0;
+    sim::unit_render_offset(s.units[0], o2x, o2y);
+    EXPECT_LE(std::abs(o2x - o1x) + std::abs(o2y - o1y), 12);
+}
 
 // 生成规则：同格最多 3 步兵（子格各异）；载具与步兵互斥、载具独占整格
 TEST(SimUnitCell, ThreeInfantryPerCellAndVehicleExclusive) {

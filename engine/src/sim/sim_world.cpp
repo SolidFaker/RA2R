@@ -269,10 +269,10 @@ bool SimWorld::advance_segment(SimUnit& u) {
         if (free_subcell(u.next_col, u.next_row, u.kind, u.id) < 0) {
             u.frac -= inc; // 撤销本帧增量：停在格内原位置（不越界进占格）
             if (u.frac < 0) u.frac = 0;
-            if (++u.wait_ticks >= 30) {
-                u.wait_ticks = 0;
-                replan_around_units(u);
-            }
+            // 动态障碍（车辆/人物）：**立即**为被挡单位重算绕行路径（首帧就重算）；
+            // 仍被挡则每 5 帧再试（避免每帧一次全图 Dijkstra 拖慢逻辑帧）
+            if (u.wait_ticks == 0 || u.wait_ticks % 5 == 0) replan_around_units(u);
+            ++u.wait_ticks;
             break;
         }
         u.wait_ticks = 0;
@@ -296,6 +296,8 @@ bool SimWorld::advance_segment(SimUnit& u) {
         u.next_col = u.path.front().first;
         u.next_row = u.path.front().second;
         u.path.erase(u.path.begin());
+        u.next2_col = u.path.empty() ? -1 : u.path.front().first;
+        u.next2_row = u.path.empty() ? -1 : u.path.front().second;
         u.dir = dir_of(u.col, u.row, u.next_col, u.next_row);
         const int len_new = seg_len(u.next_col - u.col, u.next_row - u.row);
         if (len_new != len_old) {
@@ -304,6 +306,50 @@ bool SimWorld::advance_segment(SimUnit& u) {
         }
     }
     return true;
+}
+
+// 单位渲染屏幕偏移（格内插值 + 转角平滑；与 stage 绘制同源，供测试复用）。
+// 二次 B 样条：控制点 = 相邻格中心（prev/col/next/next2），缺失的邻居按
+// 直线外推 → 直线段精确、转弯处自然切角、端点落在格心。
+void unit_render_offset(const SimUnit& u, int& off_x, int& off_y) {
+    const auto cell_px = [](int c, int r) {
+        return std::pair<int, int>{c * 60 + (r & 1) * 30, r * 15};
+    };
+    const std::pair<int, int> tp = cell_px(u.col, u.row);
+    const std::pair<int, int> np = cell_px(u.next_col, u.next_row);
+    const int tx = tp.first, ty = tp.second;
+    const int nx = np.first, ny = np.second;
+    off_x = ((nx - tx) * u.frac) / kFracMax;
+    off_y = ((ny - ty) * u.frac) / kFracMax;
+    if (u.next_col == u.col && u.next_row == u.row) return; // 无活动段
+    std::pair<int, int> qp = cell_px(u.prev_col, u.prev_row);
+    if (u.prev_col == u.col && u.prev_row == u.row) { // 无上一段 → 直线外推
+        qp = {2 * tx - nx, 2 * ty - ny};
+    }
+    std::pair<int, int> wp{0, 0};
+    if (u.next2_col >= 0) { // 段终点之后那格：重算路径时保持不变
+        wp = cell_px(u.next2_col, u.next2_row);
+    } else if (!u.path.empty()) { // 回退：取剩余路径首格
+        wp = cell_px(u.path.front().first, u.path.front().second);
+    } else { // 路径终点 → 直线外推（端点落在格心）
+        wp = {2 * nx - tx, 2 * ny - ty};
+    }
+    const int m0x = qp.first + tx, m0y = qp.second + ty;
+    const int m1x = tx + nx, m1y = ty + ny;
+    const int m2x = nx + wp.first, m2y = ny + wp.second;
+    const long long f = u.frac; // 0..255（kFracMax=256）
+    long long sx2 = 0, sy2 = 0; // 2× 平滑位置
+    if (f < 128) { // 前半段：过当前格心（控制点 tx,ty）
+        const long long v = f + 128, ca = 256 - v, cb = v;
+        sx2 = (ca * ca * m0x + 2 * ca * cb * (2LL * tx) + cb * cb * m1x) / 65536;
+        sy2 = (ca * ca * m0y + 2 * ca * cb * (2LL * ty) + cb * cb * m1y) / 65536;
+    } else { // 后半段：过下一格心（控制点 nx,ny）
+        const long long v = f - 128, ca = 256 - v, cb = v;
+        sx2 = (ca * ca * m1x + 2 * ca * cb * (2LL * nx) + cb * cb * m2x) / 65536;
+        sy2 = (ca * ca * m1y + 2 * ca * cb * (2LL * ny) + cb * cb * m2y) / 65536;
+    }
+    off_x = static_cast<int>((sx2 - 2LL * tx) / 2);
+    off_y = static_cast<int>((sy2 - 2LL * ty) / 2);
 }
 
 // 目标槽位表：目标格优先，再按固定环序取周围可走格（确定性）；最多 slots 个。
@@ -390,6 +436,12 @@ bool SimWorld::set_move_target_field(SimUnit& u, const FlowField* f, int tc, int
         (f && !start_at_goal) ? flow_path(*f, sc, sr) : std::vector<std::pair<int, int>>{};
     if (mid) {
         u.path = std::move(path); // 当前段（col/next/frac/prev）保持不动
+        // 转角平滑控制点：本段原有值优先保持（画面不跳变）；
+        // 原先没有（路径即将走完）时用新路径的下一格
+        if (u.next2_col < 0 && !u.path.empty()) {
+            u.next2_col = u.path.front().first;
+            u.next2_row = u.path.front().second;
+        }
         return !u.path.empty() || start_at_goal;
     }
     if (path.empty()) {
@@ -405,6 +457,8 @@ bool SimWorld::set_move_target_field(SimUnit& u, const FlowField* f, int tc, int
     u.next_col = u.path.front().first;
     u.next_row = u.path.front().second;
     u.path.erase(u.path.begin());
+    u.next2_col = u.path.empty() ? -1 : u.path.front().first;
+    u.next2_row = u.path.empty() ? -1 : u.path.front().second;
     u.frac = 0;
     u.dir = dir_of(u.col, u.row, u.next_col, u.next_row);
     return true;
@@ -444,14 +498,31 @@ bool SimWorld::replan_around_units(SimUnit& u) {
     }
     std::vector<std::pair<int, int>> path = flow_path(f, u.col, u.row);
     if (path.empty()) return false;
+    // **不弹回格心**：段终点被占才重算，此时把单位已走的屏幕位移投影到
+    // 新段方向上作为新 frac（方向接近时位置几乎不变；硬转弯也≤半个格），
+    // prev 保留（来向）交给渲染端做转角平滑，col 不动 —— 无闪现。
+    const int n2c = path.front().first, n2r = path.front().second;
+    const auto pix_delta = [&](int c0, int r0, int c1, int r1) {
+        return std::pair<int, int>{ (c1 - c0) * 60 + ((r1 & 1) - (r0 & 1)) * 30,
+                                     (r1 - r0) * 15 };
+    };
+    const auto [d1x, d1y] = pix_delta(u.col, u.row, u.next_col, u.next_row);
+    const auto [d2x, d2y] = pix_delta(u.col, u.row, n2c, n2r);
+    const long long num = static_cast<long long>(d1x) * d2x +
+                          static_cast<long long>(d1y) * d2y;
+    const long long den = static_cast<long long>(d2x) * d2x +
+                          static_cast<long long>(d2y) * d2y;
+    int frac2 = den > 0 ? static_cast<int>(num * u.frac / den) : 0;
+    frac2 = std::clamp(frac2, 0, kFracMax - 1);
     u.path = std::move(path);
-    u.prev_col = u.col;
-    u.prev_row = u.row;
-    u.next_col = u.path.front().first;
-    u.next_row = u.path.front().second;
     u.path.erase(u.path.begin());
-    u.frac = 0;
+    u.next_col = n2c;
+    u.next_row = n2r;
+    u.next2_col = u.path.empty() ? -1 : u.path.front().first;
+    u.next2_row = u.path.empty() ? -1 : u.path.front().second;
+    u.frac = frac2;
     u.dir = dir_of(u.col, u.row, u.next_col, u.next_row);
+    u.wait_ticks = 0;
     return true;
 }
 
@@ -1277,6 +1348,8 @@ uint64_t SimWorld::visual_hash() const {
         mix(u.frac);
         mix(u.dir);
         mix(u.subcell);
+        mix((static_cast<uint64_t>(u.next2_col + 4096) << 32) |
+            static_cast<uint64_t>(u.next2_row + 4096));
         mix(u.hp);
         mix(u.alive ? 1ull : 0ull);
         mix(u.order);

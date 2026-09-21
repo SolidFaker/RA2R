@@ -150,7 +150,12 @@ void ensure_rules(StageApp& a);
 // sim 单位/步兵 → 渲染对象（含段内像素插值偏移），附加到 objects_out 尾部
 void append_sim_objects(StageApp& a, std::vector<ra2r::render::PlacedObject>& objects_out);
 
-// 选中单位描画标记（绿色格框，直接写画布）
+// 选中建筑的地基菱形描边（画在**对象之前**，被建筑本体遮挡）
+void draw_building_selection_underlay(StageApp& a, const ra2r::render::IsometricGrid& grid,
+                                      int bw, int bh, int ox, int oy,
+                                      std::vector<uint8_t>& canvas);
+
+// 选中单位描画标记（绿色格框 + 目的地虚线，直接写画布）
 void draw_selection_markers(StageApp& a, const ra2r::render::IsometricGrid& grid, int bw,
                             int bh, int ox, int oy, std::vector<uint8_t>& canvas);
 

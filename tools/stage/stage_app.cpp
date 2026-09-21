@@ -425,6 +425,9 @@ void render_all(StageApp& a, std::string* error) {
     const auto t1 = std::chrono::steady_clock::now();
     // ── 动态层：静态层拷贝 + 对象 + 标记/特效 ──
     std::vector<uint8_t> canvas = a.static_canvas; // 一次整图拷贝（56MB 级 ≈ 数毫秒）
+    // 选中建筑的**地基菱形描边画在对象之前**：被建筑本体遮挡，只露出底座轮廓
+    //（此前画在对象之后，绿色菱形盖住了建筑）
+    if (a.sim_active) draw_building_selection_underlay(a, grid, bw, bh, ox, oy, canvas);
     std::vector<ra2r::render::PlacedObject> objs;
     if (a.sim_active) {
         append_sim_objects(a, objs);
@@ -648,47 +651,9 @@ void append_sim_objects(StageApp& a, std::vector<ra2r::render::PlacedObject>& ob
         if (!u.alive) continue;
         int cx = u.col, cy = u.row;
         if (cx < 0 || cy < 0 || cx >= a.map.w || cy >= a.map.h) continue;
-        // 段内插值像素偏移 + 转角平滑（参考 OpenRA Move/MoveFirstHalf：世界坐标
-        // 直线推进 + 转角圆弧；本引擎用二次 B 样条，控制点 = 相邻格中心、缺失的
-        // 邻居按直线外推 → 直线段精确、转弯处自然切角、路径端点仍精确落在格心）
-        int tx, ty, nx, ny;
-        grid.cell_to_pixel(u.col, u.row, tx, ty);
-        grid.cell_to_pixel(u.next_col, u.next_row, nx, ny);
-        int off_x = ((nx - tx) * u.frac) / ra2r::sim::kFracMax;
-        int off_y = ((ny - ty) * u.frac) / ra2r::sim::kFracMax;
-        const bool seg = u.next_col != u.col || u.next_row != u.row;
-        if (seg) {
-            int qx, qy;
-            grid.cell_to_pixel(u.prev_col, u.prev_row, qx, qy);
-            if (u.prev_col == u.col && u.prev_row == u.row) { // 无上一段 → 直线外推
-                qx = 2 * tx - nx;
-                qy = 2 * ty - ny;
-            }
-            int wx, wy;
-            if (!u.path.empty()) { // 下一段的再下一格（真实邻居）
-                grid.cell_to_pixel(u.path.front().first, u.path.front().second, wx, wy);
-            } else { // 路径终点 → 直线外推（端点落在格心）
-                wx = 2 * nx - tx;
-                wy = 2 * ny - ty;
-            }
-            // 中点用 2× 坐标（整数精确），二次式算出后再 /2 → 直线段零抖动
-            const int m0x = qx + tx, m0y = qy + ty;
-            const int m1x = tx + nx, m1y = ty + ny;
-            const int m2x = nx + wx, m2y = ny + wy;
-            const long long f = u.frac; // 0..255（kFracMax=256）
-            long long sx2, sy2;         // 2× 平滑位置
-            if (f < 128) { // 前半段：过当前格心（控制点 tx,ty）
-                const long long v = f + 128, ca = 256 - v, cb = v;
-                sx2 = (ca * ca * m0x + 2 * ca * cb * (2LL * tx) + cb * cb * m1x) / 65536;
-                sy2 = (ca * ca * m0y + 2 * ca * cb * (2LL * ty) + cb * cb * m1y) / 65536;
-            } else { // 后半段：过下一格心（控制点 nx,ny）
-                const long long v = f - 128, ca = 256 - v, cb = v;
-                sx2 = (ca * ca * m1x + 2 * ca * cb * (2LL * nx) + cb * cb * m2x) / 65536;
-                sy2 = (ca * ca * m1y + 2 * ca * cb * (2LL * ny) + cb * cb * m2y) / 65536;
-            }
-            off_x = static_cast<int>((sx2 - 2LL * tx) / 2);
-            off_y = static_cast<int>((sy2 - 2LL * ty) / 2);
-        }
+        // 单位屏幕偏移（格内插值 + 转角平滑；与选中标记/目的地连线共用）
+        int off_x = 0, off_y = 0;
+        ra2r::sim::unit_render_offset(u, off_x, off_y);
         ra2r::render::PlacedObject po{};
         po.kind = u.kind;
         po.id = u.type;
@@ -707,9 +672,56 @@ void append_sim_objects(StageApp& a, std::vector<ra2r::render::PlacedObject>& ob
         po.anim_clock = static_cast<uint32_t>(a.sim.logic_ticks);
         po.idle_kind = u.idle_kind;
         po.idle_start = u.idle_start;
-        // 子格（步兵 0..2 等腰三角分布）：仅驻停时生效，移动中画在格心
-        po.subcell = po.moving ? 0 : u.subcell;
+        // 子格（步兵 0..2 等腰三角分布）：移动中也保持偏移
+        //（否则同格 3 人贴在一起看上去只有 1 个）
+        po.subcell = u.subcell;
         objects_out.push_back(po);
+    }
+}
+
+// 选中建筑的地基菱形描边（**画在对象之前**：被建筑本体遮挡，只露出底座轮廓；
+// 旧画序在对象之后，绿色菱形会盖住建筑）
+void draw_building_selection_underlay(StageApp& a, const IsometricGrid& grid, int bw, int bh,
+                                      int ox, int oy, std::vector<uint8_t>& canvas) {
+    if (a.sel_building_id == 0) return;
+    const auto line = [&](int x0, int y0, int x1, int y1) {
+        const int dx = std::abs(x1 - x0), dy = std::abs(y1 - y0);
+        const int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+        int err = dx - dy;
+        for (;;) {
+            if (x0 >= 0 && y0 >= 0 && x0 < bw && y0 < bh) {
+                uint8_t* d = canvas.data() + (static_cast<size_t>(y0) * bw + x0) * 4;
+                d[0] = 0;
+                d[1] = 255;
+                d[2] = 80;
+                d[3] = 255;
+            }
+            if (x0 == x1 && y0 == y1) break;
+            const int e2 = 2 * err;
+            if (e2 > -dy) {
+                err -= dy;
+                x0 += sx;
+            }
+            if (e2 < dx) {
+                err += dx;
+                y0 += sy;
+            }
+        }
+    };
+    for (const auto& b : a.sim.buildings) {
+        if (b.id != a.sel_building_id || !b.alive) continue;
+        const int hgt = static_cast<int>(a.map.cell(b.col, b.row).height);
+        for (const auto& c : b.footprint_cells) {
+            int px, py;
+            grid.cell_to_pixel(c.first, c.second, px, py);
+            const int cx0 = ox + px + grid.tile_w / 2;
+            const int cy0 = oy + py + grid.tile_h / 2 - hgt * 15;
+            line(cx0, cy0 - 15, cx0 + 30, cy0);
+            line(cx0 + 30, cy0, cx0, cy0 + 15);
+            line(cx0, cy0 + 15, cx0 - 30, cy0);
+            line(cx0 - 30, cy0, cx0, cy0 - 15);
+        }
+        break;
     }
 }
 
@@ -752,7 +764,11 @@ void draw_selection_markers(StageApp& a, const IsometricGrid& grid, int bw, int 
         const ra2r::sim::SimUnit& u = a.sim.units[si];
         int px, py;
         grid.cell_to_pixel(u.col, u.row, px, py);
-        // 单位所在格菱形描边
+        // 单位屏幕位置（格心 + 段内插值/转角平滑偏移）——连线起点用它，
+        // 而不是格心（移动中的连线要从单位本体出发）
+        int off_x = 0, off_y = 0;
+        ra2r::sim::unit_render_offset(u, off_x, off_y);
+        // 单位所在格菱形描边（画在格心，保持格栅观感）
         const int cx0 = ox + px + grid.tile_w / 2;
         const int cy0 = oy + py + grid.tile_h / 2 -
                         static_cast<int>(a.map.cell(u.col, u.row).height) * 15;
@@ -760,6 +776,7 @@ void draw_selection_markers(StageApp& a, const IsometricGrid& grid, int bw, int 
         line(cx0 + 30, cy0, cx0, cy0 + 15);
         line(cx0, cy0 + 15, cx0 - 30, cy0);
         line(cx0 - 30, cy0, cx0, cy0 - 15);
+        const int ux = cx0 + off_x, uy = cy0 + off_y; // 单位实际屏幕位置
         // 目的地指示：当前位置 → 本次命令分配的目的地格（编队时各人一条）
         if (u.dest_col >= 0 && (u.dest_col != u.col || u.dest_row != u.row) &&
             u.dest_col < a.map.w && u.dest_row < a.map.h) {
@@ -776,10 +793,10 @@ void draw_selection_markers(StageApp& a, const IsometricGrid& grid, int bw, int 
                 d[2] = b;
                 d[3] = 255;
             };
-            const int steps = std::max(std::abs(tx - cx0), std::abs(ty - cy0)) / 3 + 1;
+            const int steps = std::max(std::abs(tx - ux), std::abs(ty - uy)) / 3 + 1;
             for (int s = 1; s < steps; ++s) { // 虚线示意（不遮住路径观感）
-                const int x = cx0 + (tx - cx0) * s / steps;
-                const int y = cy0 + (ty - cy0) * s / steps;
+                const int x = ux + (tx - ux) * s / steps;
+                const int y = uy + (ty - uy) * s / steps;
                 dot(x, y, 255, 255, 255);
             }
             dot(tx, ty, 255, 255, 255); // 目的地格心标记
@@ -788,24 +805,7 @@ void draw_selection_markers(StageApp& a, const IsometricGrid& grid, int bw, int 
             dot(tx + 1, ty + 1, 255, 255, 255);
         }
     }
-    // 选中建筑：地基格菱形描边（与单位同款绿框；防御建筑选中后可用右键指定目标）
-    if (a.sel_building_id != 0) {
-        for (const auto& b : a.sim.buildings) {
-            if (b.id != a.sel_building_id || !b.alive) continue;
-            const int hgt = static_cast<int>(a.map.cell(b.col, b.row).height);
-            for (const auto& c : b.footprint_cells) {
-                int px, py;
-                grid.cell_to_pixel(c.first, c.second, px, py);
-                const int cx0 = ox + px + grid.tile_w / 2;
-                const int cy0 = oy + py + grid.tile_h / 2 - hgt * 15;
-                line(cx0, cy0 - 15, cx0 + 30, cy0);
-                line(cx0 + 30, cy0, cx0, cy0 + 15);
-                line(cx0, cy0 + 15, cx0 - 30, cy0);
-                line(cx0 - 30, cy0, cx0, cy0 - 15);
-            }
-            break;
-        }
-    }
+    // 选中建筑的地基描边在 draw_building_selection_underlay（画在对象之前）
 }
 
 void draw_sim_fx(StageApp& a, const IsometricGrid& grid, int bw, int bh, int ox, int oy,
@@ -892,7 +892,7 @@ const ra2r::assets::ShpLayout& anim_layout(StageApp& a, const std::string& art,
 // 建筑血条：受损建筑常显、选中建筑必显；画在本体精灵上方（顶格锚点 − 本体帧高）
 void draw_building_hp_bars(StageApp& a, const ra2r::render::IsometricGrid& grid, int bw, int bh,
                            int ox, int oy, std::vector<uint8_t>& canvas) {
-    (void)grid; // 血条绘制不需要格几何（保留参数以统一绘制函数签名）
+    // grid 用于包围盒高度（Height= × tile_h）
     const auto put = [&](int x, int y, uint8_t r, uint8_t g, uint8_t b) {
         if (x < 0 || y < 0 || x >= bw || y >= bh) return;
         uint8_t* d = canvas.data() + (static_cast<size_t>(y) * bw + x) * 4;
@@ -938,9 +938,11 @@ void draw_building_hp_bars(StageApp& a, const ra2r::render::IsometricGrid& grid,
             put(cx, cy + th + 1, on ? hbr : ebr, on ? hbg : ebg, on ? hbb : ebb); // 底面
         }
     };
-    // 立方体边棱（选中建筑）：在地基的北/东/西三个角各画 x、y、z 三条棱线
-    //（x/y = 一格格边（屏幕 (30,15)/(−30,15)）；z = 格子垂直方向的一半 15px）。
-    const auto corner_gizmo = [&](int px, int py) {
+    // 立方体边棱（仅选中建筑）：围绕**包围盒立方体的顶部三个角**
+    // （北/东/西 顶面角）各画三条棱：沿顶面的两条边（方向指向
+    // 相邻顶角 = 向立方体**内部**延伸）+ 垂直向下的 z 棱（半格高 15px）。
+    // 顶面 = 地基菱形上移建筑高度（锚 → 精灵可见顶边）。
+    const auto corner_gizmo = [&](int px, int py, int e1x, int e1y, int e2x, int e2y) {
         const uint8_t lr = 245, lg = 245, lb = 255;
         const auto line = [&](int x1, int y1, int x2, int y2) {
             const int dx = std::abs(x2 - x1), sx = x1 < x2 ? 1 : -1;
@@ -949,7 +951,7 @@ void draw_building_hp_bars(StageApp& a, const ra2r::render::IsometricGrid& grid,
             for (;;) {
                 put(x, y, lr, lg, lb);
                 if (x == x2 && y == y2) break;
-                const int e2 = 2 * err;
+                const int e2 = err * 2;
                 if (e2 >= dy) {
                     err += dy;
                     x += sx;
@@ -960,64 +962,73 @@ void draw_building_hp_bars(StageApp& a, const ra2r::render::IsometricGrid& grid,
                 }
             }
         };
-        line(px, py, px + 30, py + 15);   // +x 格边
-        line(px, py, px - 30, py + 15);   // +y 格边
-        line(px, py, px, py - 15);        // +z（半格高）
+        line(px, py, px + e1x, py + e1y); // 顶面边 1（指向相邻顶角）
+        line(px, py, px + e2x, py + e2y); // 顶面边 2
+        line(px, py, px, py + 15);        // z：向下（进盒子内部）
     };
     for (const auto& b : a.sim.buildings) {
         if (!b.alive || b.under_construction) continue;
         if (b.col < 0 || b.row < 0 || b.col >= a.map.w || b.row >= a.map.h) continue;
         const bool sel = b.id == a.sel_building_id;
-        // 立方体边棱：仅选中建筑（与血条一致的选中反馈；地基四角取可见的北/东/西）
-        if (sel) {
-            std::vector<std::pair<int, int>> cells;
-            a.sim.foundation_cells(b.col, b.row, b.fw, b.fh, cells);
-            // 北角 = 锚格（地图空间顶格）顶顶点——多格同行时 bbox 同 y，
-            // 必须用锚格而不是"扫最小 y 的格"
-            const int anchor_x = ox + b.col * 60 + (b.row & 1) * 30 + 30;
-            const int anchor_y = oy + b.row * 15;
-            int west_x = INT_MAX, west_y = 0;
-            int east_x = INT_MIN, east_y = 0;
-            for (const auto& c : cells) {
-                int px, py;
-                grid.cell_to_pixel(c.first, c.second, px, py);
-                const int x = ox + px, y = oy + py; // 格包围盒左上（60×30 菱形）
-                if (x < west_x) {                   // 西角 = 最左格的左顶点
-                    west_x = x;
-                    west_y = y + 15;
-                }
-                if (x + 60 > east_x) { // 东角 = 最右格的右顶点
-                    east_x = x + 60;
-                    east_y = y + 15;
-                }
-            }
-            corner_gizmo(anchor_x, anchor_y);
-            corner_gizmo(east_x, east_y);
-            corner_gizmo(west_x, west_y);
-        }
-        if (b.hp >= b.max_hp && !sel) continue; // 满血且未选中 → 不画血条
         const int ax = ox + b.col * 60 + (b.row & 1) * 30 + 30;
         const int ay = oy + b.row * 15 - static_cast<int>(a.map.cell(b.col, b.row).height) * 15;
+        // 本体精灵可见顶边（与 object_layer 建筑 blit 同款几何：锚在精灵底边）
+        const auto* ut = a.rules.unit(b.type);
         int top = ay - 70; // 兜底：本体精灵高 ≈60~120px
-        if (const auto* u = a.rules.unit(b.type)) {
-            const std::string art = resolve_art(a, u->image, ".SHP");
+        if (ut) {
+            const std::string art = resolve_art(a, ut->image, ".SHP");
             if (const auto* raw = load_file(a, art + ".SHP")) {
                 ra2r::assets::ShpFile shp;
                 std::string err;
                 if (shp.open(raw->data(), raw->size(), &err) && shp.frame_count() > 0) {
-                    // 与 object_layer 建筑 blit 同款几何：锚点在精灵**底边**
-                    // （by = ay + fy − canvas_h/2），故可见顶边 = 该式，不能再按
-                    // "ay − 帧高"算（会把血条画到建筑上方一百多像素的空中）
                     const auto& f0 = shp.frame(0);
                     top = ay + f0.y - static_cast<int>(shp.height()) / 2;
                 }
             }
         }
-        // 血条长度随地基放大（2×2 → 60，4×4 → 88）；自建筑左上向右上斜
-        const int len = 32 + (b.fw + b.fh) * 7;
+        // 包围盒高度：artmd `Height=`（单位：**整格高**），
+        // 正交投影下屏幕高度取一半 → 每格 **15px**
+        //（kHeightLevelPx，与地形高度级同一压缩比）；
+        // 无 Height= 时回退精灵可见高。
+        const int box_h = (ut && ut->height_cells > 0)
+                              ? ut->height_cells * ra2r::render::kHeightLevelPx
+                              : std::max(0, ay - top);
+        // 地基四角（北 = 锚格顶顶点；西 = 最左格左顶点；
+        // 东 = 最右格右顶点）：三棱线与血条**共用同一套坐标**
+        std::vector<std::pair<int, int>> cells;
+        a.sim.foundation_cells(b.col, b.row, b.fw, b.fh, cells);
+        int west_x = INT_MAX, west_y = 0;
+        int east_x = INT_MIN, east_y = 0;
+        for (const auto& c : cells) {
+            int px, py;
+            grid.cell_to_pixel(c.first, c.second, px, py);
+            const int x = ox + px, y = oy + py; // 格包围盒左上（60×30 菱形）
+            if (x < west_x) {
+                west_x = x;
+                west_y = y + 15;
+            }
+            if (x + 60 > east_x) {
+                east_x = x + 60;
+                east_y = y + 15;
+            }
+        }
+        const int anchor_y = oy + b.row * 15; // 北角基础高（与三棱线一致）
+        const int ny = anchor_y - box_h;      // 顶面北角
+        const int wy = west_y - box_h;        // 顶面西角
+        const int ey = east_y - box_h;        // 顶面东角
+        if (sel) {
+            corner_gizmo(ax, ny, 30, 15, -30, 15);   // 北顶角 → 东/西顶角
+            corner_gizmo(east_x, ey, -30, -15, -30, 15); // 东顶角 → 北/南顶角
+            corner_gizmo(west_x, wy, 30, -15, 30, 15);   // 西顶角 → 北/南顶角
+        }
+        if (b.hp >= b.max_hp && !sel) continue; // 满血且未选中 → 不画血条
+        // 血条：长度 = **建筑边长**——血条压在顶面西北棱上，
+        // 该棱长 = fh 格 × 一格棱 30px（屏幕 x 跨度）；左端对齐顶面
+        // **西顶角**，沿棱线向右上、抬起 8px（2px 避开三棱线）
+        const int len = b.fh * 30;
         const int th = 5;
-        const int x0 = ax - len / 2;
-        const int y0 = top - 8; // 左端（最低点）在建筑顶上 8px
+        const int x0 = west_x;
+        const int y0 = wy - 8;
         const int fill = std::max(1, b.hp * len / std::max(1, b.max_hp));
         iso_bar(x0, y0, len, th, fill);
     }

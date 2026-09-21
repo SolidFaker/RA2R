@@ -47,6 +47,9 @@ struct UnitTypeDef {
     int capacity = 20; // 采矿容量（Harvester=yes 时）
     // 建筑
     int fw = 1, fh = 1;          // Foundation（地图格空间）
+    // artmd Height=（单位：格）：建筑高度——选中时白色虚线框的高度，以及飞行单位
+    //（基洛夫空艇/火箭飞行兵等）飞越该建筑时需要升高的量。0 = 未提供（回退精灵可见高）
+    int height_cells = 0;
     int cost = 300;
     int power = 0;               // >0 产电、<0 耗电（rulesmd Power=）
     bool bib = false;            // rulesmd Bib=yes → <image>BB.SHP 底座平台

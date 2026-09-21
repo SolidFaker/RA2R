@@ -65,6 +65,10 @@ struct SimUnit {
     int speed = 68; // 每逻辑帧 frac 增量（行步基准 ≈4 格/秒 @15Hz）
     // 上一格（渲染转角平滑用；= 当前格表示该段是路径起点）
     int prev_col = 0, prev_row = 0;
+    // 渲染转角平滑的“下一段再下一格”（= 段终点之后那格；-1 = 无）：
+    // **重算路径时不改**，当前段的渲染位置不跳变（不闪现）；
+    // 跨格后才换成新路径的下一格。
+    int next2_col = -1, next2_row = -1;
     // 移动目的地（格；-1 = 无）。段边界等位超时后用它在"把占位单位当临时障碍"
     // 的路网上绕行重规划（单位互相堵住时的出路）。
     int dest_col = -1, dest_row = -1;
@@ -232,7 +236,8 @@ struct SimWorld {
     // 单格是否可建造（放置预览逐格标红/绿用）：图内、非地形/建筑阻挡、无
     // 覆盖物（桥梁/围墙等）、无矿石、无单位（ignore_unit_id 例外同上）。
     bool cell_buildable(int col, int row, uint32_t ignore_unit_id = 0) const;
-    // 格占用规则（原版）：一格 = 1 载具 **或** 最多 3 个步兵（子格 0..2，渲染
+
+// 格占用规则（原版）：一格 = 1 载具 **或** 最多 3 个步兵（子格 0..2，渲染
     // 为格内等腰三角分布）。返回 kind 单位在 (col,row) 可用的子格号；
     // -1 = 该格已满/被异类占据。ignore_unit_id：忽略自身（重定位/展开校验用）。
     int free_subcell(int col, int row, int kind, uint32_t ignore_unit_id = 0) const;
@@ -324,5 +329,10 @@ struct SimWorld {
     // 进度 + 爆炸；不含对画面无影响的量（如矿车 cargo）。确定性遍历。
     uint64_t visual_hash() const;
 };
+
+    // 单位渲染屏幕偏移（格内插值 + 转角平滑；与 stage 绘制同源）：
+// 实际绘制位置 = 格心 + (off_x, off_y)。依赖 col/next/frac/prev/next2
+// 五个量——重算路径时这些量不变，当前段画面不跳变。
+void unit_render_offset(const SimUnit& u, int& off_x, int& off_y);
 
 } // namespace ra2r::sim
