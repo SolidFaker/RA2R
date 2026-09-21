@@ -1,138 +1,69 @@
 # RA2R — 《尤里的复仇》现代引擎复刻
 
-**RA2R** 是用现代 C++ 与工程实践从零重新实现的 *Command & Conquer: Red Alert 2 — Yuri's Revenge* 游戏引擎。
-引擎代码全部自研（洁净室逆向）；游戏素材不随仓库分发，运行需玩家自备正版游戏拷贝。
+**RA2R** 是用现代 C++ 从零重新实现的 *Command & Conquer: Red Alert 2 — Yuri's Revenge*
+引擎（洁净室逆向，代码全部自研）。游戏素材不随仓库分发，运行需玩家自备正版游戏拷贝。
 
 > English: A from-scratch, clean-room reimplementation of the Red Alert 2 / Yuri's Revenge engine.
-> Asset pipelines decode the original game files; no copyrighted assets are distributed.
 
 ## 当前进度
 
-- **M0 资产管线**：MIX（含 Blowfish 加密解密）、SHP、VXL、PAL、PCX、TMP 地形瓦片、AUD/WAV、CSF、HVA、LCW/LZO 压缩、地图（`.map/.yrm/.yro/.mmx`）、剧场瓦片集、规则库（rulesmd/artmd）——全部格式有实测驱动规格文档。
-- **M1/M2 渲染与地图**：等距地形渲染（雷达色小地图、高度/悬崖/斜坡）、对象放置层（建筑帧语义/受损切换/建造动画、载具体素、步兵 SHP）、迷雾与探明、地图场景合成；`tools/mapview`、`tools/stage` 可视化。
-- **M3 模拟**：15Hz 确定性模拟世界（建筑/单位/步兵、矿车采集循环、建筑建造、路径寻路 A*、阵营经济、基础开火与爆炸）、1v1 演示、多标签步进调试。
-- **工具链**：`mixdump`（MIX 解包/递归查找/扫描）、`shpview`、`vxlview`、`mapview`、`stage`、`assetcheck`、`cachebuild`、`smoketest`。
-
-### mixbrowser — MIX 资源浏览器
-
-打开一个 `.mix` 或整个游戏目录（自动批量加载为标签页），支持：
-
-- **条目浏览**：排序、名称查找（内置规则 INI 推导名库 + 可选 XCC 社区名库）、嵌套 MIX 下钻、右键导出到文件 / 复制 ID；
-- **预览**：SHP（帧动画/调色板自动识别/缩放）、VXL（可交互旋转 3D 光栅 + HVA 动画）、PAL 色板、PCX 位图（24 位与 8 位索引色）、TMP 地形瓦片（帧/缩放/地形色板）、地图（雷达色小地图）、文本/十六进制、CSF 字串；
-- **音视频**：AUD/WAV 播放（内置解码器）、BIK 视频（FFmpeg 运行时绑定，可选）；
-- **体验**：耗时操作（调色盘池搜索/地图扫描/地图缩略图）后台线程执行，底部状态栏实时进度；HiDPI 缩放、中文路径支持。
+- **资产管线**：MIX（Blowfish 解密）、SHP/VXL/HVA/PAL/PCX/TMP、AUD/WAV、CSF、LCW/LZO、
+  地图（`.map/.yrm/.yro/.mmx`）、剧场瓦片集、rulesmd/artmd 规则库。
+- **渲染与地图**：等距地形（高度/悬崖/斜坡/雷达色小地图）、对象层（建筑帧语义、建造动画、
+  载具体素、步兵序列）、迷雾、地图场景合成。
+- **模拟**：15Hz 确定性世界——建造/电力/经济/采矿、防御建筑、多单位编队（流场寻路 +
+  格占用约束）、1v1 遭遇战（基地车展开、科技树、阵营色）。
+- **工具**：`mixbrowser`（MIX 浏览/预览/导出）、`mixdump`、`shpview`、`vxlview`、`mapview`、
+  `stage`（模拟/渲染测试台）、`assetcheck`、`cachebuild`、`smoketest`。
 
 ## 构建
 
-工具链：**Windows + MinGW-w64 GCC 13+**（开发用 GCC 16.2）、**Linux + GCC 13+**（Arch/Debian 均可）、CMake 3.25+、Ninja/Make。
+Windows（MinGW-w64 GCC 13+）：SDL3 3.4.x 解压后由 `CMAKE_PREFIX_PATH` 指定
+（ImGui/GoogleTest 已 vendored，无需额外安装）。
 
 ```powershell
-# 1. 准备依赖
-#    SDL3（3.4.x，MinGW 版）：https://github.com/libsdl-org/SDL/releases —
-#    解压后在配置时通过 CMAKE_PREFIX_PATH 指定；
-#    ImGui 与 GoogleTest 为 vendored（third_party/），无需额外安装
-
-# 2. 配置与构建
 cmake -B build -G "MinGW Makefiles" -DCMAKE_PREFIX_PATH=<SDL3 目录>
 cmake --build build -j
-
-# 3.（可选）社区名称库与调研参考（XCC 名库等 GPLv3 数据，不入库）
-powershell -File tools/fetch_references.ps1
-
-# 4.（可选）BIK 视频播放需 FFmpeg 8.x 运行时
-#    把 avutil-60/avcodec-62/avformat-62/swscale-9/swresample-6.dll
-#    放到 mixbrowser.exe 同目录（头文件已 vendored，运行时动态加载）。
 ```
 
-Linux（SDL3 用发行版包即可；`-municode/-mwindows/-static` 与 SDL3.dll 拷贝自动禁用）：
+Linux（GCC 13+，SDL3 用发行版包）：
 
 ```bash
-sudo pacman -S cmake ninja sdl3      # Arch；Debian/Ubuntu: libsdl3-dev
+sudo pacman -S cmake ninja sdl3        # Debian/Ubuntu：libsdl3-dev
 cmake -B build -G Ninja -DRA2R_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j
 ```
 
-游戏目录定位（两个平台同一套逻辑，大小写不敏感）：
-注册表（仅 Windows）→ 环境变量 `RA2R_GAME_DIR` → exe 相对路径（`build/tools/../../Yuri` 等）
-→ 当前目录。Linux 上目录名/文件名大小写不限（`yuri/RA2MD.MIX` 也能识别）。
-
-运行各工具：
-
-```powershell
-build\tools\mixbrowser.exe <mix 或游戏目录>     # 资源浏览器
-build\tools\mixdump.exe <mix> list              # MIX 清单/提取/查找
-build\tools\mapview.exe <地图文件>              # 地图查看
-build\tools\stage.exe --test                    # 模拟/渲染测试台
-```
+- 游戏目录：设 `RA2R_GAME_DIR=<正版安装目录>` 即可（不设则按 exe 相对路径/注册表探测；
+  目录与文件名大小写不敏感）。
+- 可选：社区名称库 `tools/fetch_references.ps1`；BIK 视频播放需 FFmpeg 8.x DLL 放到 exe 同目录。
+- 运行：`build\tools\mixbrowser.exe <mix 或游戏目录>`、`build\tools\stage.exe --test`。
 
 ## 测试
 
-框架：**GoogleTest**（vendored 于 `third_party/googletest`，离线可构建）。
-分两层——纯逻辑用例不依赖游戏素材；资产/渲染功能用例需要游戏目录
-（默认 `I:\ai\RA2R\Yuri`，可用环境变量 `RA2R_GAME_DIR` 覆盖；缺失时自动 SKIP）。
-
 ```powershell
-cmake -B build -G "MinGW Makefiles" -DCMAKE_PREFIX_PATH=<SDL3 目录> -DRA2R_BUILD_TESTS=ON
+cmake -B build -DRA2R_BUILD_TESTS=ON
 cmake --build build --target ra2r_tests -j
-ctest --test-dir build --output-on-failure      # 或直接跑 build\tests\ra2r_tests.exe
-build\tests\ra2r_tests.exe --gtest_filter=SimMove.*   # 按套件过滤
+ctest --test-dir build --output-on-failure
 ```
 
-覆盖：INI 解析 / 等距几何 / 调色板 LUT / 多源流场寻路；移动（8 向朝向·恒速直线·
-重下令·编队移动·停止·idle 调度）·建造（工期/电力/队列/修理出售）·经济（采矿卸货）·
-防御建筑攻击·确定性哈希；遭遇战（展开/科技树/阵营色）；资产解析（MIX/SHP/地图/
-rulesmd/VXL/HVA）；格式夹具（PAL/SHP/VXL/HVA/MIX/地图/INI/PCX/CSF/FNT/AUD，无需素材）；
-渲染功能（步兵朝向块序与速率·idle·Buildup 进度·体素光栅）。
+GoogleTest（已 vendored，离线可构建）；缺少游戏素材时资产/渲染用例自动 SKIP。
+CI 覆盖 Linux/Windows 构建与测试、ASan+UBSan、cppcheck/clang-tidy（见 docs/DEBUGGING.md §8）。
 
-内存安全三层检查已接入 CI（详见 `docs/DEBUGGING.md` §8）：ASan+UBSan（`-DRA2R_SANITIZE=address,undefined`）、
-cppcheck 与 clang-tidy（`tools/ci/cppcheck.sh`、`tools/ci/tidy.sh`）、编译期加固
-（默认 `RA2R_HARDEN=ON`：栈保护 + libstdc++ 边界断言 + `_FORTIFY_SOURCE`，全量 `-Wconversion -Wshadow` 零告警）。
-
-## 提交信息规范
-
-格式：`<类型>(<范围>): <标题>`——标题 ≤ 50 字、不加句号；正文用 `-` 分条说明
-**为什么/做了什么**（每行 ≤ 72 字），末尾可加 `验证：…`。**标题只写概要，细节进正文**，
-不要把所有内容堆成一行超长标题。启用模板：`git config commit.template .gitmessage`。
-
-| 类型 | 用途 |
-| --- | --- |
-| `feat` / `fix` | 新功能 / 缺陷修复 |
-| `refactor` / `perf` | 行为不变的重构 / 性能 |
-| `test` / `docs` | 测试 / 文档 |
-| `build` / `ci` / `chore` | 构建 / 流水线 / 杂项 |
-
-范围（可省略）：`sim` `render` `assets` `core` `ui` `stage` `tools` `ci` `docs`。
-
-```
-fix(sim): 编队重下令不再重置段内进度
-
-- issue_move_group 曾按"从当前格重新起步"布置路径（frac 归零、next 改回当前格）
-- 统一走 set_move_target_field：段中从当前段终点续接并保留 frac/prev/next
-- 回归：SimMove.GroupRepathKeepsMidSegmentProgress
-
-验证：111/111 gtest；三个场景截图 SHA256 跨 Windows/Linux 一致
-```
-
-
-## 格式规格文档
-
-洁净室逆向、本机实测驱动，见 [docs/formats/](docs/formats/)：
-
-mix（含 Blowfish/RSA 密钥派生）、shp、vxl、map、pcx、tmp、aud、csf、fnt、hva、palettes、
-[skirmish](docs/formats/skirmish.md)（遭遇战流程：出生点/基地车展开/科技树/阵营色）等。
-
-## 架构与规划
+## 文档
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/PLAN.md](docs/PLAN.md) | 项目规划、架构决策、里程碑 M0–M9、风险 |
-| [docs/REFERENCE.md](docs/REFERENCE.md) | 社区项目、格式文档与工具索引 |
-| [docs/design/](docs/design/) | 代码组织约定、缓存层设计 |
-| [docs/DEBUGGING.md](docs/DEBUGGING.md) | 调试方法、踩坑记录（含 SHP 阴影/帧段、HVA、NewTheater 剧场代号等实测勘误） |
+| [docs/formats/](docs/formats/) | 格式规格：mix/shp/vxl/map/pcx/tmp/aud/csf/fnt/hva/palettes 等 |
+| [docs/PLAN.md](docs/PLAN.md) | 项目规划、架构决策、里程碑 M0–M9 |
+| [docs/REFERENCE.md](docs/REFERENCE.md) | 社区项目、参考资料与工具索引 |
+| [docs/DEBUGGING.md](docs/DEBUGGING.md) | 调试方法、实测勘误与踩坑记录 |
+
+提交信息规范见 `.gitmessage`（`git config commit.template .gitmessage` 启用）。
 
 ## 许可与法律
 
-- 本仓库代码以 **MIT** 许可发布（见 [LICENSE](LICENSE)）。
-- 仓库不包含、不分发任何 EA 版权素材（SHP/VXL/音频/文本/地图等）——运行引擎需玩家自持正版
-  《尤里的复仇》并指定其安装目录；游戏安装目录、解包产物均不入库。
-- XCC 社区名称库等第三方参考数据（GPLv3）经 `tools/fetch_references.ps1` 获取，仅存本地，不入库。
+- 本仓库代码以 **MIT** 发布（见 [LICENSE](LICENSE)）。
+- 不包含、不分发任何 EA 版权素材（SHP/VXL/音频/文本/地图等）；运行需自持正版
+  《尤里的复仇》并指定其安装目录。
+- 第三方参考数据（如 XCC 名称库，GPLv3）经 `tools/fetch_references.ps1` 获取，仅存本地，不入库。
