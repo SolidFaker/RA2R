@@ -206,6 +206,7 @@ bool SimWorld::load_map(const assets::MapFile& map,
         su.kind = 1;
         su.col = su.next_col = u.cx;
         su.row = su.next_row = u.cy;
+        su.subcell = 0; // 载具占整格
         su.dir = u.dir / 32;
         su.hp = u.health;
         weapon(u.id, su.weapon);
@@ -222,6 +223,7 @@ bool SimWorld::load_map(const assets::MapFile& map,
         su.kind = 2;
         su.col = su.next_col = n.cx;
         su.row = su.next_row = n.cy;
+        su.subcell = n.subcell <= 4 ? n.subcell : 0; // 地图原始子格（0..4 五格位）
         su.dir = n.dir / 32;
         su.idle_rng = su.id * 1664525u + 12345u; // 步兵 idle 动作随机流播种
         su.hp = n.health;
@@ -261,6 +263,19 @@ bool SimWorld::advance_segment(SimUnit& u) {
     // 跨段时余量按新旧段长度换算（frac 是"段内百分比"，同余量=同屏幕距离）。
     u.frac += inc;
     while (u.frac >= kFracMax) {
+        // 格占用门禁（原版：一格 1 载具 或 ≤3 步兵）：目标格已满 → 停在段
+        // 边界等位（frac 钳在 255，下一逻辑帧重试）；等位超时（30 帧）→ 把
+        // 占位单位当临时障碍绕行重规划，避免互相堵死。
+        if (free_subcell(u.next_col, u.next_row, u.kind, u.id) < 0) {
+            u.frac -= inc; // 撤销本帧增量：停在格内原位置（不越界进占格）
+            if (u.frac < 0) u.frac = 0;
+            if (++u.wait_ticks >= 30) {
+                u.wait_ticks = 0;
+                replan_around_units(u);
+            }
+            break;
+        }
+        u.wait_ticks = 0;
         const int rem = u.frac - kFracMax; // 旧段余量（旧段单位）
         u.prev_col = u.col; // 渲染转角平滑用（上一格 = 本段起点）
         u.prev_row = u.row;
@@ -271,6 +286,10 @@ bool SimWorld::advance_segment(SimUnit& u) {
             u.frac = 0; // 到达终点：清段内余量（否则 unit_moving 恒真、走路动画停不下来）
             u.next_col = u.col;
             u.next_row = u.row;
+            if (u.kind == 2) { // 步兵落位到格内空闲子格（等腰三角分布）
+                const int cs = free_subcell(u.col, u.row, 2, u.id);
+                if (cs >= 0) u.subcell = static_cast<uint8_t>(cs);
+            }
             if (u.order == kOrderMove) u.order = kOrderNone; // 移动完成 → 空闲
             break;
         }
@@ -290,33 +309,34 @@ bool SimWorld::advance_segment(SimUnit& u) {
 // 目标槽位表：目标格优先，再按固定环序取周围可走格（确定性）；最多 slots 个。
 // 目标被建筑/水面挡住或编队人数多于 1 时，单位按流场就近落到这些槽位。
 std::vector<std::pair<int, int>> SimWorld::nav_sources(int tc, int tr, int slots) const {
+    return nav_sources_in(blocked, tc, tr, slots);
+}
+
+std::vector<std::pair<int, int>> SimWorld::nav_sources_in(const std::vector<uint8_t>& nav,
+                                                          int tc, int tr, int slots) const {
     std::vector<std::pair<int, int>> out;
     if (slots < 1) slots = 1;
     if (slots > 16) slots = 16;
     const auto walkable = [&](int c, int r) {
         if (c < 0 || r < 0 || c >= w || r >= h) return false;
         const size_t i = static_cast<size_t>(r) * w + c;
-        return i >= blocked.size() || blocked[i] == 0;
+        return i >= nav.size() || nav[i] == 0;
     };
     if (walkable(tc, tr)) out.emplace_back(tc, tr);
     static const int kRing[16][2] = {{1, 0},  {-1, 0},  {0, 1},   {0, -1}, {1, 1},   {-1, 1},
                                      {1, -1}, {-1, -1}, {2, 0},   {-2, 0}, {0, 2},   {0, -2},
                                      {2, 1},  {-2, 1},  {2, -1},  {-2, -1}};
-    for (int rad = 0; rad < 4 && static_cast<int>(out.size()) < slots; ++rad) {
-        for (const auto& d : kRing) {
-            if (static_cast<int>(out.size()) >= slots) break;
-            const int c = tc + d[0], r = tr + d[1];
-            if (!walkable(c, r)) continue;
-            bool dup = false;
-            for (const auto& e : out)
-                if (e.first == c && e.second == r) {
-                    dup = true;
-                    break;
-                }
-            if (!dup) out.emplace_back(c, r);
-        }
-        // 环序表已覆盖 ±2 半径；rad 只用于"多圈时继续加长"，这里固定一张表
-        break;
+    for (const auto& d : kRing) {
+        if (static_cast<int>(out.size()) >= slots) break;
+        const int c = tc + d[0], r = tr + d[1];
+        if (!walkable(c, r)) continue;
+        bool dup = false;
+        for (const auto& e : out)
+            if (e.first == c && e.second == r) {
+                dup = true;
+                break;
+            }
+        if (!dup) out.emplace_back(c, r);
     }
     return out;
 }
@@ -353,7 +373,10 @@ const FlowField* SimWorld::flow_for(int tc, int tr, int slots) {
 // 移动中重下令（反复右键改目标 / 编队反复改点）：从当前段**终点**续接并保留
 // 段内进度 frac，否则 frac 归零会让单位视觉上"复位到格心"（OpenRA 同思路：
 // 重寻路不改变已走位置，只是替换剩余路径）。目标不可达时也先走完当前这一步再停。
-bool SimWorld::set_move_target_field(SimUnit& u, const FlowField* f) {
+bool SimWorld::set_move_target_field(SimUnit& u, const FlowField* f, int tc, int tr) {
+    u.dest_col = tc;
+    u.dest_row = tr;
+    u.wait_ticks = 0;
     const bool mid = u.frac > 0 && (u.next_col != u.col || u.next_row != u.row);
     const int sc = mid ? u.next_col : u.col;
     const int sr = mid ? u.next_row : u.row;
@@ -389,7 +412,47 @@ bool SimWorld::set_move_target_field(SimUnit& u, const FlowField* f) {
 
 // 单目标移动：流场（目标 + 必要时周围可走格）→ 布置路径
 bool SimWorld::set_move_target(SimUnit& u, int tc, int tr) {
-    return set_move_target_field(u, flow_for(tc, tr, 1));
+    return set_move_target_field(u, flow_for(tc, tr, 1), tc, tr);
+}
+
+// 段边界被单位堵住超时 → 绕行重规划：把"对本人不可入"的单位格当临时障碍
+// （原 blocked + 占位单位），目标槽位也只取临时路网上的可走格。**从当前格**
+// 重规划（段终点被占，不能从段终点续接），成功则清掉旧段、从格心重新起步。
+bool SimWorld::replan_around_units(SimUnit& u) {
+    if (u.dest_col < 0) return false;
+    std::vector<uint8_t> nav = blocked;
+    for (const auto& o : units) {
+        if (!o.alive || o.id == u.id) continue;
+        if (free_subcell(o.col, o.row, u.kind, u.id) >= 0) continue; // 该格对本人可入
+        const size_t i = static_cast<size_t>(o.row) * w + o.col;
+        if (i < nav.size()) nav[i] = 1;
+    }
+    const std::vector<std::pair<int, int>> slots = nav_sources_in(nav, u.dest_col, u.dest_row, 1);
+    if (slots.empty()) return false;
+    FlowField f;
+    if (!build_flow_field(nav, w, h, (min_s + min_d) & 1, slots, f)) return false;
+    const auto at_goal = [&](int c, int r) {
+        const size_t i = static_cast<size_t>(r) * w + c;
+        return i < f.goal.size() && f.goal[i] != 0;
+    };
+    if (at_goal(u.col, u.row)) { // 已站到槽位（段终点被占而已）→ 原地驻停
+        u.path.clear();
+        u.next_col = u.col;
+        u.next_row = u.row;
+        u.frac = 0;
+        return true;
+    }
+    std::vector<std::pair<int, int>> path = flow_path(f, u.col, u.row);
+    if (path.empty()) return false;
+    u.path = std::move(path);
+    u.prev_col = u.col;
+    u.prev_row = u.row;
+    u.next_col = u.path.front().first;
+    u.next_row = u.path.front().second;
+    u.path.erase(u.path.begin());
+    u.frac = 0;
+    u.dir = dir_of(u.col, u.row, u.next_col, u.next_row);
+    return true;
 }
 
 // 编队移动：一次流场构建，多单位各自沿场取路径；点击格被占则就近落位。
@@ -406,7 +469,7 @@ size_t SimWorld::issue_move_group(const std::vector<size_t>& unit_idx, int tc, i
         SimUnit& u = units[i];
         u.order = kOrderMove;
         u.target = -1;
-        set_move_target_field(u, f); // 不可达/已在槽位 → 原地驻停（仍算指令已下达）
+        set_move_target_field(u, f, tc, tr); // 不可达/已在槽位 → 原地驻停（仍算指令已下达）
         ++ordered;
     }
     return ordered;
@@ -933,6 +996,26 @@ void SimWorld::foundation_cells(int col, int row, int fw, int fh,
             out.emplace_back(col + floor_div2(e + i - j), row + i + j);
 }
 
+// 格占用：一格 = 1 载具 或 最多 3 个步兵（子格 0..2）。返回可用子格号（-1 = 满）。
+// 步兵计数含地图装载的单位（其 subcell 可能为 3..4 的原版五格位，照常计数）。
+int SimWorld::free_subcell(int col, int row, int kind, uint32_t ignore_unit_id) const {
+    if (col < 0 || row < 0 || col >= w || row >= h) return -1;
+    int infantry = 0;
+    bool slot_used[3] = {false, false, false};
+    for (const auto& u : units) {
+        if (!u.alive || (ignore_unit_id && u.id == ignore_unit_id)) continue;
+        if (u.col != col || u.row != row) continue;
+        if (u.kind != 2 || kind != 2) return -1; // 载具占满整格（含与步兵互斥）
+        ++infantry;
+        if (u.subcell < 3) slot_used[u.subcell] = true;
+    }
+    if (kind != 2) return 0; // 载具：格内无任何单位 → 占用整格
+    if (infantry >= 3) return -1;
+    for (int s = 0; s < 3; ++s)
+        if (!slot_used[s]) return s;
+    return -1;
+}
+
 bool SimWorld::cell_buildable(int col, int row, uint32_t ignore_unit_id) const {
     if (col < 0 || row < 0 || col >= w || row >= h) return false;
     const size_t i = static_cast<size_t>(row) * w + col;
@@ -963,6 +1046,8 @@ uint32_t SimWorld::spawn_unit(const std::string& owner, const std::string& type,
                               int col, int row, uint8_t dir, const SimWeapon& weapon, bool is_miner,
                               int capacity, int speed) {
     if (kind < 1) kind = 1;
+    const int sc = free_subcell(col, row, kind); // 一格 1 载具 或 ≤3 步兵
+    if (sc < 0) return 0;                        // 该格已满 → 生成失败
     SimUnit u;
     u.id = next_id++;
     u.idle_rng = u.id * 1664525u + 12345u; // 步兵 idle 动作随机流播种
@@ -971,6 +1056,7 @@ uint32_t SimWorld::spawn_unit(const std::string& owner, const std::string& type,
     u.kind = kind;
     u.col = u.next_col = col;
     u.row = u.next_row = row;
+    u.subcell = static_cast<uint8_t>(sc);
     u.dir = dir;
     u.weapon = weapon;
     u.is_miner = is_miner;
@@ -1147,6 +1233,7 @@ uint64_t SimWorld::visual_hash() const {
             static_cast<uint64_t>(u.next_row + 4096));
         mix(u.frac);
         mix(u.dir);
+        mix(u.subcell);
         mix(u.hp);
         mix(u.alive ? 1ull : 0ull);
         mix(u.order);

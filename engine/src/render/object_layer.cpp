@@ -435,7 +435,9 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                 continue;
             }
             // 格内 subcell 偏移（0=中心，1..4=四角近似）
-            static const int kSubOff[5][2] = {{0, 0}, {0, -4}, {6, 2}, {-6, 2}, {0, 4}};
+            // 子格偏移：0..2 = 格内**等腰三角**分布（sim 步兵，一格最多 3 人）；
+            // 3..4 = 地图 [Infantry] 原始五格位的后两位（向后兼容）。
+            static const int kSubOff[5][2] = {{0, -6}, {-10, 5}, {10, 5}, {-6, 2}, {0, 4}};
             const int sc = std::min<int>(o.subcell, 4);
             // 帧在画布内的位置参与放置（与建筑同语义：美术中心 = 格中心 + 帧中心 − 画布中心）
             const int bx =

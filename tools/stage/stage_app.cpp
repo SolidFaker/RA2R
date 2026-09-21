@@ -706,6 +706,8 @@ void append_sim_objects(StageApp& a, std::vector<ra2r::render::PlacedObject>& ob
         po.anim_clock = static_cast<uint32_t>(a.sim.logic_ticks);
         po.idle_kind = u.idle_kind;
         po.idle_start = u.idle_start;
+        // 子格（步兵 0..2 等腰三角分布）：仅驻停时生效，移动中画在格心
+        po.subcell = po.moving ? 0 : u.subcell;
         objects_out.push_back(po);
     }
 }

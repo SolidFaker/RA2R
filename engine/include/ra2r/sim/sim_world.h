@@ -52,6 +52,9 @@ struct SimUnit {
     int col = 0, row = 0;           // 当前格
     int next_col = 0, next_row = 0; // 段终点格（静止时 = 当前格）
     int frac = 0;                   // 段内进度 0..255
+    // 格内子格（步兵 0..2 = 等腰三角分布；载具恒 0）。一格 = 1 载具 **或**
+    // 最多 3 个步兵（见 free_subcell）；移动中渲染端按格心绘制（子格仅在驻停时生效）
+    uint8_t subcell = 0;
     uint8_t dir = 0;                // 朝向 0..7（渲染 ×32）
     int hp = 256;
     bool alive = true;
@@ -62,6 +65,10 @@ struct SimUnit {
     int speed = 68; // 每逻辑帧 frac 增量（行步基准 ≈4 格/秒 @15Hz）
     // 上一格（渲染转角平滑用；= 当前格表示该段是路径起点）
     int prev_col = 0, prev_row = 0;
+    // 移动目的地（格；-1 = 无）。段边界等位超时后用它在"把占位单位当临时障碍"
+    // 的路网上绕行重规划（单位互相堵住时的出路）。
+    int dest_col = -1, dest_row = -1;
+    int wait_ticks = 0; // 段边界等位计时（格占用门禁；满 30 帧触发绕行重规划）
     std::vector<std::pair<int, int>> path; // 剩余途经格（不含当前格与段终点）
     std::vector<std::pair<int, int>> waypoints; // 巡逻点（kOrderPatrol 循环）
     size_t wp_idx = 0;
@@ -211,8 +218,7 @@ struct SimWorld {
     uint32_t spawn_building(const std::string& owner, const std::string& type, int col, int row,
                             int fw, int fh, int cost, int power, bool under_construction,
                             int build_total, int max_hp, uint32_t ignore_unit_id = 0);
-    // ── 地基几何 ──
-    // 引擎格 ↔ 地图空间格（与 MapFile 的 rx/ry 换算互逆；锚点语义：地基顶格）
+    // ── 地基几何 ──    // 引擎格 ↔ 地图空间格（与 MapFile 的 rx/ry 换算互逆；锚点语义：地基顶格）
     void cell_to_map(int col, int row, int& rx, int& ry) const;
     void map_to_cell(int rx, int ry, int& col, int& row) const;
     // 地基格枚举（引擎坐标；锚 = 顶格）：地图空间 fw×fh 矩形 → 引擎格菱形。
@@ -226,6 +232,10 @@ struct SimWorld {
     // 单格是否可建造（放置预览逐格标红/绿用）：图内、非地形/建筑阻挡、无
     // 覆盖物（桥梁/围墙等）、无矿石、无单位（ignore_unit_id 例外同上）。
     bool cell_buildable(int col, int row, uint32_t ignore_unit_id = 0) const;
+    // 格占用规则（原版）：一格 = 1 载具 **或** 最多 3 个步兵（子格 0..2，渲染
+    // 为格内等腰三角分布）。返回 kind 单位在 (col,row) 可用的子格号；
+    // -1 = 该格已满/被异类占据。ignore_unit_id：忽略自身（重定位/展开校验用）。
+    int free_subcell(int col, int row, int kind, uint32_t ignore_unit_id = 0) const;
 
     // 建造队列（立即扣款；同一 House 单队列）
     bool queue_build(const std::string& owner, const std::string& type, int cost, int total_ticks);
@@ -288,6 +298,12 @@ struct SimWorld {
     const FlowField* flow_for(int tc, int tr, int slots);
     // 目标槽位表（确定性：目标格优先，再按环序取周围可走格；最多 slots 个）
     std::vector<std::pair<int, int>> nav_sources(int tc, int tr, int slots) const;
+    // 同上，但用调用方给的临时路网（绕行重规划：把占位单位当障碍）
+    std::vector<std::pair<int, int>> nav_sources_in(const std::vector<uint8_t>& nav, int tc,
+                                                    int tr, int slots) const;
+    // 段边界被单位堵住超时 → 用"临时路网（原 blocked + 占位单位格）"重规划到
+    // 原目的地；成功返回 true（路径已换，段中续接保留进度）。
+    bool replan_around_units(SimUnit& u);
 
     // 内部：段推进（到达落格 + 余量进下一段）；朝目标格寻路（失败驻停）。
     // 目标格被建筑挡住时由流场多源自动落到最近可达邻格（无需单独分支）。
@@ -295,7 +311,7 @@ struct SimWorld {
     // 终点续接并保留 frac，避免"复位到格心"的闪现）；单/编队指令共用此逻辑。
     bool advance_segment(SimUnit& u);
     bool set_move_target(SimUnit& u, int tc, int tr);
-    bool set_move_target_field(SimUnit& u, const FlowField* f);
+    bool set_move_target_field(SimUnit& u, const FlowField* f, int tc, int tr);
 
     // 单位是否在行进中（移动/追赶段）
     bool unit_moving(size_t i) const {

@@ -235,8 +235,6 @@ TEST(SimMove, StopUnitClearsOrderAndPath) {
     EXPECT_FALSE(s.stop_unit(99)); // 越界
 }
 
-// ── 编队移动（多单位共享流场）────────────────────────────────────────────────
-
 namespace {
 // 三辆车间隔摆放（同一 House）；返回车下标
 std::vector<size_t> spawn_three(sim::SimWorld& s, int c0, int r0) {
@@ -251,6 +249,75 @@ bool any_moving(const sim::SimWorld& s) {
     return false;
 }
 } // namespace
+
+
+// ── 格占用：一格 1 载具 或 ≤3 步兵（子格 0..2 等腰三角）──────────────────────
+
+// 生成规则：同格最多 3 步兵（子格各异）；载具与步兵互斥、载具独占整格
+TEST(SimUnitCell, ThreeInfantryPerCellAndVehicleExclusive) {
+    sim::SimWorld s;
+    s.w = 32;
+    s.h = 32;
+    s.blocked.assign(32 * 32, 0);
+    const auto spawn = [&](const char* type, int kind) {
+        return s.spawn_unit("Player", type, kind, 10, 10, 0, {}, false, 0, 0);
+    };
+    EXPECT_GT(spawn("E1", 2), 0u); // 步兵 1 → 子格 0
+    EXPECT_GT(spawn("E1", 2), 0u); // 步兵 2 → 子格 1
+    EXPECT_GT(spawn("E1", 2), 0u); // 步兵 3 → 子格 2
+    EXPECT_EQ(spawn("E1", 2), 0u); // 第 4 个步兵：生成失败
+    EXPECT_EQ(spawn("HTNK", 1), 0u); // 载具不能与步兵同格
+    ASSERT_EQ(s.units.size(), 3u);
+    EXPECT_EQ(s.units[0].subcell, 0);
+    EXPECT_EQ(s.units[1].subcell, 1);
+    EXPECT_EQ(s.units[2].subcell, 2);
+    EXPECT_EQ(s.free_subcell(10, 10, 2), -1); // 步兵格已满
+    EXPECT_EQ(s.free_subcell(10, 10, 1), -1); // 载具不可入
+    // 载具独占：一格 1 辆，第二辆失败
+    EXPECT_GT(s.spawn_unit("Player", "HTNK", 1, 12, 12, 0, {}, false, 0, 0), 0u);
+    EXPECT_EQ(s.free_subcell(12, 12, 1), -1);
+    EXPECT_EQ(s.units.back().subcell, 0);
+    EXPECT_EQ(s.free_subcell(12, 12, 2), -1); // 步兵也不可入载具格
+    EXPECT_TRUE(s.free_subcell(13, 13, 2) >= 0); // 空地可入
+}
+
+// 移动落位：3 个步兵先后走到同一格 → 各占一个子格；第 4 个在格边等位后
+// 自动绕行到邻近空格（不会挤进第 4 个）
+TEST(SimUnitCell, ArrivingInfantryTakesFreeSubcellsAndOverflowReroutes) {
+    sim::SimWorld s;
+    s.w = 64;
+    s.h = 64;
+    s.blocked.assign(64 * 64, 0);
+    for (int i = 0; i < 4; ++i)
+        s.spawn_unit("Player", "E1", 2, 10 + i * 2, 10, 0, {}, false, 0, 51);
+    for (size_t i = 0; i < 4; ++i) EXPECT_TRUE(s.issue_move(i, 30, 30));
+    int t = 0;
+    while (t < 3000 && any_moving(s)) {
+        s.tick();
+        ++t;
+    }
+    ASSERT_FALSE(any_moving(s));
+    // 同格步兵数 ≤3，且 (30,30) 上的 3 人子格互不相同
+    int at_target = 0;
+    bool slot[3] = {false, false, false};
+    for (const auto& u : s.units) {
+        if (u.col == 30 && u.row == 30) {
+            ++at_target;
+            ASSERT_LT(u.subcell, 3);
+            EXPECT_FALSE(slot[u.subcell]) << "同格步兵子格不能重复";
+            slot[u.subcell] = true;
+        }
+    }
+    EXPECT_EQ(at_target, 3);
+    // 第 4 人（绕行）不得与目标格重叠，且离目标不远
+    for (const auto& u : s.units) {
+        if (!(u.col == 30 && u.row == 30)) {
+            EXPECT_LE(std::abs(u.col - 30) + std::abs(u.row - 30), 4);
+        }
+    }
+}
+
+// ── 编队移动（多单位共享流场）────────────────────────────────────────────────
 
 // 一条编队指令 → 所有选中单位都接到移动指令并各自落位（就近槽位）
 TEST(SimMove, GroupMoveOrdersAllSelectedUnits) {

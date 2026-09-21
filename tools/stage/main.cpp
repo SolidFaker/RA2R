@@ -785,10 +785,15 @@ static int run(int argc, char** argv) {
         }
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         const ImVec2 pos = ImGui::GetCursorScreenPos();
-        ImGui::InvisibleButton("stage3d", avail, ImGuiButtonFlags_MouseButtonLeft |
-                                                       ImGuiButtonFlags_MouseButtonRight);
+        ImGui::InvisibleButton("stage3d", avail,
+                               ImGuiButtonFlags_MouseButtonLeft |
+                                   ImGuiButtonFlags_MouseButtonRight |
+                                   ImGuiButtonFlags_MouseButtonMiddle);
         const bool view_hovered = ImGui::IsItemHovered();
-        if (view_hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
+        // 拖拽地图 = 鼠标**中键**（左键留给点选/框选）；用 IsItemActive 让
+        // 指针拖出窗口后仍继续平移
+        if (ImGui::IsItemActive() &&
+            ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f)) {
             const ImVec2 d = ImGui::GetIO().MouseDelta;
             a.pan_x += d.x;
             a.pan_y += d.y;
@@ -1100,11 +1105,19 @@ static int run(int argc, char** argv) {
                 host.texture_id(), ImVec2(pos.x + a.pan_x, pos.y + a.pan_y),
                 ImVec2(pos.x + a.pan_x + static_cast<float>(a.bw) * a.zoom,
                        pos.y + a.pan_y + static_cast<float>(a.bh) * a.zoom));
+            // 框选：左键拖拽中画绿色矩形边框（松开时按矩形内单位结算）
+            if (a.box_active && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                const ImVec2 mp = ImGui::GetIO().MousePos;
+                ImGui::GetWindowDrawList()->AddRect(
+                    ImVec2(a.box_x0, a.box_y0), mp, IM_COL32(60, 255, 90, 255), 0.0f, 0, 1.5f);
+                ImGui::GetWindowDrawList()->AddRectFilled(
+                    ImVec2(a.box_x0, a.box_y0), mp, IM_COL32(60, 255, 90, 28));
+            }
             ImGui::GetWindowDrawList()->AddText(
                 ImVec2(pos.x + 8, pos.y + 4), IM_COL32(255, 255, 160, 255),
-                a.sim_active ? "拖拽平移 · 滚轮缩放 · 左键选择/拖框选 · 双击同型全选"
-                               " · 右键移动/攻击/护卫 · Shift+右键巡逻 · Ctrl+1..9 编队"
-                             : "拖拽平移 · 滚轮缩放 · 左键放置 · 右键删除");
+                a.sim_active ? "中键拖拽平移 · 滚轮缩放 · 左键框选/点选（Shift 追加、Ctrl 移出）"
+                               " · 右键移动/攻击/护卫 · Shift+右键巡逻 · S 停止 · Ctrl+1..9 编队"
+                             : "中键拖拽平移 · 滚轮缩放 · 左键放置 · 右键删除");
         }
         ImGui::EndChild();
 
