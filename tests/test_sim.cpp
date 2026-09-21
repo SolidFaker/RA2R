@@ -317,6 +317,50 @@ TEST(SimUnitCell, ArrivingInfantryTakesFreeSubcellsAndOverflowReroutes) {
     }
 }
 
+// 编队目标分配：每个单位拿到"尽量接近点击格、且不违反格占用约束"的格子
+//（步兵同格 ≤3、载具独占、互斥）；到达后约束仍成立
+TEST(SimMove, GroupMoveAssignsDestinationsRespectingOccupancy) {
+    sim::SimWorld s;
+    s.w = 64;
+    s.h = 64;
+    s.blocked.assign(64 * 64, 0);
+    for (int i = 0; i < 3; ++i) // (30,30) 已有 3 个步兵（满格）
+        EXPECT_GT(s.spawn_unit("Player", "E1", 2, 30, 30, 0, {}, false, 0, 51), 0u);
+    EXPECT_GT(s.spawn_unit("Player", "E1", 2, 10, 10, 0, {}, false, 0, 51), 0u);
+    EXPECT_GT(s.spawn_unit("Player", "HTNK", 1, 12, 12, 0, {}, false, 0, 68), 0u);
+    ASSERT_EQ(s.units.size(), 5u);
+    EXPECT_EQ(s.issue_move_group({3, 4}, 30, 30), 2u);
+    // 目的地：避开被占的 (30,30)；步兵与载具不能同格
+    const int full = 30 * 64 + 30;
+    EXPECT_NE(s.units[3].dest_col * 64 + s.units[3].dest_row, full);
+    EXPECT_NE(s.units[4].dest_col * 64 + s.units[4].dest_row, full);
+    EXPECT_TRUE(s.units[3].dest_col != s.units[4].dest_col ||
+                s.units[3].dest_row != s.units[4].dest_row);
+    int t = 0;
+    while (t < 3000 && any_moving(s)) {
+        s.tick();
+        ++t;
+    }
+    ASSERT_FALSE(any_moving(s));
+    std::map<int, int> inf, veh;
+    for (const auto& u : s.units) {
+        const int k = u.row * 64 + u.col;
+        if (u.kind == 2) {
+            ++inf[k];
+        } else {
+            veh[k] = 1;
+        }
+    }
+    for (const auto& [k, n] : inf) {
+        EXPECT_LE(n, 3) << "同格步兵超过 3";
+        EXPECT_EQ(veh.count(k), 0u) << "步兵与载具同格";
+    }
+    for (const auto& [k, n] : veh) {
+        (void)n;
+        EXPECT_EQ(inf.count(k), 0u) << "载具与步兵同格";
+    }
+}
+
 // ── 编队移动（多单位共享流场）────────────────────────────────────────────────
 
 // 一条编队指令 → 所有选中单位都接到移动指令并各自落位（就近槽位）
@@ -367,7 +411,8 @@ TEST(SimMove, GroupMoveDetoursAroundWall) {
     }
     ASSERT_FALSE(any_moving(s));
     for (const size_t i : idx) {
-        EXPECT_EQ(s.units[i].row, 10) << "应经缺口绕行到目标行";
+        // 目标 = 点击格 + 周围槽位（编队各自一格）：落在目标附近且已绕过墙
+        EXPECT_LE(std::abs(s.units[i].col - 40) + std::abs(s.units[i].row - 10), 2);
         EXPECT_GE(s.units[i].col, 38);
     }
 }
@@ -390,7 +435,7 @@ TEST(SimMove, GroupMoveApproachesBlockedTargetCell) {
     for (const size_t i : idx) {
         const auto& u = s.units[i];
         EXPECT_EQ(s.blocked[static_cast<size_t>(u.row) * 64 + u.col], 0) << "不得停在障碍格上";
-        EXPECT_LE(std::abs(u.col - 30) + std::abs(u.row - 30), 3) << "应停在目标附近";
+        EXPECT_LE(std::abs(u.col - 30) + std::abs(u.row - 30), 4) << "应停在目标附近";
     }
 }
 

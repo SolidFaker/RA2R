@@ -887,13 +887,19 @@ static int run(int argc, char** argv) {
                     a.sel_building_id = 0;
                     a.box_active = false;
                 } else {
-                    // 单位未命中：建筑拾取（点击地基格选中；修理/出售目标）
+                    // 单位未命中：建筑拾取（按地基格命中——引擎网格矩形与实际
+                    // 菱形地基不一致，曾导致部分建筑点不中）
                     int bhit = -1;
                     for (int i = 0; i < static_cast<int>(a.sim.buildings.size()); ++i) {
                         const auto& b = a.sim.buildings[i];
                         if (!b.alive) continue;
-                        if (cx >= b.col && cx < b.col + b.fw && cy >= b.row &&
-                            cy < b.row + b.fh) {
+                        bool on_cell = false;
+                        for (const auto& c : b.footprint_cells)
+                            if (c.first == cx && c.second == cy) {
+                                on_cell = true;
+                                break;
+                            }
+                        if (on_cell) {
                             bhit = i;
                             break;
                         }

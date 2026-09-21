@@ -455,21 +455,64 @@ bool SimWorld::replan_around_units(SimUnit& u) {
     return true;
 }
 
-// 编队移动：一次流场构建，多单位各自沿场取路径；点击格被占则就近落位。
-// 每单位走 set_move_target_field（段中重下令保留进度，不再闪现回格心）。
+// 编队移动：为**每个单位**分配一个"尽量接近点击格、且不违反格占用约束"的
+// 目的地（步兵同格最多 3、载具独占、互斥），再各自以流场点到点寻路。
+// 记账表 = 现有单位 + 本次已分配；搜索序 = 最大范数环（近到远）+ 环内固定序。
 size_t SimWorld::issue_move_group(const std::vector<size_t>& unit_idx, int tc, int tr) {
     std::vector<size_t> valid;
     valid.reserve(unit_idx.size());
     for (const size_t i : unit_idx)
         if (i < units.size() && units[i].alive) valid.push_back(i);
     if (valid.empty()) return 0;
-    const FlowField* f = flow_for(tc, tr, static_cast<int>(valid.size()));
+    struct CellUse {
+        int inf = 0;
+        bool veh = false;
+    };
+    std::map<size_t, CellUse> use;
+    const auto key = [&](int c, int r) { return static_cast<size_t>(r) * w + c; };
+    for (const auto& o : units) {
+        if (!o.alive) continue;
+        CellUse& cu = use[key(o.col, o.row)];
+        if (o.kind == 2) ++cu.inf;
+        else cu.veh = true;
+    }
     size_t ordered = 0;
     for (const size_t i : valid) {
         SimUnit& u = units[i];
+        int bc = -1, br = -1;
+        for (int rad = 0; rad <= 8 && bc < 0; ++rad) {
+            for (int dy = -rad; dy <= rad && bc < 0; ++dy)
+                for (int dx = -rad; dx <= rad && bc < 0; ++dx) {
+                    if (std::max(std::abs(dx), std::abs(dy)) != rad) continue;
+                    const int c = tc + dx, r = tr + dy;
+                    if (c < 0 || r < 0 || c >= w || r >= h) continue;
+                    const size_t ci = key(c, r);
+                    if (ci < blocked.size() && blocked[ci]) continue; // 地形/建筑阻挡
+                    const auto it = use.find(ci);
+                    const CellUse cu = it == use.end() ? CellUse{} : it->second;
+                    if (u.kind == 2) {
+                        if (cu.veh || cu.inf >= 3) continue; // 步兵：载具互斥 + 最多 3
+                    } else if (cu.veh || cu.inf > 0) {
+                        continue; // 载具：独占整格
+                    }
+                    bc = c;
+                    br = r;
+                }
+        }
         u.order = kOrderMove;
         u.target = -1;
-        set_move_target_field(u, f, tc, tr); // 不可达/已在槽位 → 原地驻停（仍算指令已下达）
+        if (bc < 0) { // 8 环内无空位（极罕见）→ 原地驻停
+            u.path.clear();
+            u.next_col = u.col;
+            u.next_row = u.row;
+            u.frac = 0;
+            ++ordered;
+            continue;
+        }
+        CellUse& cu = use[key(bc, br)];
+        if (u.kind == 2) ++cu.inf;
+        else cu.veh = true;
+        set_move_target_field(u, flow_for(bc, br, 1), bc, br);
         ++ordered;
     }
     return ordered;

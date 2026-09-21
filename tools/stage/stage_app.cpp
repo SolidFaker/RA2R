@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -759,6 +760,33 @@ void draw_selection_markers(StageApp& a, const IsometricGrid& grid, int bw, int 
         line(cx0 + 30, cy0, cx0, cy0 + 15);
         line(cx0, cy0 + 15, cx0 - 30, cy0);
         line(cx0 - 30, cy0, cx0, cy0 - 15);
+        // 目的地指示：当前位置 → 本次命令分配的目的地格（编队时各人一条）
+        if (u.dest_col >= 0 && (u.dest_col != u.col || u.dest_row != u.row) &&
+            u.dest_col < a.map.w && u.dest_row < a.map.h) {
+            int dx, dy;
+            grid.cell_to_pixel(u.dest_col, u.dest_row, dx, dy);
+            const int tx = ox + dx + grid.tile_w / 2;
+            const int ty = oy + dy + grid.tile_h / 2 -
+                           static_cast<int>(a.map.cell(u.dest_col, u.dest_row).height) * 15;
+            const auto dot = [&](int x, int y, uint8_t r, uint8_t g, uint8_t b) {
+                if (x < 0 || y < 0 || x >= bw || y >= bh) return;
+                uint8_t* d = canvas.data() + (static_cast<size_t>(y) * bw + x) * 4;
+                d[0] = r;
+                d[1] = g;
+                d[2] = b;
+                d[3] = 255;
+            };
+            const int steps = std::max(std::abs(tx - cx0), std::abs(ty - cy0)) / 3 + 1;
+            for (int s = 1; s < steps; ++s) { // 虚线示意（不遮住路径观感）
+                const int x = cx0 + (tx - cx0) * s / steps;
+                const int y = cy0 + (ty - cy0) * s / steps;
+                dot(x, y, 255, 255, 255);
+            }
+            dot(tx, ty, 255, 255, 255); // 目的地格心标记
+            dot(tx + 1, ty, 255, 255, 255);
+            dot(tx, ty + 1, 255, 255, 255);
+            dot(tx + 1, ty + 1, 255, 255, 255);
+        }
     }
     // 选中建筑：地基格菱形描边（与单位同款绿框；防御建筑选中后可用右键指定目标）
     if (a.sel_building_id != 0) {
@@ -873,31 +901,101 @@ void draw_building_hp_bars(StageApp& a, const ra2r::render::IsometricGrid& grid,
         d[2] = b;
         d[3] = 255;
     };
-    // 斜 45°（等距 2:1，与格子菱形边平行）的粗血条：沿 (Δx,Δy)=(2,1) 方向描，
-    // 垂直方向加厚 th 像素（观感为等距厚条）；描边一圈 + 空槽暗红 + 血量亮绿。
+    // 立体血条（参考图）：沿 (Δx,Δy)=(+2,−1) **向右上**的长条长方体——
+    //   顶面 2px（亮）、正面 th px（本色）、底面 2px（暗）、两端封口，
+    //   近黑描边一圈，正面上每 10px 一道刻度线；血量从右端起为亮绿/亮色。
     const auto iso_bar = [&](int x0, int y0, int len, int th, int fill) {
-        const uint8_t br = 20, bg = 20, bb = 26;  // 描边（近黑）
-        const uint8_t rr = 150, rg = 26, rb = 30; // 空槽（暗红）
-        const uint8_t fr = 70, fg = 225, fb = 90; // 血量（亮绿）
-        for (int t = -2; t < len + 2; ++t) {
-            const int cx = x0 + t, cy = y0 + t / 2;
-            for (int k = -2; k < th + 2; ++k) {
-                if (t >= 0 && t < len && k >= 0 && k < th) continue; // 内芯稍后
-                put(cx, cy + k, br, bg, bb);
+        const uint8_t orr = 12, org = 12, orb = 16;  // 描边（近黑）
+        const uint8_t efr = 145, efg = 30, efb = 34; // 空槽正面（暗红）
+        const uint8_t etr = 195, etg = 70, etb = 74; // 空槽顶面
+        const uint8_t ebr = 80, ebg = 14, ebb = 18;  // 空槽底面
+        const uint8_t hfr = 70, hfg = 225, hfb = 90; // 血量正面（亮绿）
+        const uint8_t htr = 130, htg = 255, htb = 150;// 血量顶面
+        const uint8_t hbr = 30, hbg = 120, hbb = 45; // 血量底面
+        const uint8_t tkr = 245, tkg = 255, tkb = 245;// 刻度线（近白）
+        for (int t = -3; t <= len + 3; ++t) {
+            const int cx = x0 + t, cy = y0 - t / 2;
+            for (int k = -3; k <= th + 2; ++k) {
+                const bool core = t >= 0 && t < len && k >= -2 && k <= th + 1;
+                if (core) continue; // 内芯随后按面填色
+                put(cx, cy + k, orr, org, orb);
             }
         }
         for (int t = 0; t < len; ++t) {
-            const int cx = x0 + t, cy = y0 + t / 2;
-            const bool on = t < fill;
-            for (int k = 0; k < th; ++k)
-                put(cx, cy + k, on ? fr : rr, on ? fg : rg, on ? fb : rb);
+            const int cx = x0 + t, cy = y0 - t / 2;
+            const bool on = t < fill; // 血量自左端起算（与旧表现一致）
+            const bool tick = (t % 10) == 0;
+            for (int k = -2; k < 0; ++k) // 顶面
+                put(cx, cy + k, on ? htr : etr, on ? htg : etg, on ? htb : etb);
+            for (int k = 0; k < th; ++k) { // 正面（带刻度）
+                if (tick) {
+                    put(cx, cy + k, tkr, tkg, tkb);
+                } else {
+                    put(cx, cy + k, on ? hfr : efr, on ? hfg : efg, on ? hfb : efb);
+                }
+            }
+            put(cx, cy + th, on ? hbr : ebr, on ? hbg : ebg, on ? hbb : ebb);     // 底面
+            put(cx, cy + th + 1, on ? hbr : ebr, on ? hbg : ebg, on ? hbb : ebb); // 底面
         }
+    };
+    // 立方体边棱（选中建筑）：在地基的北/东/西三个角各画 x、y、z 三条棱线
+    //（x/y = 一格格边（屏幕 (30,15)/(−30,15)）；z = 格子垂直方向的一半 15px）。
+    const auto corner_gizmo = [&](int px, int py) {
+        const uint8_t lr = 245, lg = 245, lb = 255;
+        const auto line = [&](int x1, int y1, int x2, int y2) {
+            const int dx = std::abs(x2 - x1), sx = x1 < x2 ? 1 : -1;
+            const int dy = -std::abs(y2 - y1), sy = y1 < y2 ? 1 : -1;
+            int err = dx + dy, x = x1, y = y1;
+            for (;;) {
+                put(x, y, lr, lg, lb);
+                if (x == x2 && y == y2) break;
+                const int e2 = 2 * err;
+                if (e2 >= dy) {
+                    err += dy;
+                    x += sx;
+                }
+                if (e2 <= dx) {
+                    err += dx;
+                    y += sy;
+                }
+            }
+        };
+        line(px, py, px + 30, py + 15);   // +x 格边
+        line(px, py, px - 30, py + 15);   // +y 格边
+        line(px, py, px, py - 15);        // +z（半格高）
     };
     for (const auto& b : a.sim.buildings) {
         if (!b.alive || b.under_construction) continue;
         if (b.col < 0 || b.row < 0 || b.col >= a.map.w || b.row >= a.map.h) continue;
         const bool sel = b.id == a.sel_building_id;
-        if (b.hp >= b.max_hp && !sel) continue; // 满血且未选中 → 不画
+        // 立方体边棱：仅选中建筑（与血条一致的选中反馈；地基四角取可见的北/东/西）
+        if (sel) {
+            std::vector<std::pair<int, int>> cells;
+            a.sim.foundation_cells(b.col, b.row, b.fw, b.fh, cells);
+            // 北角 = 锚格（地图空间顶格）顶顶点——多格同行时 bbox 同 y，
+            // 必须用锚格而不是"扫最小 y 的格"
+            const int anchor_x = ox + b.col * 60 + (b.row & 1) * 30 + 30;
+            const int anchor_y = oy + b.row * 15;
+            int west_x = INT_MAX, west_y = 0;
+            int east_x = INT_MIN, east_y = 0;
+            for (const auto& c : cells) {
+                int px, py;
+                grid.cell_to_pixel(c.first, c.second, px, py);
+                const int x = ox + px, y = oy + py; // 格包围盒左上（60×30 菱形）
+                if (x < west_x) {                   // 西角 = 最左格的左顶点
+                    west_x = x;
+                    west_y = y + 15;
+                }
+                if (x + 60 > east_x) { // 东角 = 最右格的右顶点
+                    east_x = x + 60;
+                    east_y = y + 15;
+                }
+            }
+            corner_gizmo(anchor_x, anchor_y);
+            corner_gizmo(east_x, east_y);
+            corner_gizmo(west_x, west_y);
+        }
+        if (b.hp >= b.max_hp && !sel) continue; // 满血且未选中 → 不画血条
         const int ax = ox + b.col * 60 + (b.row & 1) * 30 + 30;
         const int ay = oy + b.row * 15 - static_cast<int>(a.map.cell(b.col, b.row).height) * 15;
         int top = ay - 70; // 兜底：本体精灵高 ≈60~120px
@@ -915,11 +1013,11 @@ void draw_building_hp_bars(StageApp& a, const ra2r::render::IsometricGrid& grid,
                 }
             }
         }
-        // 血条长度随地基放大（2×2 → 52，4×4 → 76），厚度 5px；条心在建筑上方
-        const int len = 28 + (b.fw + b.fh) * 6;
+        // 血条长度随地基放大（2×2 → 60，4×4 → 88）；自建筑左上向右上斜
+        const int len = 32 + (b.fw + b.fh) * 7;
         const int th = 5;
         const int x0 = ax - len / 2;
-        const int y0 = top - len / 4 - th - 4; // 斜条中点落在顶部上方（留 4px 空隙）
+        const int y0 = top - 8; // 左端（最低点）在建筑顶上 8px
         const int fill = std::max(1, b.hp * len / std::max(1, b.max_hp));
         iso_bar(x0, y0, len, th, fill);
     }
