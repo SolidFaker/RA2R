@@ -277,6 +277,13 @@ TEST(Fixtures, RulesDbLoadsSyntheticIni) {
     ASSERT_NE(e1, nullptr);
     EXPECT_EQ(e1->kind, 2);
     EXPECT_EQ(e1->image, "GI");
+    // 运动物理（rulesmd Speed/ROT/TurretROT/Accelerates/加减速系数）
+    EXPECT_EQ(e1->speed, 4);
+    EXPECT_EQ(e1->rot, 6);
+    EXPECT_EQ(e1->turret_rot, 8);
+    EXPECT_TRUE(e1->accelerates);
+    EXPECT_NEAR(e1->accel_factor, 0.05, 1e-9);
+    EXPECT_NEAR(e1->decel_factor, 0.1, 1e-9);
     // 武器
     const auto* m60 = db.weapon("M60");
     ASSERT_NE(m60, nullptr);

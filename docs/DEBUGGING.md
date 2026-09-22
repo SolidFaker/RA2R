@@ -716,6 +716,35 @@
   总 114 例；4800 帧遭遇战双方 5/5 建筑、$4700 不变；截图基线更新
   （simbuild `84fdbe88…`、simattack `380662cb…`、遭遇战 900 帧 `f2ec8d5e…`）。
 
+### 3.33 车辆运动物理：加减速（Accelerates/AccelerationFactor/
+DeaccelerationFactor）+ 转向（ROT/TurretROT）
+- **来源**：原版 rulesmd（`尤里ini/rulesmd.ini`）与中文教程（`rules教程.TXT` /
+  `RULES.txt`）：`Accelerates=`（是否按加速度趋近 `Speed=` 上限）、
+  `AccelerationFactor=`（加速百分比）、`DeaccelerationFactor=`（接近目的地时减速百分比，
+  基准 `Speed=`）、`ROT=`（转向比率，越大越快）、`TurretROT=`（炮塔转向比率，
+  YR 仅 2 处使用；缺省用 ROT）。实测：MTNK/HTNK/APOC/SMCV Speed=7/6/4/4、
+  ROT=5、Accelerates=false（原版多数车辆不加速）；恐龙/水上单位 AccelerationFactor=0.01。
+- **实现**：
+  - `SimUnit.dir/turret_dir` 改为 **0..255 全圆周**（8 向扇区中心 = 索引×32），
+    `vel` 为当前速度；`UnitMotion`（rulesmd → 引擎）由 stage 注入
+    （`Speed= ×10` 标定：原 68 ≈ Speed 7 ≈ 4 格/秒）。
+  - `update_motion()`：① 车身按 ROT 转向当前段方向，**转向与移动互斥**：
+    偏差 >16 时先原地转向（速度目标 0：暂停或按减速系数大幅减速），
+    偏差 ≤ 16（半个 45° 扇区）才允许向目标格推进；② 速度趋近目标：Accelerates=yes 每帧
+    ±`max_speed×AccelerationFactor`，否则立即到位（**系数 0 = 立即到位，不是不能动**）；③ 末段
+    （无后续路径）且 `DeaccelerationFactor>0` 时按剩余距离线性减速（下限 2 frac/帧）；
+    `=0` 即不减速、到达瞬间停止（原行为）；对准且有活动段时每帧至少推进
+    1 frac（整数截断/极低速度也不冻结）；④ 炮塔按 TurretROT（缺省 ROT）
+    转向：攻击/护卫目标优先，否则行进方向（车身不再因攻击目标而转）。
+  - 渲染：`PlacedObject.turret_dir`；车身与炮塔（`<Image>TUR.VXL` +
+    `<Image>BARL.VXL`）在**朝向不同**时各光栅一次、按模型原点叠合（炮塔在上），
+    缓存键含两朝向。
+- **验证**：`SimMotion.*` 6 例（加速到上限 / 系数 0 瞬停 / 末段减速仍到达 /
+  ROT **偏差 >16 原地转向不动、≤16 才推进** / Accelerates=0 立即到位仍能移动 / 炮塔独立转向）；夹具 `[E1]` 加
+  Speed/ROT/TurretROT/Accelerates/两系数并断言；探针（probe_turret_yaw）目视确认炮塔
+  独立角度渲染。基线（本批）：simbuild `5578dd2f…`、simattack `70a4072b…`；
+  遭遇战 900 帧未变（该场景无移动车辆）；4800 帧双方 5/5、$4700 不变。
+
 ## 4. 构建/工具链类
 
 - 无管理员工具链：WinLibs MinGW（免安装）+ pip CMake + SDL3 mingw 预编译包，全部放 `I:\tools\`（不入库）。

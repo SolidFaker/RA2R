@@ -90,6 +90,14 @@ bool RulesDB::load(const uint8_t* rulesmd, size_t rules_n, const uint8_t* artmd,
             u.buildup = art_.get(name, "Buildup", "");
             if (u.buildup.empty() && u.image != name) u.buildup = art_.get(u.image, "Buildup", "");
             u.free_buildup = is_yes(art_.get(name, "FreeBuildup", "no"));
+            // 运动物理（rulesmd）：Speed=/ROT=/TurretROT=/Accelerates=/
+            // AccelerationFactor=/DeaccelerationFactor=（语义见 docs/DEBUGGING.md §3.33）
+            u.speed = std::atoi(rules_.get(name, "Speed", "0").c_str());
+            u.rot = std::atoi(rules_.get(name, "ROT", "0").c_str());
+            u.turret_rot = std::atoi(rules_.get(name, "TurretROT", "0").c_str());
+            u.accelerates = is_yes(rules_.get(name, "Accelerates", "no"));
+            u.accel_factor = std::atof(rules_.get(name, "AccelerationFactor", "0").c_str());
+            u.decel_factor = std::atof(rules_.get(name, "DeaccelerationFactor", "0").c_str());
             if (kind == 0) {
                 // 建筑字段；地基优先 rulesmd（游戏地基），artmd 兜底（美术地基更大）
                 const std::string found =

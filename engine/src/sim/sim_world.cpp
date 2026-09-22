@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <climits>
 #include <cstdlib>
+#include <utility>
 
 #include "ra2r/sim/pathfind.h"
 
@@ -113,7 +114,9 @@ bool SimWorld::load_map(const assets::MapFile& map,
                         const std::function<bool(const std::string&)>& refinery,
                         const std::function<int(const std::string&)>& power_of,
                         const std::function<int16_t(int, int)>& ore_at,
-                        const std::function<bool(int, int)>& terrain_block) {
+                        const std::function<bool(int, int)>& terrain_block,
+                        const std::function<void(const std::string&, UnitMotion&)>&
+                            motion) {
     w = map.cell_w();
     h = map.cell_h();
     min_d = map.min_d();
@@ -207,7 +210,19 @@ bool SimWorld::load_map(const assets::MapFile& map,
         su.col = su.next_col = u.cx;
         su.row = su.next_row = u.cy;
         su.subcell = 0; // 载具占整格
-        su.dir = u.dir / 32;
+        su.dir = u.dir;
+        su.turret_dir = su.dir;
+        {
+            UnitMotion mo;
+            mo.max_speed = su.speed;
+            if (motion) motion(u.id, mo);
+            su.speed = mo.max_speed;
+            su.vel = mo.accel_step > 0 ? 0 : mo.max_speed;
+            su.rot_step = mo.rot_step;
+            su.turret_rot = mo.turret_rot > 0 ? mo.turret_rot : mo.rot_step;
+            su.accel_step = mo.accel_step;
+            su.decel_step = mo.decel_step;
+        }
         su.hp = u.health;
         weapon(u.id, su.weapon);
         miner(u.id, su.is_miner, su.capacity);
@@ -224,10 +239,21 @@ bool SimWorld::load_map(const assets::MapFile& map,
         su.col = su.next_col = n.cx;
         su.row = su.next_row = n.cy;
         su.subcell = n.subcell <= 4 ? n.subcell : 0; // 地图原始子格（0..4 五格位）
-        su.dir = n.dir / 32;
+        su.dir = n.dir;
         su.idle_rng = su.id * 1664525u + 12345u; // 步兵 idle 动作随机流播种
         su.hp = n.health;
         su.speed = 51; // 步兵 ≈3 格/秒
+        {
+            UnitMotion mo;
+            mo.max_speed = su.speed;
+            if (motion) motion(n.id, mo);
+            su.speed = mo.max_speed;
+            su.vel = mo.accel_step > 0 ? 0 : mo.max_speed;
+            su.rot_step = mo.rot_step;
+            su.turret_rot = mo.turret_rot > 0 ? mo.turret_rot : mo.rot_step;
+            su.accel_step = mo.accel_step;
+            su.decel_step = mo.decel_step;
+        }
         weapon(n.id, su.weapon);
         miner(n.id, su.is_miner, su.capacity);
         seed_credits(n.owner);
@@ -236,12 +262,72 @@ bool SimWorld::load_map(const assets::MapFile& map,
     return !units.empty() || !buildings.empty();
 }
 
+// 运动物理推进（rulesmd 语义）：① 车身按 ROT 转向当前段方向；**转向与移动互斥**
+// ——朝向与目标方向偏差 >16 时先原地转向（速度目标 0：暂停或按减速系数
+// 大幅减速），偏差 ≤ 16（半个 45° 扇区）才允许向目标格推进；② 速度按
+// Accelerates/AccelerationFactor 加速到 Speed 上限，末段（path 为空）且
+// DeaccelerationFactor>0 时随剩余距离线性减速（保证仍能到达，下限 2 frac/帧）；
+// 系数为 0 = 立即到位（**不是不能移动**）；对准且有活动段时每帧
+// 至少推进 1 frac，保证不会卡死；③ 炮塔按 TurretROT（缺省 ROT）转向：
+// 攻击/护卫目标优先，否则跟随行进方向。返回本帧车体朝向是否变化。
+bool SimWorld::segment_aligned(const SimUnit& u) const {
+    if (u.next_col == u.col && u.next_row == u.row) return false;
+    const int want = dir_of(u.col, u.row, u.next_col, u.next_row) * 32;
+    int diff = want - static_cast<int>(u.dir);
+    while (diff > 128) diff -= 256;
+    while (diff < -128) diff += 256;
+    return std::abs(diff) <= kMoveAlignTol;
+}
+
+bool SimWorld::update_motion(SimUnit& u) {
+    const bool seg = u.next_col != u.col || u.next_row != u.row;
+    const int want = seg ? dir_of(u.col, u.row, u.next_col, u.next_row) * 32 : -1;
+    const auto rotate = [](uint8_t& facing, int target, int rate) -> bool {
+        int diff = target - static_cast<int>(facing);
+        while (diff > 128) diff -= 256;
+        while (diff < -128) diff += 256;
+        if (diff == 0) return false;
+        const int max_step = rate > 0 ? rate : std::abs(diff); // 0 = 立即转向
+        const int step = std::min(std::abs(diff), max_step);
+        facing = static_cast<uint8_t>((static_cast<int>(facing) + (diff > 0 ? step : -step)) & 255);
+        return diff != 0 && step < std::abs(diff); // 仍有差值 → 转向中
+    };
+    bool turned = false;
+    if (want >= 0) {
+        const uint8_t before = u.dir;
+        rotate(u.dir, want, u.rot_step);
+        turned = u.dir != before;
+    }
+    // 炮塔：攻击/护卫目标优先，否则行进方向（驻停且无目标时不动）
+    int want_tur = want;
+    if ((u.order == kOrderAttackUnit || u.order == kOrderGuard) && u.target >= 0 &&
+        u.target < static_cast<int>(units.size()) && units[static_cast<size_t>(u.target)].alive) {
+        const SimUnit& t = units[static_cast<size_t>(u.target)];
+        want_tur = dir_of(u.col, u.row, t.col, t.row) * 32;
+    }
+    if (want_tur >= 0) rotate(u.turret_dir, want_tur, u.turret_rot);
+    // 速度目标：转向中 0；末段可减速则随剩余距离线性下降；否则上限
+    int target = u.speed;
+    if (!seg || !segment_aligned(u)) {
+        target = 0; // 无活动段，或朝向偏差 >16（原地转向：暂停/大幅减速）
+    } else if (u.path.empty() && u.decel_step > 0) {
+        target = std::max(2, u.speed * (kFracMax - u.frac) / kFracMax);
+    }
+    if (u.vel < target) {
+        u.vel = std::min(target, u.vel + (u.accel_step > 0 ? u.accel_step : u.speed));
+    } else if (u.vel > target) {
+        u.vel = std::max(target, u.vel - (u.decel_step > 0 ? u.decel_step : u.speed));
+    }
+    return turned;
+}
+
 // 段推进（到达落格 + 余量进下一段；所有订单共用）
 bool SimWorld::advance_segment(SimUnit& u) {
     if (u.next_col == u.col && u.next_row == u.row) {
         u.frac = 0;
         return false;
     }
+    if (!segment_aligned(u)) return false; // 朝向偏差 >16：原地转向，暂不推进
     // 步长折算（恒定屏幕速率 = 33.5px/speed 单位）：45° 步 33.5px → speed；
     // 屏幕水平 60px → speed·143/256；屏幕垂直 30px → speed·286/256
     // （OpenRA 同思路：位置按世界距离推进，方向不同的步长按屏幕投影折算）
@@ -255,9 +341,12 @@ bool SimWorld::advance_segment(SimUnit& u) {
     };
     int len_old = seg_len(dc, dr);
     int inc;
-    if (dc == 0 && (dr == 2 || dr == -2)) inc = (u.speed * 286) / 256;
-    else if (dc != 0 && dr == 0) inc = (u.speed * 143) / 256;
-    else inc = u.speed;
+    if (dc == 0 && (dr == 2 || dr == -2)) inc = (u.vel * 286) / 256;
+    else if (dc != 0 && dr == 0) inc = (u.vel * 143) / 256;
+    else inc = u.vel;
+    // 保证不卡死：只要还有活动段，每帧至少推进 1 frac
+    //（刚启动或系数极小时速度为 0/极低，也不能冻住）。
+    if (inc <= 0) inc = 1;
     // 推进本帧增量，并在**同一帧内**结算跨过的格心（frac 恒 < 256）：
     // 若把 >256 的残留留到下一帧，渲染位置会越过格心再被拉回（每格一次抖动）。
     // 跨段时余量按新旧段长度换算（frac 是"段内百分比"，同余量=同屏幕距离）。
@@ -284,6 +373,7 @@ bool SimWorld::advance_segment(SimUnit& u) {
         u.frac = rem;
         if (u.path.empty()) {
             u.frac = 0; // 到达终点：清段内余量（否则 unit_moving 恒真、走路动画停不下来）
+            u.vel = 0; // 到达 → 速度归零（DeaccelerationFactor=0 即瞬间停止）
             u.next_col = u.col;
             u.next_row = u.row;
             if (u.kind == 2) { // 步兵落位到格内空闲子格（等腰三角分布）
@@ -298,7 +388,6 @@ bool SimWorld::advance_segment(SimUnit& u) {
         u.path.erase(u.path.begin());
         u.next2_col = u.path.empty() ? -1 : u.path.front().first;
         u.next2_row = u.path.empty() ? -1 : u.path.front().second;
-        u.dir = dir_of(u.col, u.row, u.next_col, u.next_row);
         const int len_new = seg_len(u.next_col - u.col, u.next_row - u.row);
         if (len_new != len_old) {
             u.frac = (rem * len_old + len_new / 2) / len_new;
@@ -460,7 +549,6 @@ bool SimWorld::set_move_target_field(SimUnit& u, const FlowField* f, int tc, int
     u.next2_col = u.path.empty() ? -1 : u.path.front().first;
     u.next2_row = u.path.empty() ? -1 : u.path.front().second;
     u.frac = 0;
-    u.dir = dir_of(u.col, u.row, u.next_col, u.next_row);
     return true;
 }
 
@@ -521,7 +609,6 @@ bool SimWorld::replan_around_units(SimUnit& u) {
     u.next2_col = u.path.empty() ? -1 : u.path.front().first;
     u.next2_row = u.path.empty() ? -1 : u.path.front().second;
     u.frac = frac2;
-    u.dir = dir_of(u.col, u.row, u.next_col, u.next_row);
     u.wait_ticks = 0;
     return true;
 }
@@ -672,7 +759,9 @@ bool SimWorld::tick() {
                 }
                 u.path.clear();
                 if (stand) {
-                    u.dir = dir_toward(u.col, u.row, t.col, t.row);
+                    // 转向交给炮塔（TurretROT/ROT），车身保持行进朝向
+                    u.turret_dir = static_cast<uint8_t>(
+                        dir_toward(u.col, u.row, t.col, t.row) * 32);
                     if (attacking && u.cooldown == 0) {
                         units[static_cast<size_t>(u.target)].hp -= u.weapon.damage;
                         u.cooldown = u.weapon.rof;
@@ -709,7 +798,9 @@ bool SimWorld::tick() {
                 }
                 u.path.clear();
                 if (stand) {
-                    u.dir = dir_toward(u.col, u.row, tc, tr);
+                    // 转向交给炮塔（车身保持行进朝向）
+                    u.turret_dir = static_cast<uint8_t>(
+                        dir_toward(u.col, u.row, tc, tr) * 32);
                     if (u.cooldown == 0) {
                         buildings[static_cast<size_t>(u.target)].hp -= u.weapon.damage;
                         u.cooldown = u.weapon.rof;
@@ -739,6 +830,8 @@ bool SimWorld::tick() {
                 }
             }
         }
+        const bool turned = update_motion(u);
+        if (turned) changed = true;
         if (advance_segment(u)) changed = true;
     }
     // ── 步兵 idle 动作调度（原版 IdleActionFrequency 语义）──
@@ -1158,7 +1251,7 @@ bool SimWorld::can_place(int col, int row, int fw, int fh, uint32_t ignore_unit_
 
 uint32_t SimWorld::spawn_unit(const std::string& owner, const std::string& type, int kind,
                               int col, int row, uint8_t dir, const SimWeapon& weapon, bool is_miner,
-                              int capacity, int speed) {
+                              int capacity, int speed, const UnitMotion& motion) {
     if (kind < 1) kind = 1;
     const int sc = free_subcell(col, row, kind); // 一格 1 载具 或 ≤3 步兵
     if (sc < 0) return 0;                        // 该格已满 → 生成失败
@@ -1172,10 +1265,17 @@ uint32_t SimWorld::spawn_unit(const std::string& owner, const std::string& type,
     u.row = u.next_row = row;
     u.subcell = static_cast<uint8_t>(sc);
     u.dir = dir;
+    u.turret_dir = dir;
     u.weapon = weapon;
     u.is_miner = is_miner;
     u.capacity = capacity > 0 ? capacity : 20;
-    u.speed = speed > 0 ? speed : (kind == 2 ? 51 : 68);
+    u.speed = motion.max_speed > 0 ? motion.max_speed
+                                     : (speed > 0 ? speed : (kind == 2 ? 51 : 68));
+    u.rot_step = motion.rot_step;
+    u.turret_rot = motion.turret_rot > 0 ? motion.turret_rot : motion.rot_step;
+    u.accel_step = motion.accel_step;
+    u.decel_step = motion.decel_step;
+    u.vel = u.accel_step > 0 ? 0 : u.speed; // 加速型从静止起步，否则等速
     if (!credits.count(owner)) credits[owner] = 10000;
     units.push_back(std::move(u));
     return units.back().id;
@@ -1347,6 +1447,7 @@ uint64_t SimWorld::visual_hash() const {
             static_cast<uint64_t>(u.next_row + 4096));
         mix(u.frac);
         mix(u.dir);
+        mix(u.turret_dir);
         mix(u.subcell);
         mix((static_cast<uint64_t>(u.next2_col + 4096) << 32) |
             static_cast<uint64_t>(u.next2_row + 4096));

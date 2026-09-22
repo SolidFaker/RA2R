@@ -45,6 +45,13 @@ struct UnitTypeDef {
     std::string primary; // Primary= 武器名（载具/步兵/防御建筑）
     bool harvester = false;
     int capacity = 20; // 采矿容量（Harvester=yes 时）
+    // 运动物理（rulesmd；载具/步兵）
+    int speed = 0;            // Speed=（0 = 未给，用 kind 默认）
+    int rot = 0;              // ROT=（每逻辑帧 1/256 圈的转向步长；0 = 立即转向）
+    int turret_rot = 0;       // TurretROT=（0 = 用 ROT）
+    bool accelerates = false; // Accelerates=yes → 按 AccelerationFactor 加速到 Speed
+    double accel_factor = 0.0; // AccelerationFactor=（每帧 + max_speed×factor）
+    double decel_factor = 0.0; // DeaccelerationFactor=（0 = 不减速、瞬间停止）
     // 建筑
     int fw = 1, fh = 1;          // Foundation（地图格空间）
     // artmd Height=（单位：格）：建筑高度——选中时白色虚线框的高度，以及飞行单位

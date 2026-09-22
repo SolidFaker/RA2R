@@ -46,7 +46,11 @@ uint32_t make_unit(SimWorld& world, const std::string& house, const std::string&
     if (f.miner) f.miner(type, miner, cap);
     int kind = f.kind_of ? f.kind_of(type) : 1;
     if (kind != 1 && kind != 2) kind = 1;
-    return world.spawn_unit(house, type, kind, col, row, 0, w, miner, cap, kind == 2 ? 51 : 68);
+    UnitMotion mo;
+    mo.max_speed = kind == 2 ? 51 : 68;
+    if (f.motion) f.motion(type, mo);
+    return world.spawn_unit(house, type, kind, col, row, 0, w, miner, cap,
+                             kind == 2 ? 51 : 68, mo);
 }
 
 // 格是否可用（图内 + 无地形/建筑阻挡）

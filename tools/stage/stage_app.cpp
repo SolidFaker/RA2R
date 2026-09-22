@@ -160,6 +160,29 @@ std::function<bool(int, int)> make_terrain_block(const StageApp& a,
     };
 }
 
+// rulesmd 运动物理 → 引擎 UnitMotion（语义见 docs/DEBUGGING.md §3.33）：
+//   Speed= 标定 ×10（原 68 ≈ Speed 7 → ≈ 4 格/秒）；ROT= 直接作为
+//   每帧 0..255 转向步长；Accelerates=yes 时每帧加速 max_speed×
+//   AccelerationFactor；DeaccelerationFactor=0 = 不减速（瞬间停止）。
+ra2r::sim::UnitMotion unit_motion(const ra2r::assets::RulesDB& rules,
+                                  const std::string& type) {
+    ra2r::sim::UnitMotion mo;
+    const auto* t = rules.unit(type);
+    const int kind = t ? t->kind : 1;
+    mo.max_speed = kind == 2 ? 51 : 68;
+    if (!t) return mo;
+    if (t->speed > 0) mo.max_speed = std::clamp(t->speed * 10, 16, 255);
+    mo.rot_step = std::max(0, t->rot);
+    mo.turret_rot = t->turret_rot > 0 ? t->turret_rot : mo.rot_step;
+    if (t->accelerates && t->accel_factor > 0.0)
+        mo.accel_step =
+            std::max(1, static_cast<int>(std::lround(mo.max_speed * t->accel_factor)));
+    if (t->decel_factor > 0.0)
+        mo.decel_step =
+            std::max(1, static_cast<int>(std::lround(mo.max_speed * t->decel_factor)));
+    return mo;
+}
+
 // 生成/加载地图（模式 0=算法 1=平坦 2=加载）
 void generate_map(StageApp& a, std::string* error) {
     if (a.mode == 1) {
@@ -231,7 +254,10 @@ void generate_map(StageApp& a, std::string* error) {
                 return 0;
             },
             // 地形通过性：水面/悬崖/冰 + 树木/岩石 + 墙/围栏（见 make_terrain_block）
-            make_terrain_block(a, mf));
+            make_terrain_block(a, mf),
+            [&](const std::string& type, ra2r::sim::UnitMotion& mo) {
+                mo = unit_motion(a.rules, type);
+            });
         // 路网统计（自检诊断）：阻挡 = 水面/悬崖/冰 + 树木/岩石 + 墙/围栏 + 建筑地基
         if (a.sim_active) {
             int nav_blocked = 0;
@@ -659,7 +685,8 @@ void append_sim_objects(StageApp& a, std::vector<ra2r::render::PlacedObject>& ob
         po.id = u.type;
         po.cx = cx;
         po.cy = cy;
-        po.dir = static_cast<uint8_t>(u.dir * 32);
+        po.dir = u.dir; // 0..255（车体）
+        po.turret_dir = u.turret_dir; // 0..255（炮塔，车载）
         po.height = static_cast<int>(a.map.cell(cx, cy).height);
         po.off_x = off_x;
         po.off_y = off_y;
@@ -1487,6 +1514,9 @@ bool pack_selected_building(StageApp& a) {
             is_miner = u->harvester;
             cap = u->capacity;
         };
+        uf.motion = [&](const std::string& type, ra2r::sim::UnitMotion& mo) {
+            mo = unit_motion(a.rules, type);
+        };
         const std::string btype = b.type;
         const uint32_t uid =
             ra2r::sim::pack_building(a.sim, i, ut->undeploys_into, uf);
@@ -1666,7 +1696,10 @@ bool start_skirmish(StageApp& a, std::string* error) {
             return 0;
         },
         // 地形通过性：水面/悬崖/冰 + 树木/岩石 + 墙/围栏（见 make_terrain_block）
-        make_terrain_block(a, mf));
+        make_terrain_block(a, mf),
+        [&](const std::string& type, ra2r::sim::UnitMotion& mo) {
+            mo = unit_motion(a.rules, type);
+        });
     // 清掉地图自带对象（遭遇战从零开始）
     a.sim.buildings.clear();
     a.sim.units.clear();
@@ -1681,6 +1714,9 @@ bool start_skirmish(StageApp& a, std::string* error) {
         return u ? u->kind : 1;
     };
     uf.weapon = weapon_of;
+    uf.motion = [&](const std::string& type, ra2r::sim::UnitMotion& mo) {
+        mo = unit_motion(a.rules, type);
+    };
     uf.miner = miner_of;
     // 开局：玩家 waypoint0、对手 waypoint1；出生格按基地车展开后的地基尺寸选择
     // （地图 waypoint 可能落在水面/树丛，原地展不开时自动找最近的空地）
@@ -1737,7 +1773,7 @@ bool deploy_selected_mcv(StageApp& a) {
         if (!bt) continue;
         const std::string btype = t->deploys_into;
         const int ot = onsite_ticks(a, btype); // BuildupTime 逻辑帧；0 = 无动画即完成
-        const int udir = static_cast<int>(a.sim.units[i].dir) * 32; // 展开保留车体朝向
+        const int udir = static_cast<int>(a.sim.units[i].dir); // 展开保留车体朝向
         const uint32_t bid = ra2r::sim::deploy_mcv(a.sim, i, btype, bt->fw, bt->fh, bt->cost,
                                                    bt->power, ot > 0 ? ot : 1, bt->strength);
         if (bid) adopt_building(a, bid, udir);
@@ -1821,7 +1857,7 @@ void skirmish_ai_tick(StageApp& a) {
                 if (!bt) break;
                 const std::string btype = t->deploys_into;
                 const int ot = onsite_ticks(a, btype); // BuildupTime 逻辑帧
-                const int udir = static_cast<int>(a.sim.units[i].dir) * 32;
+                const int udir = static_cast<int>(a.sim.units[i].dir);
                 const uint32_t id = ra2r::sim::deploy_mcv(a.sim, i, btype, bt->fw, bt->fh,
                                                           bt->cost, bt->power,
                                                           ot > 0 ? ot : 1, bt->strength);

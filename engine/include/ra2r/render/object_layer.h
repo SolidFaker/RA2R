@@ -73,6 +73,8 @@ struct PlacedObject {
     uint32_t anim_clock = 0;
     uint8_t idle_kind = 0;
     uint32_t idle_start = 0;
+    // 炮塔朝向 0..255（载具；与 dir 不同时独立光栅合成）
+    uint8_t turret_dir = 0;
     // 地基尺寸（多格建筑用；排序取**靠下（南）边行**作深度，使靠下的对象遮挡
     // 靠上的对象，如建筑挡住站在其身前的单位）。1×1 对象保持默认。
     int fw = 1, fh = 1;

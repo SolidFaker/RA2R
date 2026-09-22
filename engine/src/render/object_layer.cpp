@@ -173,6 +173,7 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
         int kind = 0; // 0=建筑 1=载具 2=步兵
         std::string id;
         uint8_t dir = 0;
+        uint8_t turret_dir = 0;
         uint8_t subcell = 0;
         int height = 0;
         int off_x = 0, off_y = 0; // 格内像素偏移（M3 平滑移动插值；建筑恒 0）
@@ -192,7 +193,7 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
     std::vector<Obj> sorted;
     for (size_t i = 0; i < objs.size(); ++i) {
         const auto& o = objs[i];
-        sorted.push_back({o.cx, o.cy, o.cx + o.cy, o.kind, o.id, o.dir, o.subcell, o.height,
+        sorted.push_back({o.cx, o.cy, o.cx + o.cy, o.kind, o.id, o.dir, o.turret_dir, o.subcell, o.height,
                           o.off_x, o.off_y, o.alpha, o.hp, o.build_p, o.remap,
                           static_cast<int>(i), o.build_ticks, o.build_total, o.moving,
                           o.anim_clock, o.idle_kind, o.idle_start, o.fw, o.fh});
@@ -224,6 +225,7 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
             // 体素光栅缓存（按 美术名|朝向|比例16|阵营色；跨帧复用）
             const int scale16 = static_cast<int>(std::clamp(obj_scale, 0.1f, 4.0f) * 16.0f);
             const std::string vkey = img_name + '|' + std::to_string(o.dir) + '|' +
+                                     std::to_string(o.turret_dir) + '|' +
                                      std::to_string(scale16) + '|' + std::to_string(o.remap);
             const ObjectRenderCache::VoxelEntry* vent = nullptr;
             if (cache && cache->voxels.count(vkey)) {
@@ -267,19 +269,77 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                 // 朝向：RA2 dir 0=右上(与格平行) 32=右(与水平线平行) 64=右下…，
                 // 体素模型车头 = +x 轴（实测 TNKD 炮管向 +x 延伸：x+ 35.5 vs x− 21.5）
                 // → yaw = dir/256·2π − π/2（dir0→270°→车头右上，8 向全表吻合）
-                view.yaw = o.dir / 256.0f * 6.2831853f - 1.5707963f;
                 view.pitch = 0.0f;
                 view.scale = std::clamp(obj_scale, 0.1f, 4.0f);
                 view.remap = ramp_ptr(o.remap);
-                float ax = 0, ay = 0;
-                const ra2r::render::VoxelPart parts[3] = {
-                    {&vxl, have_hva ? &hva : nullptr, 0},
-                    {have_tur ? &tvxl : nullptr, have_thva ? &thva : nullptr, 0},
-                    {have_barl ? &bvxl : nullptr, have_bhva ? &bhva : nullptr, 0}};
-                float bx = 0, by = 0;
-                const auto img = ra2r::render::rasterize_voxel_parts(
-                    parts, 1 + (have_tur ? 1u : 0u) + (have_barl ? 1u : 0u), view, &ax, &ay,
-                    &bx, &by);
+                const auto yaw_of = [](uint8_t d) {
+                    return d / 256.0f * 6.2831853f - 1.5707963f;
+                };
+                float ax = 0, ay = 0, bx = 0, by = 0;
+                ra2r::render::RasterImage img;
+                const bool turret_parts = have_tur || have_barl;
+                if (!turret_parts || o.turret_dir == o.dir) {
+                    // 炮塔与车身同向（或无炮塔）：一次深度合成
+                    view.yaw = yaw_of(o.dir);
+                    const ra2r::render::VoxelPart parts[3] = {
+                        {&vxl, have_hva ? &hva : nullptr, 0},
+                        {have_tur ? &tvxl : nullptr, have_thva ? &thva : nullptr, 0},
+                        {have_barl ? &bvxl : nullptr, have_bhva ? &bhva : nullptr, 0}};
+                    img = ra2r::render::rasterize_voxel_parts(
+                        parts, 1 + (have_tur ? 1u : 0u) + (have_barl ? 1u : 0u), view, &ax, &ay,
+                        &bx, &by);
+                } else {
+                    // 炮塔独立朝向（TurretROT 转动）：车身/炮塔各光栅一次，
+                    // 按**模型原点**对齐叠合（炮塔在上，与原版合成顺序一致）
+                    ra2r::render::VoxelView vh = view;
+                    vh.yaw = yaw_of(o.dir);
+                    ra2r::render::VoxelView vt = view;
+                    vt.yaw = yaw_of(o.turret_dir);
+                    float h_ax = 0, h_ay = 0, h_bx = 0, h_by = 0;
+                    float t_ax = 0, t_ay = 0, t_bx = 0, t_by = 0;
+                    const ra2r::render::VoxelPart hull_part[1] = {
+                        {&vxl, have_hva ? &hva : nullptr, 0}};
+                    const ra2r::render::VoxelPart tur_part[2] = {
+                        {have_tur ? &tvxl : nullptr, have_thva ? &thva : nullptr, 0},
+                        {have_barl ? &bvxl : nullptr, have_bhva ? &bhva : nullptr, 0}};
+                    const auto himg = ra2r::render::rasterize_voxel_parts(
+                        hull_part, 1, vh, &h_ax, &h_ay, &h_bx, &h_by);
+                    const auto timg = ra2r::render::rasterize_voxel_parts(
+                        tur_part, (have_tur ? 1u : 0u) + (have_barl ? 1u : 0u), vt, &t_ax, &t_ay,
+                        &t_bx, &t_by);
+                    (void)t_bx;
+                    (void)t_by;
+                    const int dx = static_cast<int>(std::lround(h_ax - t_ax));
+                    const int dy = static_cast<int>(std::lround(h_ay - t_ay));
+                    const int min_x = std::min(0, dx), min_y = std::min(0, dy);
+                    const int max_x = std::max(himg.w, dx + timg.w);
+                    const int max_y = std::max(himg.h, dy + timg.h);
+                    img.w = max_x - min_x;
+                    img.h = max_y - min_y;
+                    img.rgba.assign(static_cast<size_t>(img.w) * img.h * 4, 0);
+                    const auto blit_part = [&](const ra2r::render::RasterImage& src,
+                                               int part_x, int part_y) {
+                        for (int y = 0; y < src.h; ++y) {
+                            const uint8_t* sp =
+                                src.rgba.data() + static_cast<size_t>(y) * src.w * 4;
+                            uint8_t* dp = img.rgba.data() +
+                                          (static_cast<size_t>(y + part_y) * img.w + part_x) * 4;
+                            for (int x = 0; x < src.w; ++x)
+                                if (sp[x * 4 + 3]) {
+                                    dp[x * 4 + 0] = sp[x * 4 + 0];
+                                    dp[x * 4 + 1] = sp[x * 4 + 1];
+                                    dp[x * 4 + 2] = sp[x * 4 + 2];
+                                    dp[x * 4 + 3] = sp[x * 4 + 3];
+                                }
+                        }
+                    };
+                    blit_part(himg, -min_x, -min_y);         // 车身
+                    blit_part(timg, dx - min_x, dy - min_y); // 炮塔（覆盖）
+                    ax = static_cast<float>(static_cast<int>(std::lround(h_ax)) - min_x);
+                    ay = static_cast<float>(static_cast<int>(std::lround(h_ay)) - min_y);
+                    bx = static_cast<float>(static_cast<int>(std::lround(h_bx)) - min_x);
+                    by = static_cast<float>(static_cast<int>(std::lround(h_by)) - min_y);
+                }
                 ObjectRenderCache::VoxelEntry ent;
                 ent.w = img.w;
                 ent.h = img.h;

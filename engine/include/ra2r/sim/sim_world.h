@@ -22,6 +22,9 @@
 namespace ra2r::sim {
 
 constexpr int kFracMax = 256;
+// 转向/移动互斥阈值（用户更正）：车体朝向与目标方向偏差 ≤ 16
+//（半个 45° 扇区）才允许推进；偏差更大时先原地转向。
+constexpr int kMoveAlignTol = 16;
 
 // 单位指令（M3 基础档：移动/攻击/护卫/巡逻/采集）
 enum SimOrder : uint8_t {
@@ -44,6 +47,15 @@ struct SimWeapon {
     int range = 0;  // 射程（格，曼哈顿距离，向上取整）
 };
 
+// 运动物理参数（rulesmd；stage 注入。0 = 无物理 = 原行为：瞬间起停/转向）
+struct UnitMotion {
+    int max_speed = 68;  // Speed= 标定后的 frac/逻辑帧上限
+    int rot_step = 0;    // ROT=（每帧转向步长，0..255 圆周；0 = 立即转向）
+    int turret_rot = 0;  // TurretROT=（0 = 用 ROT）
+    int accel_step = 0;  // AccelerationFactor×上限（0 = 立即到上限）
+    int decel_step = 0;  // DeaccelerationFactor×上限（0 = 瞬间停止）
+};
+
 struct SimUnit {
     uint32_t id = 0;
     std::string owner; // [Houses] 键名（地图 House 名）
@@ -55,7 +67,13 @@ struct SimUnit {
     // 格内子格（步兵 0..2 = 等腰三角分布；载具恒 0）。一格 = 1 载具 **或**
     // 最多 3 个步兵（见 free_subcell）；移动中渲染端按格心绘制（子格仅在驻停时生效）
     uint8_t subcell = 0;
-    uint8_t dir = 0;                // 朝向 0..7（渲染 ×32）
+    uint8_t dir = 0;                // 车体朝向 0..255（渲染直用；8 向扇区中心 = n×32）
+    uint8_t turret_dir = 0;         // 炮塔朝向 0..255（载具；按 TurretROT/ROT 转向）
+    int vel = 0;                    // 当前速度（frac/逻辑帧，0..speed）
+    int rot_step = 0;               // ROT=（0 = 立即转向）
+    int turret_rot = 0;             // TurretROT=（0 = 用 rot_step）
+    int accel_step = 0;             // AccelerationFactor 换算（0 = 立即加速）
+    int decel_step = 0;             // DeaccelerationFactor 换算（0 = 瞬间停止）
     int hp = 256;
     bool alive = true;
     SimWeapon weapon;
@@ -185,7 +203,9 @@ struct SimWorld {
                   const std::function<bool(const std::string&)>& refinery,
                   const std::function<int(const std::string&)>& power_of,
                   const std::function<int16_t(int, int)>& ore_at,
-                  const std::function<bool(int, int)>& terrain_block);
+                  const std::function<bool(int, int)>& terrain_block,
+                  const std::function<void(const std::string&, UnitMotion&)>& motion =
+                      {});
 
     // 推进一逻辑帧；返回是否有单位移动/转向/开火（渲染侧据此刷新）
     bool tick();
@@ -213,7 +233,7 @@ struct SimWorld {
     // 按 $10000 补种；格被占/出界不拒绝（调用方负责选点）。
     uint32_t spawn_unit(const std::string& owner, const std::string& type, int kind, int col,
                         int row, uint8_t dir, const SimWeapon& weapon, bool is_miner, int capacity,
-                        int speed);
+                        int speed, const UnitMotion& motion = {});
     // 移除单位（基地车展开消耗车体）；返回是否移除
     bool remove_unit(size_t idx);
     // 生成建筑（基地车展开 / 建造队列放置）：地基矩形校验 + 阻挡标记。
@@ -317,6 +337,11 @@ struct SimWorld {
     bool advance_segment(SimUnit& u);
     bool set_move_target(SimUnit& u, int tc, int tr);
     bool set_move_target_field(SimUnit& u, const FlowField* f, int tc, int tr);
+    // 运动物理：转向（ROT，偏差 >16 时原地转向且不推进）→ 加减速（Accelerates/
+    // DeaccelerationFactor）→ 炮塔转向（TurretROT）。返回本帧车体朝向是否变化。
+    bool update_motion(SimUnit& u);
+    // 车体朝向与目标格方向偏差是否 ≤ kMoveAlignTol（对准则允许推进）
+    bool segment_aligned(const SimUnit& u) const;
 
     // 单位是否在行进中（移动/追赶段）
     bool unit_moving(size_t i) const {

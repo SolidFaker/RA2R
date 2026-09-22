@@ -87,7 +87,8 @@ TEST(SimMove, EightDirectionsWithCorrectFacing) {
         const int tc = 32 + c.dc, tr = 32 + c.dr;
         ASSERT_TRUE(s.issue_move(0, tc, tr));
         s.tick();
-        EXPECT_EQ(s.units[0].dir, c.expect) << "目标 (" << tc << "," << tr << ")";
+        // dir 为 0..255 全圆周：8 向扇区中心 = 索引 × 32
+        EXPECT_EQ(s.units[0].dir, c.expect * 32) << "目标 (" << tc << "," << tr << ")";
     }
 }
 
@@ -340,6 +341,133 @@ TEST(SimMove, ReorderKeepsRenderedPixelPosition) {
     int o2x = 0, o2y = 0;
     sim::unit_render_offset(s.units[0], o2x, o2y);
     EXPECT_LE(std::abs(o2x - o1x) + std::abs(o2y - o1y), 12);
+}
+
+// ── 运动物理（rulesmd Accelerates/AccelerationFactor/DeaccelerationFactor/ROT）──
+
+namespace {
+sim::SimWorld make_veh_with_motion(const sim::UnitMotion& mo) {
+    sim::SimWorld s;
+    s.w = 64;
+    s.h = 64;
+    s.blocked.assign(64 * 64, 0);
+    s.spawn_unit("Player", "HTNK", 1, 10, 20, 0, {}, false, 0, 0, mo);
+    return s;
+}
+} // namespace
+
+// Accelerates=yes：从静止按 AccelerationFactor 加速到 Speed 上限
+TEST(SimMotion, AcceleratesRampsToSpeedLimit) {
+    sim::UnitMotion mo;
+    mo.max_speed = 100;
+    mo.accel_step = 10; // 每帧 +10 → 10 帧到上限
+    sim::SimWorld s = make_veh_with_motion(mo);
+    EXPECT_EQ(s.units[0].vel, 0) << "加速型应从静止起步";
+    ASSERT_TRUE(s.issue_move(0, 40, 20));
+    s.tick();
+    EXPECT_LE(s.units[0].vel, 10);
+    for (int i = 0; i < 12; ++i) s.tick();
+    EXPECT_EQ(s.units[0].vel, 100); // 达到上限（不超）
+}
+
+// DeaccelerationFactor=0：不减速、到达后瞬间停止（vel=0）
+TEST(SimMotion, DeaccelFactorZeroStopsInstantly) {
+    sim::UnitMotion mo;
+    mo.max_speed = 100; // accel=0 → 立即上限；decel=0 → 不减速
+    sim::SimWorld s = make_veh_with_motion(mo);
+    EXPECT_EQ(s.units[0].vel, 100);
+    ASSERT_TRUE(s.issue_move(0, 12, 20)); // 相邻格：很快到达
+    int t = 0;
+    while (t < 200 && any_moving(s)) {
+        s.tick();
+        ++t;
+    }
+    ASSERT_FALSE(any_moving(s));
+    EXPECT_EQ(s.units[0].vel, 0) << "到达后应瞬间停止";
+}
+
+// 减速系数 > 0：末段（无后续路径）逐渐减速且仍能到达
+TEST(SimMotion, DeceleratesOnFinalSegmentButStillArrives) {
+    sim::UnitMotion mo;
+    mo.max_speed = 120;
+    mo.decel_step = 12;
+    sim::SimWorld s = make_veh_with_motion(mo);
+    ASSERT_TRUE(s.issue_move(0, 12, 20));
+    int t = 0;
+    int min_vel = 1 << 20;
+    while (t < 400 && any_moving(s)) {
+        s.tick();
+        ++t;
+        min_vel = std::min(min_vel, s.units[0].vel);
+    }
+    ASSERT_FALSE(any_moving(s));
+    EXPECT_EQ(s.units[0].col, 12); // 仍然到达目的地
+    EXPECT_EQ(s.units[0].row, 20);
+    EXPECT_EQ(min_vel, 0); // 到达后归零
+}
+
+// ROT + 转向/移动互斥（用户更正）：偏差 >16 时原地转向、不推进；
+// 偏差 ≤ 16（半个扇区）后才开始/继续移动；每帧转向不超 rot_step。
+TEST(SimMotion, TurnsInPlaceUntilAlignedThenMoves) {
+    sim::UnitMotion mo;
+    mo.max_speed = 100;
+    mo.rot_step = 8;
+    sim::SimWorld s = make_veh_with_motion(mo); // 初始 dir=0（屏幕右上），东行目标 dir=32
+    ASSERT_TRUE(s.issue_move(0, 40, 20));
+    const int c0 = s.units[0].col, r0 = s.units[0].row;
+    int prev = s.units[0].dir;
+    bool turned = false, moved_while_misaligned = false, moved_after_aligned = false;
+    for (int i = 0; i < 200 && s.units[0].col == c0 && s.units[0].row == r0; ++i) {
+        s.tick();
+        const int now = s.units[0].dir;
+        int d = now - prev;
+        if (d > 128) d -= 256;
+        if (d < -128) d += 256;
+        EXPECT_LE(std::abs(d), 8) << "每帧转向不得超 ROT";
+        if (now != prev) turned = true;
+        int dev = 32 - now; // 行进方向为东（dir=32）
+        if (dev > 128) dev -= 256;
+        if (dev < -128) dev += 256;
+        const bool aligned = std::abs(dev) <= 16;
+        const bool moved = s.units[0].frac > 0;
+        if (moved && aligned) moved_after_aligned = true;
+        if (moved && !aligned) moved_while_misaligned = true;
+        prev = now;
+    }
+    EXPECT_TRUE(turned) << "应发生转向";
+    EXPECT_FALSE(moved_while_misaligned) << "偏差 >16 时不得推进（原地转向）";
+    EXPECT_TRUE(moved_after_aligned) << "对准后应开始移动";
+}
+
+// Accelerates=0（或 AccelerationFactor=0）：立即达到上限速度并正常移动（不是不能移动）
+TEST(SimMotion, ZeroAccelCoefficientStillMoves) {
+    sim::UnitMotion mo;
+    mo.max_speed = 100;
+    mo.accel_step = 0; // Accelerates=0
+    mo.rot_step = 5;   // 真实车辆有 ROT：不得因此卡住
+    sim::SimWorld s = make_veh_with_motion(mo);
+    EXPECT_EQ(s.units[0].vel, 100) << "系数 0 = 立即到位";
+    ASSERT_TRUE(s.issue_move(0, 14, 20));
+    for (int t = 0; t < 600 && any_moving(s); ++t) s.tick();
+    EXPECT_FALSE(any_moving(s));
+    EXPECT_EQ(s.units[0].col, 14) << "Accelerates=0 的单位必须能移动";
+    EXPECT_EQ(s.units[0].row, 20);
+}
+
+// TurretROT：炮塔独立按自己的转速追赶行进方向
+TEST(SimMotion, TurretTurnsTowardHeadingAtOwnRate) {
+    sim::UnitMotion mo;
+    mo.max_speed = 100;
+    mo.rot_step = 0;    // 车身立即转向
+    mo.turret_rot = 4;  // 炮塔每帧 4
+    sim::SimWorld s = make_veh_with_motion(mo);
+    ASSERT_TRUE(s.issue_move(0, 40, 20));
+    s.tick();
+    EXPECT_EQ(s.units[0].dir % 32, 0); // 车身已对准
+    const int t0 = s.units[0].turret_dir;
+    for (int i = 0; i < 100 && s.units[0].turret_dir != s.units[0].dir; ++i) s.tick();
+    EXPECT_EQ(s.units[0].turret_dir, s.units[0].dir) << "炮塔应追上行进朝向";
+    if (t0 == s.units[0].dir) GTEST_SKIP() << "初始已同向（本测例无意义）";
 }
 
 // 生成规则：同格最多 3 步兵（子格各异）；载具与步兵互斥、载具独占整格

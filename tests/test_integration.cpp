@@ -58,10 +58,10 @@ TEST(FixtureIntegration, LoadsMapIntoSimWorld) {
     ASSERT_EQ(s.units.size(), 2u);
     EXPECT_EQ(s.units[0].type, "MTNK");
     EXPECT_EQ(s.units[0].kind, 1);
-    EXPECT_EQ(s.units[0].dir, 64 / 32);
+    EXPECT_EQ(s.units[0].dir, 64); // 0..255 直用（不再 /32）
     EXPECT_EQ(s.units[1].type, "E1");
     EXPECT_EQ(s.units[1].kind, 2);
-    EXPECT_EQ(s.units[1].dir, 128 / 32);
+    EXPECT_EQ(s.units[1].dir, 128); // 0..255 直用
     // 建筑地基 4 格全部阻挡（footprint_cells 由地图空间 rx/ry 换算，非简单矩形）
     ASSERT_EQ(s.buildings[0].footprint_cells.size(), 4u);
     for (const auto& c : s.buildings[0].footprint_cells)
