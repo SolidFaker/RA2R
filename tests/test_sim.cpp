@@ -922,6 +922,68 @@ TEST(SimCombat, OriginalRulesVersesSpotCheck) {
     EXPECT_FALSE(m60->warhead.empty());
 }
 
+// ── M5.2 全实体抛射体：飞行时间/撞墙/追踪 ───────────────────────────────────
+
+// 有弹道：首帧不结算伤害，飞行数帧后命中；无弹道（speed=0）保持瞬时命中
+TEST(SimProjectile, BallisticFlightThenHit) {
+    sim::SimWorld s = make_world(32, 32);
+    ASSERT_GT(s.spawn_unit("Enemy", "HTNK", 1, 20, 16, 0, {}, false, 0, 68), 0u);
+    sim::SimWeapon w = test_weapon(100, 20, 8);
+    w.proj.speed = 32; // 32 frac/帧 ≈ 0.125 格/帧
+    s.units[0].weapon = w;
+    ASSERT_TRUE(s.issue_attack_unit(0, 1));
+    const int hp0 = s.units[1].hp;
+    s.tick(); // 首帧开火 → 生成抛射体（不结算伤害）
+    EXPECT_EQ(s.units[1].hp, hp0) << "有弹道时不应瞬时命中";
+    EXPECT_FALSE(s.projectiles.empty()) << "应生成抛射体";
+    int t = 0;
+    for (; t < 200 && s.units[1].hp == hp0; ++t) s.tick();
+    EXPECT_LT(s.units[1].hp, hp0) << "飞行后应命中";
+}
+
+// 无弹道（speed=0）＝瞬时命中（旧行为；既有测试依赖）
+TEST(SimProjectile, InstantWeaponHasNoProjectile) {
+    sim::SimWorld s = make_world(32, 32);
+    ASSERT_GT(s.spawn_unit("Enemy", "HTNK", 1, 20, 16, 0, {}, false, 0, 68), 0u);
+    s.units[0].weapon = test_weapon(100, 20, 8);
+    ASSERT_TRUE(s.issue_attack_unit(0, 1));
+    const int hp0 = s.units[1].hp;
+    s.tick();
+    EXPECT_LT(s.units[1].hp, hp0) << "无弹道应瞬时命中";
+    EXPECT_TRUE(s.projectiles.empty());
+}
+
+// SubjectToWalls=yes：路径上有阻挡格 → 撞墙引爆，目标不受伤
+TEST(SimProjectile, WallBlocksProjectile) {
+    sim::SimWorld s = make_world(32, 32);
+    ASSERT_GT(s.spawn_unit("Enemy", "HTNK", 1, 24, 16, 0, {}, false, 0, 68), 0u);
+    s.blocked[16 * 32 + 20] = 1; // 路径中段一堵墙
+    sim::SimWeapon w = test_weapon(100, 20, 12);
+    w.proj.speed = 32;
+    w.proj.subject_walls = true;
+    s.units[0].weapon = w;
+    ASSERT_TRUE(s.issue_attack_unit(0, 1));
+    const int hp0 = s.units[1].hp;
+    for (int t = 0; t < 200; ++t) s.tick();
+    EXPECT_EQ(s.units[1].hp, hp0) << "被墙挡住不应命中";
+}
+
+// ROT>0 追踪弹：目标边打边跑也能命中
+TEST(SimProjectile, HomingTracksMovingTarget) {
+    sim::SimWorld s = make_world(32, 32);
+    ASSERT_GT(s.spawn_unit("Enemy", "HTNK", 1, 22, 16, 0, {}, false, 0, 68), 0u);
+    sim::SimWeapon w = test_weapon(100, 20, 14);
+    w.proj.speed = 24;
+    w.proj.rot = 32;
+    s.units[0].weapon = w;
+    ASSERT_TRUE(s.issue_attack_unit(0, 1));
+    ASSERT_TRUE(s.issue_move(1, 22, 26)); // 目标同时移动
+    const int hp0 = s.units[1].hp;
+    int t = 0;
+    for (; t < 400 && s.units[1].hp == hp0; ++t) s.tick();
+    EXPECT_LT(s.units[1].hp, hp0) << "追踪弹应命中移动目标";
+}
+
 // ── 步兵 idle 动作（IdleActionFrequency 语义）────────────────────────────────
 
 TEST(SimIdle, TriggersInExpectedWindowAndIsDeterministic) {

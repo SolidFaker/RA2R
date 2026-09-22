@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cmath>
 #include <cstdlib>
 #include <utility>
 
@@ -829,11 +830,11 @@ size_t SimWorld::issue_move_group(const std::vector<size_t>& unit_idx, int tc, i
 
 
 // ── M5.1 战斗结算（数据依据：rulesmd Warheads Verses；护甲下标见 SimArmor）──
-int SimWorld::damage_against(const SimWeapon& w, int armor) const {
+int SimWorld::damage_against(const SimWeapon& sw, int armor) const {
     if (armor < 0 || armor >= kArmorCount) armor = kArmorNone;
-    const int v = w.warhead.verses[armor];
+    const int v = sw.warhead.verses[armor];
     if (v <= 0) return 0;
-    return (w.damage * v + 50) / 100; // 四舍五入（整数确定性）
+    return (sw.damage * v + 50) / 100; // 四舍五入（整数确定性）
 }
 
 const SimWeapon* SimWorld::effective_weapon(const SimUnit& u, int target_armor) const {
@@ -847,8 +848,158 @@ const SimWeapon* SimWorld::effective_weapon(const SimBuilding& b, int target_arm
     return nullptr;
 }
 
+// ── M5.2 抛射体（全实体弹道）────────────────────────────────────────────────
+namespace {
+// target_kind_id 解码：单位 = 下标+1；建筑 = 下标+1 | kBuildingBit
+bool decode_target(uint32_t tid, bool& is_building, size_t& idx) {
+    is_building = (tid & SimWorld::kBuildingBit) != 0;
+    const uint32_t v = tid & ~SimWorld::kBuildingBit;
+    if (v == 0) return false;
+    idx = static_cast<size_t>(v - 1);
+    return true;
+}
+} // namespace
+
+// 开火：有弹道（proj.speed>0）生成抛射体；否则瞬时命中（无弹道数据/旧行为）。
+bool SimWorld::fire_weapon(const std::string& owner, int fc, int fr, const SimWeapon& sw,
+                           uint32_t target_kind_id) {
+    bool is_b = false;
+    size_t ti = 0;
+    if (!decode_target(target_kind_id, is_b, ti)) return false;
+    if (is_b ? ti >= buildings.size() : ti >= units.size()) return false;
+    const int tcol = is_b ? buildings[ti].col : units[ti].col;
+    const int trow = is_b ? buildings[ti].row : units[ti].row;
+    const int tarmor = is_b ? buildings[ti].armor : units[ti].armor;
+    const int dmg = damage_against(sw, tarmor);
+    if (dmg <= 0) return false;
+    if (sw.proj.speed <= 0) { // 瞬时命中：保持旧行为（既有测试/无弹道武器）
+        if (is_b)
+            buildings[ti].hp -= dmg;
+        else
+            units[ti].hp -= dmg;
+        return true;
+    }
+    SimProjectile p;
+    p.id = next_id++;
+    p.owner = owner;
+    p.col = fc;
+    p.row = fr;
+    p.speed = sw.proj.speed;
+    p.rot = sw.proj.rot;
+    p.target_id = target_kind_id;
+    p.tcol = tcol;
+    p.trow = trow;
+    p.warhead = sw.warhead;
+    p.damage = dmg;
+    p.arcing = sw.proj.arcing;
+    p.subject_cliffs = sw.proj.subject_cliffs;
+    p.subject_elevation = sw.proj.subject_elevation;
+    p.subject_walls = sw.proj.subject_walls;
+    p.arm_x10 = sw.proj.arm_x10;
+    // 初始速度：指向目标格中心（屏幕投影方向 → frac 轴速度；整数确定性）
+    const int dxp = 60 * (tcol - fc) + 30 * ((trow & 1) - (fr & 1));
+    const int dyp = 15 * (trow - fr);
+    const long long len = std::max<long long>(1, std::llround(std::sqrt(
+                                                   static_cast<double>(dxp) * dxp +
+                                                   static_cast<double>(dyp) * dyp)));
+    p.vx = static_cast<int>(p.speed * dxp / len);
+    p.vy = static_cast<int>(p.speed * dyp / len);
+    if (p.vx == 0 && p.vy == 0) p.vx = p.speed > 0 ? 1 : 0; // 极小速度兜底
+    projectiles.push_back(std::move(p));
+    return true;
+}
+
+// 每 tick 推进所有抛射体：追踪转向 → 位移（归一化进格）→ 地形阻挡 → 命中/超时。
+bool SimWorld::advance_projectiles() {
+    bool changed = false;
+    for (auto& p : projectiles) {
+        if (!p.alive) continue;
+        bool is_b = false;
+        size_t ti = 0;
+        // 追踪（ROT>0）：目标还活着 → 每帧按 rot/256 向目标方向收敛
+        if (p.rot > 0 && decode_target(p.target_id, is_b, ti) &&
+            (is_b ? ti < buildings.size() : ti < units.size())) {
+            const bool talive = is_b ? buildings[ti].alive : units[ti].alive;
+            if (talive) {
+                const int tcx = is_b ? buildings[ti].col : units[ti].col;
+                const int trx = is_b ? buildings[ti].row : units[ti].row;
+                p.tcol = tcx;
+                p.trow = trx;
+                const int dxp = 60 * (tcx - p.col) + 30 * ((trx & 1) - (p.row & 1));
+                const int dyp = 15 * (trx - p.row);
+                const long long len = std::max<long long>(
+                    1, std::llround(std::sqrt(static_cast<double>(dxp) * dxp +
+                                              static_cast<double>(dyp) * dyp)));
+                const int tvx = static_cast<int>(p.speed * dxp / len);
+                const int tvy = static_cast<int>(p.speed * dyp / len);
+                const int k = std::clamp(p.rot, 8, 128); // 收敛率（8..128 / 256）
+                p.vx += (tvx - p.vx) * k / 256;
+                p.vy += (tvy - p.vy) * k / 256;
+            }
+        }
+        // 位移 + 归一化进格（x：256=1 列；y：256=2 行）
+        p.fx += p.vx;
+        p.fy += p.vy;
+        p.travelled += std::abs(p.vx) + std::abs(p.vy);
+        while (p.fx >= 256) {
+            p.fx -= 256;
+            ++p.col;
+        }
+        while (p.fx <= -256) {
+            p.fx += 256;
+            --p.col;
+        }
+        while (p.fy >= 256) {
+            p.fy -= 256;
+            p.row += 2;
+        }
+        while (p.fy <= -256) {
+            p.fy += 256;
+            p.row -= 2;
+        }
+        changed = true;
+        // 地形阻挡（SubjectToWalls；cliffs/elevation 在引擎无高度数据前同样按阻挡格）
+        if (p.subject_walls && p.col >= 0 && p.row >= 0 && p.col < w && p.row < h &&
+            !blocked.empty() && blocked[static_cast<size_t>(p.row) * w + p.col]) {
+            p.alive = false;
+            explosions.push_back({p.col, p.row, 30, 0});
+            continue;
+        }
+        // 命中：进入目标格（±半格）→ 引信距离满足则结算伤害
+        if (p.col == p.tcol && p.row == p.trow && std::abs(p.fx) <= 128 &&
+            std::abs(p.fy) <= 128) {
+            if (p.travelled * 10 >= p.arm_x10 * 256) { // Arm= 引信
+                if (decode_target(p.target_id, is_b, ti) &&
+                    (is_b ? ti < buildings.size() : ti < units.size()) &&
+                    (is_b ? buildings[ti].alive : units[ti].alive)) {
+                    if (is_b)
+                        buildings[ti].hp -= p.damage;
+                    else
+                        units[ti].hp -= p.damage;
+                }
+            }
+            p.alive = false;
+            explosions.push_back({p.col, p.row, 30, 0});
+            continue;
+        }
+        if (++p.ticks > 600) { // 超时兜底（10 秒）：原地引爆
+            p.alive = false;
+            explosions.push_back({p.col, p.row, 30, 0});
+        }
+    }
+    // 清理死亡抛射体（固定序，确定性）
+    if (!projectiles.empty())
+        projectiles.erase(
+            std::remove_if(projectiles.begin(), projectiles.end(),
+                           [](const SimProjectile& p) { return !p.alive; }),
+            projectiles.end());
+    return changed;
+}
+
 bool SimWorld::tick() {
     bool changed = false;
+    // M5.2：先推进抛射体（命中结算；与单位遍历同帧、固定序 → 确定性）
+    if (advance_projectiles()) changed = true;
     for (auto& u : units) { // 固定索引序遍历（确定性）
         if (!u.alive) continue;
         if (u.cooldown > 0) --u.cooldown;
@@ -935,9 +1086,10 @@ bool SimWorld::tick() {
                         dir_toward(u.col, u.row, t.col, t.row) * 32);
                     if (attacking && u.cooldown == 0) {
                         SimUnit& tv = units[static_cast<size_t>(u.target)];
-                        if (const SimWeapon* w = effective_weapon(u, tv.armor)) { // M5.1
-                            tv.hp -= damage_against(*w, tv.armor);
-                            u.cooldown = w->rof > 0 ? w->rof : 1;
+                        if (const SimWeapon* sw = effective_weapon(u, tv.armor)) { // M5.1/5.2
+                            fire_weapon(u.owner, u.col, u.row, *sw,
+                                        static_cast<uint32_t>(u.target) + 1);
+                            u.cooldown = sw->rof > 0 ? sw->rof : 1;
                             changed = true;
                         }
                     }
@@ -976,10 +1128,11 @@ bool SimWorld::tick() {
                     u.turret_dir = static_cast<uint8_t>(
                         dir_toward(u.col, u.row, tc, tr) * 32);
                     if (u.cooldown == 0) {
-                        SimBuilding& tb = buildings[static_cast<size_t>(u.target)];
-                        if (const SimWeapon* w = effective_weapon(u, tb.armor)) { // M5.1
-                            tb.hp -= damage_against(*w, tb.armor);
-                            u.cooldown = w->rof > 0 ? w->rof : 1;
+                        if (const SimWeapon* sw = effective_weapon(
+                                u, buildings[static_cast<size_t>(u.target)].armor)) {
+                            fire_weapon(u.owner, u.col, u.row, *sw,
+                                        static_cast<uint32_t>(u.target) + 1 + kBuildingBit);
+                            u.cooldown = sw->rof > 0 ? sw->rof : 1;
                             changed = true;
                         }
                     }
@@ -1153,9 +1306,9 @@ bool SimWorld::tick() {
         const bool in_range = manhattan(b.col, b.row, t.col, t.row) <= b.weapon.range;
         if (in_range && std::abs(diff) <= 16 && b.cooldown == 0) {
             SimUnit& tv = units[static_cast<size_t>(b.target)];
-            if (const SimWeapon* w = effective_weapon(b, tv.armor)) { // M5.1
-                tv.hp -= damage_against(*w, tv.armor);
-                b.cooldown = w->rof > 0 ? w->rof : 1;
+            if (const SimWeapon* sw = effective_weapon(b, tv.armor)) { // M5.1/5.2
+                fire_weapon(b.owner, b.col, b.row, *sw, static_cast<uint32_t>(b.target) + 1);
+                b.cooldown = sw->rof > 0 ? sw->rof : 1;
                 changed = true;
             }
         }
@@ -1645,6 +1798,14 @@ uint64_t SimWorld::visual_hash() const {
         mix(u.idle_kind ? static_cast<uint64_t>(u.idle_kind) * 65536u +
                               (logic_ticks - u.idle_start) / 3 + 1
                         : 0ull);
+    }
+    for (const auto& p : projectiles) { // M5.2：弹道位置进哈希（渲染需随弹更新）
+        mix(p.id);
+        mix((static_cast<uint64_t>(p.col + 4096) << 32) |
+            static_cast<uint64_t>(p.row + 4096));
+        mix((static_cast<uint64_t>(p.fx + 4096) << 16) |
+            static_cast<uint64_t>(p.fy + 4096));
+        mix(p.alive ? 1ull : 0ull);
     }
     for (const auto& b : buildings) {
         mix(b.id);

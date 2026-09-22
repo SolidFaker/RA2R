@@ -65,6 +65,20 @@ struct SimWarhead {
     int inf_death = 0;        // InfDeath=：死亡动画档（0 = 默认）
 };
 
+// 抛射体规格（rulesmd [Projectiles]，M5.2 全实体弹道）。speed = 0 = **瞬时命中**
+// （无抛射体数据/旧行为，保证既有测试与无弹道武器不受影响）。
+//   坐标模型：格 + 格内 frac（256 = 一格步长）；屏幕 x 每 256 frac 进 1 列、
+//   屏幕 y 每 256 frac 进 2 行（与引擎砖墙行序一致，确定性整数运算）。
+struct SimProjectileSpec {
+    int speed = 0;                // Speed= → frac/逻辑帧
+    int rot = 0;                  // ROT=（>0 = 追踪弹；每帧按 rot/256 向目标收敛）
+    bool arcing = false;          // Arcing=yes（渲染抛物线 z；sim 只记标志）
+    bool subject_cliffs = false;  // 高度上升 ≥1 级即引爆
+    bool subject_elevation = false;
+    bool subject_walls = false;   // blocked 格即引爆
+    int arm_x10 = 0;              // Arm=×10（引信距离，格）
+};
+
 struct SimWeapon {
     // damage = 0 且 range = 0 = **无武器**（默认即"无"；有武器必须显式注入
     // rulesmd Primary=）。旧默认 25/1 会把"没配武器"的建筑/单位变成 25 伤害的
@@ -77,6 +91,8 @@ struct SimWeapon {
     bool can_aa = true;   // 抛射体 AA=（可打空中；M5.7 空中单位接入后生效）
     bool can_ag = true;   // 抛射体 AG=（可打地面）
     int burst = 1;        // Burst= 连发数（M5.2 抛射体节奏）
+    // ── M5.2 弹道 ──
+    SimProjectileSpec proj;
 };
 
 // 运动物理参数（rulesmd；stage 注入。0 = 无物理 = 原行为：瞬间起停/转向）
@@ -199,6 +215,32 @@ struct SimExplosion {
     int elapsed = 0;
 };
 
+// 抛射体（M5.2 全实体弹道）：格 + 格内 frac（256 = 一格步长）。
+// 屏幕 x 每 256 frac 进 1 列、屏幕 y 每 256 frac 进 2 行（与砖墙行序一致）。
+// 命中判据：进入目标格（|fx|,|fy| ≤ 128）→ 结算伤害；目标已死/被挡/超时 →
+// 在当前位置引爆（生成爆炸特效；M5.3 在这里接范围伤害）。
+struct SimProjectile {
+    uint32_t id = 0;
+    std::string owner;
+    int col = 0, row = 0; // 基准格（格心）
+    int fx = 0, fy = 0;   // 格心偏移（frac）
+    int vx = 0, vy = 0;   // 速度（frac/帧）
+    int speed = 0;        // 速度大小（追踪弹保持恒定）
+    int rot = 0;          // ROT=（>0 = 追踪弹，每帧按 rot/256 向目标收敛）
+    uint32_t target_id = 0; // 目标（units 下标+1；建筑 + kBuildingBit）
+    int tcol = 0, trow = 0; // 目标格（到达判据/直射终点）
+    SimWarhead warhead;
+    int damage = 0;
+    bool arcing = false;
+    bool subject_cliffs = false;
+    bool subject_elevation = false;
+    bool subject_walls = false;
+    int arm_x10 = 0;      // 引信距离（格×10）
+    int travelled = 0;    // 已飞距离（frac，曼哈顿近似）
+    int ticks = 0;        // 存活帧（超时兜底）
+    bool alive = true;
+};
+
 // 建造队列项（RA2 侧边栏：排队 → 进度 → 待放置）。
 // 遭遇战流程：选中建筑 → queue_build（立即扣款）→ tick 推进 → ready →
 // 玩家在地图放置（spawn_building）后清空。
@@ -220,6 +262,8 @@ struct SimWorld {
     std::vector<SimBuilding> buildings;
     std::vector<SimUnit> units;
     std::vector<SimExplosion> explosions;
+    // M5.2 全实体抛射体（每 tick 推进；固定遍历序，确定性）
+    std::vector<SimProjectile> projectiles;
     uint32_t next_id = 1;
     // 资源（M3 基础档：矿石格存量 + 各 House 资金）
     std::vector<int16_t> ore; // 引擎格矿石量（0=无矿）
@@ -261,11 +305,17 @@ struct SimWorld {
 
     // ── M5.1 战斗结算 ──
     // 对目标护甲的实际伤害 = Damage × Verses[armor]%（整数四舍五入；确定性）
-    int damage_against(const SimWeapon& w, int armor) const;
+    int damage_against(const SimWeapon& sw, int armor) const;
     // 选武器（原版规则）：对目标护甲 Verses > 0% 者优先；主武器可用则用主武器，
     // 主武器无效（0%）且副武器有效 → 用副武器；都无效返回 nullptr（不开火）。
     const SimWeapon* effective_weapon(const SimUnit& u, int target_armor) const;
     const SimWeapon* effective_weapon(const SimBuilding& b, int target_armor) const;
+    // M5.2：开火 = 有弹道（proj.speed>0）则生成抛射体，否则瞬时命中（旧行为）。
+    // target_kind_id：单位 = units 下标 +1；建筑 = buildings 下标 +1 + kBuildingBit。
+    static constexpr uint32_t kBuildingBit = 0x80000000u;
+    bool fire_weapon(const std::string& owner, int fc, int fr, const SimWeapon& sw,
+                     uint32_t target_kind_id);
+    bool advance_projectiles();
 
     // 指令：单位 idx 移动到格 (tc,tr)（为当前格/无路径时原地停止）。
     // 目标不可达返回 false 并保持原指令。

@@ -742,9 +742,8 @@ DeaccelerationFactor）+ 转向（ROT/TurretROT）
 - **验证**：`SimMotion.*` 6 例（加速到上限 / 系数 0 瞬停 / 末段减速仍到达 /
   ROT **偏差 >16 原地转向不动、≤16 才推进** / Accelerates=0 立即到位仍能移动 / 炮塔独立转向）；夹具 `[E1]` 加
   Speed/ROT/TurretROT/Accelerates/两系数并断言；探针（probe_turret_yaw）目视确认炮塔
-  独立角度渲染。基线（含 §3.34–§3.36 后）：simbuild `ac63e823…`、
-  simattack `16044dc2…`、遭遇战 900 帧 `a619462a…`（统一画家序 + 地形两分类 +
-  多格建筑前沿行修正后整体重录）；
+  独立角度渲染。基线（含 §3.34–§3.38 后）：simbuild `ac63e823…`、
+  simattack `61424019…`（M5.2 弹道飞行时间后更新）、遭遇战 900 帧 `a619462a…`；
   4800 帧双方 5/5、$4700 不变（避堵不改变经济/AI 结果）。
 
 ### 3.34 格预订（cell reservation）："预订-检测"与防闪现
@@ -852,6 +851,24 @@ DeaccelerationFactor）+ 转向（ROT/TurretROT）
   避免逐调用点漏设）；stage 侧 `sim_weapon_of()` 把弹头灌进 `SimWeapon`。
 - **验证**：`SimCombat.*` 4 例（护甲顺序、Verses 与四舍五入、副武器选择、原版
   数据抽查 AP/E1）；总 135；本批未改变三场景基线（伤害差异未触发）。
+
+### 3.38 M5.2 全实体抛射体（弹道）
+- **数据**：rulesmd `[Projectiles]` 全量（`Inviso/Image/SubjectToCliffs/Elevation/
+  Walls/Arcing/ROT/Speed/AA/AG/Arm/Shadow/Acceleration`）；武器 `AA/AG` 由所挂
+  抛射体回填（无抛射体 = 全支持，保持旧行为）。
+- **模型**（`SimProjectile`，确定性整数）：位置 = 格 + 格内 frac（256 = 一格步长；
+  屏幕 x 每 256 frac 进 1 列、屏幕 y 每 256 frac 进 2 行，与砖墙行序一致）；
+  `Speed=` 直接作为 frac/帧；`ROT>0` = 追踪弹（每帧按 rot/256 向目标方向收敛，
+  目标死后飞向最后已知格）；命中 = 进入目标格（±半格）→ 结算伤害 + 爆炸特效；
+  `SubjectToWalls` = 阻挡格引爆（引擎暂无高度数据，Cliffs/Elevation 同按阻挡格，
+  待地形高度暴露给 sim 后细分）；`Arm=` 引信距离内不结算；600 帧超时兜底。
+- **兼容**：`proj.speed == 0`（无 `Projectile=`/无 `Speed=`）→ **瞬时命中**，
+  既有测试与无弹道武器完全不受影响（139/139）。
+- **验证**：`SimProjectile.*` 4 例（飞行后命中、无弹道瞬时命中、撞墙不命中、
+  追踪弹命中移动目标）；simattack 基线更新 `61424019…`（有飞行时间后时序变化），
+  simbuild/遭遇战不变、4800 帧 $4700 不变。
+- **待办（M5.2 尾）**：`Image=` 可见弹体的渲染（多数原版弹体 Inviso/Image=none，
+  故先不做也不影响观感）与 `Burst` 连发节奏、`Arcing` 抛物线 z。
 
 ## 4. 构建/工具链类
 

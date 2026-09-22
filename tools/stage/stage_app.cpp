@@ -220,6 +220,19 @@ void sim_weapon_of(const ra2r::assets::RulesDB& rules, const std::string& wname,
         w.warhead.prone_damage = wh->prone_damage;
         w.warhead.inf_death = wh->inf_death;
     }
+    // M5.2：弹道（无 Projectile= 或无 Speed= → speed=0 = 瞬时命中，保持旧行为）
+    w.proj = ra2r::sim::SimProjectileSpec{};
+    if (const auto* pr = rules.projectile(wp->projectile)) {
+        w.proj.speed = pr->speed;
+        w.proj.rot = pr->rot;
+        w.proj.arcing = pr->arcing;
+        w.proj.subject_cliffs = pr->subject_cliffs;
+        w.proj.subject_elevation = pr->subject_elevation;
+        w.proj.subject_walls = pr->subject_walls;
+        w.proj.arm_x10 = pr->arm_x10;
+        w.can_aa = pr->aa;
+        w.can_ag = pr->ag;
+    }
 }
 
 // 给 SimWorld 装上 M5.1 战斗注入（护甲 + 副武器）；load_map / 遭遇战两处共用。
@@ -273,10 +286,7 @@ void generate_map(StageApp& a, std::string* error) {
                 }
             },
             [&](const std::string& type, ra2r::sim::SimWeapon& w) {
-                if (const auto* u = a.rules.unit(type)) {
-                    if (const auto* wp = a.rules.weapon(u->primary))
-                        w = {wp->damage, wp->rof, wp->range};
-                }
+                if (const auto* u = a.rules.unit(type)) sim_weapon_of(a.rules, u->primary, w);
             },
             [&](const std::string& type, bool& is_miner, int& cap) {
                 if (const auto* u = a.rules.unit(type)) {
@@ -1702,10 +1712,7 @@ void adopt_building(StageApp& a, uint32_t id, int dir) {
         if (b.id != id) continue;
         const auto* u = a.rules.unit(b.type);
         ra2r::sim::SimWeapon w;
-        if (u) {
-            if (const auto* wp = a.rules.weapon(u->primary))
-                w = {wp->damage, wp->rof, wp->range};
-        }
+        if (u) sim_weapon_of(a.rules, u->primary, w); // M5.1/5.2：弹头 + 弹道
         a.sim.configure_building(id, dir, w, u && u->refinery);
         if (u && (!u->anim.empty() || !u->anim_two.empty() || !u->anim_three.empty() ||
                   !u->idle_anim.empty() || !u->idle_two.empty() || !u->prod_anim.empty() ||
@@ -1749,8 +1756,7 @@ bool pack_selected_building(StageApp& a) {
         uf.weapon = [&](const std::string& type, ra2r::sim::SimWeapon& w) {
             const auto* u = a.rules.unit(type);
             if (!u) return;
-            const auto* wp = a.rules.weapon(u->primary);
-            if (wp) w = {wp->damage, wp->rof, wp->range};
+            sim_weapon_of(a.rules, u->primary, w); // M5.1/5.2：弹头 + 弹道
         };
         uf.miner = [&](const std::string& type, bool& is_miner, int& cap) {
             const auto* u = a.rules.unit(type);

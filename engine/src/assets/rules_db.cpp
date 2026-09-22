@@ -268,6 +268,41 @@ bool RulesDB::load(const uint8_t* rulesmd, size_t rules_n, const uint8_t* artmd,
         h.iron_curtain = is_yes(rules_.get(wname, "IronCurtain", "no"));
         h.rad_level = std::atoi(rules_.get(wname, "RadLevel", "0").c_str());
     }
+    // ── M5.2 抛射体（[Projectiles] 列表 + 逐节字段）──
+    projectiles_.clear();
+    std::map<std::string, bool> prnames;
+    for (const auto& [k, pname] : rules_.section("Projectiles")) {
+        (void)k;
+        if (!pname.empty()) prnames[pname] = true;
+    }
+    for (const auto& [pname, dummy] : prnames) {
+        (void)dummy;
+        if (!rules_.has_section(pname)) continue;
+        ProjectileDef& p = projectiles_[upper(pname)];
+        p.name = pname;
+        p.inviso = is_yes(rules_.get(pname, "Inviso", "no"));
+        p.image = rules_.get(pname, "Image", "");
+        p.subject_cliffs = is_yes(rules_.get(pname, "SubjectToCliffs", "no"));
+        p.subject_elevation = is_yes(rules_.get(pname, "SubjectToElevation", "no"));
+        p.subject_walls = is_yes(rules_.get(pname, "SubjectToWalls", "no"));
+        p.arcing = is_yes(rules_.get(pname, "Arcing", "no"));
+        p.rot = std::atoi(rules_.get(pname, "ROT", "0").c_str());
+        p.speed = std::atoi(rules_.get(pname, "Speed", "0").c_str());
+        p.aa = is_yes(rules_.get(pname, "AA", "no"));
+        p.ag = is_yes(rules_.get(pname, "AG", "yes"));
+        p.arm_x10 = static_cast<int>(
+            std::lround(std::atof(rules_.get(pname, "Arm", "0").c_str()) * 10.0));
+        p.shadow = is_yes(rules_.get(pname, "Shadow", "no"));
+        p.acceleration = std::atoi(rules_.get(pname, "Acceleration", "0").c_str());
+    }
+    // 武器 AA/AG 回填（M5.1 预留字段；无抛射体 = 全支持，保持旧行为）
+    for (auto& [k, w] : weapons_) {
+        (void)k;
+        const auto it = projectiles_.find(upper(w.projectile));
+        if (it == projectiles_.end()) continue;
+        w.can_aa = it->second.aa;
+        w.can_ag = it->second.ag;
+    }
     return true;
 }
 
@@ -302,6 +337,11 @@ const WeaponDef* RulesDB::weapon(const std::string& name) const {
 const WarheadDef* RulesDB::warhead(const std::string& name) const {
     const auto it = warheads_.find(upper(name));
     return it != warheads_.end() ? &it->second : nullptr;
+}
+
+const ProjectileDef* RulesDB::projectile(const std::string& name) const {
+    const auto it = projectiles_.find(upper(name));
+    return it != projectiles_.end() ? &it->second : nullptr;
 }
 
 const CountryDef* RulesDB::country(const std::string& name) const {

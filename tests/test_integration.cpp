@@ -34,8 +34,16 @@ bool load_fixture_world(sim::SimWorld& s) {
             if (t == "GAPOWR") fw = 2, fh = 2;
         },
         [](const std::string& t, sim::SimWeapon& w) {
-            if (t == "MTNK") w = {90, 65, 6};
-            if (t == "E1") w = {15, 20, 4};
+            if (t == "MTNK") {
+            w.damage = 90;
+            w.rof = 65;
+            w.range = 6;
+        }
+            if (t == "E1") {
+            w.damage = 15;
+            w.rof = 20;
+            w.range = 4;
+        }
         },
         [](const std::string&, bool& m, int& c) { m = false, c = 20; },
         [](const std::string&) { return false; },

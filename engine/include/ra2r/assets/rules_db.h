@@ -134,6 +134,28 @@ struct WarheadDef {
     int rad_level = 0;        // RadLevel=（辐射强度；M5.6）
 };
 
+// 抛射体（rulesmd [Projectiles]）：M5.2 全实体弹道用。
+//   Speed= 单位 = frac/逻辑帧（1 格 = 256 frac；原版 lepton/帧 同尺度）
+//   ROT= 每帧转向步长（>0 = 追踪弹）；Arcing= 抛物线（渲染 z 弧线）
+//   SubjectToCliffs/Elevation/Walls = 会被对应地形挡住（在阻挡格上引爆）
+//   Arm= 引信距离（格×10；飞行不足该距离不造成伤害）
+struct ProjectileDef {
+    std::string name;
+    bool inviso = true;             // Inviso=yes（不画）
+    std::string image;              // Image=（none = 不画）
+    bool subject_cliffs = false;
+    bool subject_elevation = false;
+    bool subject_walls = false;
+    bool arcing = false;
+    int rot = 0;                    // ROT=
+    int speed = 0;                  // Speed= → frac/帧
+    bool aa = false;                // AA=（可打空中）
+    bool ag = true;                 // AG=（可打地面）
+    int arm_x10 = 0;                // Arm=×10
+    bool shadow = false;            // Shadow=yes
+    int acceleration = 0;           // Acceleration=（M5.2 先存）
+};
+
 // 护甲名 → 原版 11 类下标（大小写不敏感；未知 = none(0)）
 int armor_index(const std::string& name);
 
@@ -147,6 +169,7 @@ public:
     const UnitTypeDef* unit(const std::string& name) const;
     const WeaponDef* weapon(const std::string& name) const;
     const WarheadDef* warhead(const std::string& name) const;
+    const ProjectileDef* projectile(const std::string& name) const;
     // 国家 / 颜色（遭遇战阵营与阵营色）
     const CountryDef* country(const std::string& name) const;
     const ColorDef* color(const std::string& name) const;
@@ -172,6 +195,7 @@ private:
     std::map<std::string, UnitTypeDef> units_;
     std::map<std::string, WeaponDef> weapons_;
     std::map<std::string, WarheadDef> warheads_;
+    std::map<std::string, ProjectileDef> projectiles_;
     std::vector<CountryDef> countries_;
     std::map<std::string, size_t> country_index_; // 大写名 → countries_ 下标
     std::vector<ColorDef> colors_;
