@@ -97,6 +97,17 @@ bool RulesDB::load(const uint8_t* rulesmd, size_t rules_n, const uint8_t* artmd,
             u.elite_occupy_weapon = rules_.get(name, "EliteOccupyWeapon", "");
             u.can_be_occupied = is_yes(rules_.get(name, "CanBeOccupied", "no"));
             u.max_occupants = std::atoi(rules_.get(name, "MaxNumberOccupants", "0").c_str());
+            // M5.7/M5.8：飞行/海军
+            u.naval = is_yes(rules_.get(name, "Naval", "no"));
+            u.underwater = is_yes(rules_.get(name, "Underwater", "no"));
+            u.airport_bound = is_yes(rules_.get(name, "AirportBound", "no"));
+            u.fighter = is_yes(rules_.get(name, "Fighter", "no"));
+            {
+                const std::string nt = rules_.get(name, "NavalTargeting", "");
+                const std::string lt = rules_.get(name, "LandTargeting", "");
+                u.naval_targeting = nt.empty() ? -1 : std::atoi(nt.c_str());
+                u.land_targeting = lt.empty() ? -1 : std::atoi(lt.c_str());
+            }
             u.harvester = is_yes(rules_.get(name, "Harvester", "no"));
             u.capacity = std::atoi(rules_.get(name, "Capacity", "20").c_str());
             if (u.capacity < 1) u.capacity = 1;

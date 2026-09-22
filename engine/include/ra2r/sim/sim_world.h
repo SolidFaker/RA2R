@@ -181,6 +181,10 @@ struct SimUnit {
     uint32_t mc_by = 0;         // 心灵控制者单位 id（0 = 未被控制）
     std::string mc_owner;       // 被控制前的归属（控制者死亡后恢复）
     uint32_t capture_id = 0;    // 工程师占领中：目标建筑 id（0 = 无）
+    // ── M5.7 飞行 / M5.8 海军 ──
+    bool air = false;        // 飞行单位：直线飞行、不占格、免疫地面门禁
+    bool naval = false;      // 舰船：走水面航路（naval_nav）
+    bool underwater = false; // 潜艇（M5.8 简版：仅标记）
     uint8_t order = kOrderNone;
     int target = -1;               // 攻击/护卫目标下标（按 order 语义）
     int cooldown = 0;
@@ -366,6 +370,10 @@ struct SimWorld {
     // M5.5：Gunner 载具武器解析（载具类型 + 乘客类型 → 武器；stage 按乘客
     // IFVMode= 选 Weapon(mode+1)/EliteWeapon(mode+1)）。elite = 载具是否 2 级。
     std::function<void(const std::string&, const std::string&, bool, SimWeapon&)> gunner_weapon;
+    // M5.7/M5.8：角色注入（air/naval/underwater + NavalTargeting/LandTargeting 槽）
+    std::function<void(const std::string&, SimUnit&)> role_of;
+    // M5.8：水面航路（1 = 不可航行；stage 注入；空 = 舰船退化为直线）
+    std::vector<uint8_t> naval_nav;
 
     // 推进一逻辑帧；返回是否有单位移动/转向/开火（渲染侧据此刷新）
     bool tick();
@@ -504,6 +512,7 @@ struct SimWorld {
     struct FlowCacheEntry {
         int tc = -1, tr = -1, slots = 0;
         uint32_t version = 0;
+        bool naval = false; // M5.8：该流场建在水面航路上
         FlowField field;
     };
     std::vector<FlowCacheEntry> flow_cache; // 最近使用（LRU：命中/插入移到末尾）
@@ -513,7 +522,7 @@ struct SimWorld {
     }
     // 取（必要时构建）目标格 (tc,tr) 的流场：slots = 目标槽位数（1 = 仅目标格；
     // 目标格被阻挡/槽位>1 时用"目标 + 周围可走格"作多源，单位就近落位）。
-    const FlowField* flow_for(int tc, int tr, int slots);
+    const FlowField* flow_for(int tc, int tr, int slots, bool naval = false);
     // 目标槽位表（确定性：目标格优先，再按环序取周围可走格；最多 slots 个）
     std::vector<std::pair<int, int>> nav_sources(int tc, int tr, int slots) const;
     // 同上，但用调用方给的临时路网（绕行重规划：把占位单位当障碍）

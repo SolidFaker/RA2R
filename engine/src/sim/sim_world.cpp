@@ -634,12 +634,14 @@ std::vector<std::pair<int, int>> SimWorld::plan_avoiding_units(const SimUnit& u,
     return flow_path(f, sc, sr);
 }
 
-const FlowField* SimWorld::flow_for(int tc, int tr, int slots) {
+const FlowField* SimWorld::flow_for(int tc, int tr, int slots, bool naval) {
     if (slots < 1) slots = 1;
     if (slots > 16) slots = 16;
+    if (naval && naval_nav.empty()) naval = false; // 无水面路网 → 退化为地面图
     for (size_t i = 0; i < flow_cache.size(); ++i) {
         FlowCacheEntry& e = flow_cache[i];
-        if (e.tc == tc && e.tr == tr && e.slots == slots && e.version == nav_version) {
+        if (e.tc == tc && e.tr == tr && e.slots == slots && e.version == nav_version &&
+            e.naval == naval) {
             if (i + 1 != flow_cache.size()) {
                 FlowCacheEntry hit = std::move(e);
                 flow_cache.erase(flow_cache.begin() + static_cast<std::ptrdiff_t>(i));
@@ -655,7 +657,9 @@ const FlowField* SimWorld::flow_for(int tc, int tr, int slots) {
     entry.tr = tr;
     entry.slots = slots;
     entry.version = nav_version;
-    if (!build_flow_field(blocked, w, h, (min_s + min_d) & 1, sources, entry.field))
+    entry.naval = naval;
+    const std::vector<uint8_t>& nav = naval ? naval_nav : blocked;
+    if (!build_flow_field(nav, w, h, (min_s + min_d) & 1, sources, entry.field))
         return nullptr;
     if (flow_cache.size() >= 8) flow_cache.erase(flow_cache.begin());
     flow_cache.push_back(std::move(entry));

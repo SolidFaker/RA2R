@@ -55,6 +55,14 @@ struct UnitTypeDef {
     std::string elite_occupy_weapon;        // EliteOccupyWeapon=
     bool can_be_occupied = false;           // CanBeOccupied=yes（可进驻建筑）
     int max_occupants = 0;                  // MaxNumberOccupants=
+    // ── M5.7 飞行 / M5.8 海军 ──
+    bool air = false;        // 来自 [AircraftTypes]（飞行单位：直线飞行、不占格）
+    bool naval = false;      // Naval=yes（只能在水面航行）
+    bool underwater = false; // Underwater=yes（潜艇：下潜状态；机制 M5.8 简版）
+    bool airport_bound = false; // AirportBound=yes（返场；机制待 M6）
+    bool fighter = false;    // Fighter=yes（制空；机制待 M6）
+    int naval_targeting = -1; // NavalTargeting=（对海目标武器槽 = 值+1；-1 未设）
+    int land_targeting = -1;  // LandTargeting=（对陆目标武器槽 = 值+1；-1 未设）
     // ── M5.4 老兵/精英 ──
     uint32_t veteran_abilities = 0; // VeteranAbilities= 位掩码（VetAbility）
     uint32_t elite_abilities = 0;   // EliteAbilities= 位掩码（与老兵叠加）
