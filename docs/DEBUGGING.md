@@ -835,6 +835,24 @@ DeaccelerationFactor）+ 转向（ROT/TurretROT）
   - 每 30 帧整图兜底（脏区漏算只会短暂残留，不会永久花屏）；
   - 性能改动必须用**同场景截图 SHA256** 回归（本次三场景与优化前逐字节一致）。
 
+### 3.37 M5.1 战斗内核：护甲/Verses + 主副武器选择
+- **数据**：rulesmd `Armor=`、`[Warheads]` 全量（`Verses` 11 项 %、`CellSpread`、
+  `PercentAtMax`、`ProneDamage`、`InfDeath`；`EMEffect/MindControl/Teleport/
+  IronCurtain/RadLevel` 先入库供 M5.6）、武器 `Warhead/Burst/Projectile`。
+- **护甲顺序自证**：`[AP] Verses=25%,25%,15%,…` 注释"让 plate 几乎免疫" → 第 3 项
+  = plate → `none,flak,plate,light,medium,heavy,wood,steel,concrete,special_1,
+  special_2`（`SimCombat.ArmorIndexOrderMatchesOriginal` 锁死；`armor_index`）。
+- **伤害**：`damage = Damage × Verses[armor]%`（整数四舍五入，确定性）；`0%` = 免疫。
+- **选武器**（教程原文规则）：对目标护甲 `Verses>0%` 者优先；主武器可用则主武器，
+  主武器 0% 且副武器有效 → 副武器；都 0% → 不开火（`effective_weapon`）。
+  抛射体 `AA/AG` 的目标种类判定在 M5.2/M5.7 接入。
+- **百分比字段两种写法**：`ProneDamage=50%`（整数 %）与 `PercentAtMax=.5`（小数
+  比例）——解析时含 `%` 按整数读、否则 ×100（踩过：统一 ×100 会得 5000）。
+- **注入**：`SimWorld::armor_of` / `secondary_of`（spawn_unit/load_map 统一填，
+  避免逐调用点漏设）；stage 侧 `sim_weapon_of()` 把弹头灌进 `SimWeapon`。
+- **验证**：`SimCombat.*` 4 例（护甲顺序、Verses 与四舍五入、副武器选择、原版
+  数据抽查 AP/E1）；总 135；本批未改变三场景基线（伤害差异未触发）。
+
 ## 4. 构建/工具链类
 
 - 无管理员工具链：WinLibs MinGW（免安装）+ pip CMake + SDL3 mingw 预编译包，全部放 `I:\tools\`（不入库）。

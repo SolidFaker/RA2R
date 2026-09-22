@@ -224,7 +224,12 @@ bool SimWorld::load_map(const assets::MapFile& map,
             su.decel_step = mo.decel_step;
         }
         su.hp = u.health;
+        su.armor = armor_of ? armor_of(u.id) : kArmorNone; // M5.1：护甲
         weapon(u.id, su.weapon);
+        if (secondary_of) {
+            secondary_of(u.id, su.weapon2);
+            su.has_secondary = su.weapon2.damage > 0 && su.weapon2.range > 0;
+        }
         miner(u.id, su.is_miner, su.capacity);
         seed_credits(u.owner);
         units.push_back(std::move(su));
@@ -254,7 +259,12 @@ bool SimWorld::load_map(const assets::MapFile& map,
             su.accel_step = mo.accel_step;
             su.decel_step = mo.decel_step;
         }
+        su.armor = armor_of ? armor_of(n.id) : kArmorNone; // M5.1：护甲
         weapon(n.id, su.weapon);
+        if (secondary_of) {
+            secondary_of(n.id, su.weapon2);
+            su.has_secondary = su.weapon2.damage > 0 && su.weapon2.range > 0;
+        }
         miner(n.id, su.is_miner, su.capacity);
         seed_credits(n.owner);
         units.push_back(std::move(su));
@@ -818,6 +828,25 @@ size_t SimWorld::issue_move_group(const std::vector<size_t>& unit_idx, int tc, i
 }
 
 
+// ── M5.1 战斗结算（数据依据：rulesmd Warheads Verses；护甲下标见 SimArmor）──
+int SimWorld::damage_against(const SimWeapon& w, int armor) const {
+    if (armor < 0 || armor >= kArmorCount) armor = kArmorNone;
+    const int v = w.warhead.verses[armor];
+    if (v <= 0) return 0;
+    return (w.damage * v + 50) / 100; // 四舍五入（整数确定性）
+}
+
+const SimWeapon* SimWorld::effective_weapon(const SimUnit& u, int target_armor) const {
+    if (damage_against(u.weapon, target_armor) > 0) return &u.weapon;
+    if (u.has_secondary && damage_against(u.weapon2, target_armor) > 0) return &u.weapon2;
+    return nullptr;
+}
+
+const SimWeapon* SimWorld::effective_weapon(const SimBuilding& b, int target_armor) const {
+    if (damage_against(b.weapon, target_armor) > 0) return &b.weapon;
+    return nullptr;
+}
+
 bool SimWorld::tick() {
     bool changed = false;
     for (auto& u : units) { // 固定索引序遍历（确定性）
@@ -905,9 +934,12 @@ bool SimWorld::tick() {
                     u.turret_dir = static_cast<uint8_t>(
                         dir_toward(u.col, u.row, t.col, t.row) * 32);
                     if (attacking && u.cooldown == 0) {
-                        units[static_cast<size_t>(u.target)].hp -= u.weapon.damage;
-                        u.cooldown = u.weapon.rof;
-                        changed = true;
+                        SimUnit& tv = units[static_cast<size_t>(u.target)];
+                        if (const SimWeapon* w = effective_weapon(u, tv.armor)) { // M5.1
+                            tv.hp -= damage_against(*w, tv.armor);
+                            u.cooldown = w->rof > 0 ? w->rof : 1;
+                            changed = true;
+                        }
                     }
                     continue; // 驻停开火
                 }
@@ -944,9 +976,12 @@ bool SimWorld::tick() {
                     u.turret_dir = static_cast<uint8_t>(
                         dir_toward(u.col, u.row, tc, tr) * 32);
                     if (u.cooldown == 0) {
-                        buildings[static_cast<size_t>(u.target)].hp -= u.weapon.damage;
-                        u.cooldown = u.weapon.rof;
-                        changed = true;
+                        SimBuilding& tb = buildings[static_cast<size_t>(u.target)];
+                        if (const SimWeapon* w = effective_weapon(u, tb.armor)) { // M5.1
+                            tb.hp -= damage_against(*w, tb.armor);
+                            u.cooldown = w->rof > 0 ? w->rof : 1;
+                            changed = true;
+                        }
                     }
                     continue;
                 }
@@ -1117,9 +1152,12 @@ bool SimWorld::tick() {
         }
         const bool in_range = manhattan(b.col, b.row, t.col, t.row) <= b.weapon.range;
         if (in_range && std::abs(diff) <= 16 && b.cooldown == 0) {
-            units[static_cast<size_t>(b.target)].hp -= b.weapon.damage;
-            b.cooldown = b.weapon.rof > 0 ? b.weapon.rof : 1;
-            changed = true;
+            SimUnit& tv = units[static_cast<size_t>(b.target)];
+            if (const SimWeapon* w = effective_weapon(b, tv.armor)) { // M5.1
+                tv.hp -= damage_against(*w, tv.armor);
+                b.cooldown = w->rof > 0 ? w->rof : 1;
+                changed = true;
+            }
         }
     }
     // ── 死亡结算（固定序：先标记，后整批移除并重映射目标下标）──
@@ -1403,6 +1441,11 @@ uint32_t SimWorld::spawn_unit(const std::string& owner, const std::string& type,
     u.owner = owner;
     u.type = type;
     u.kind = kind;
+    u.armor = armor_of ? armor_of(type) : kArmorNone; // M5.1：护甲（Verses 结算）
+    if (secondary_of) { // M5.1：副武器（按目标护甲/种类选择）
+        secondary_of(type, u.weapon2);
+        u.has_secondary = u.weapon2.damage > 0 && u.weapon2.range > 0;
+    }
     u.col = u.next_col = col;
     u.row = u.next_row = row;
     u.subcell = static_cast<uint8_t>(sc);
@@ -1453,6 +1496,7 @@ uint32_t SimWorld::spawn_building(const std::string& owner, const std::string& t
     b.type = type;
     b.col = col;
     b.row = row;
+    b.armor = armor_of ? armor_of(type) : kArmorNone; // M5.1：建筑护甲（Verses）
     b.fw = fw;
     b.fh = fh;
     cell_to_map(col, row, b.rx, b.ry); // 地图空间锚（顶格）

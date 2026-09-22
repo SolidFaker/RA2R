@@ -9,12 +9,22 @@
 #include <utility>
 #include <vector>
 
+#include "ra2r/assets/rules_db.h"
 #include "ra2r/render/isometric.h"
 #include "ra2r/sim/sim_world.h"
+#include "test_util.h"
 
 using namespace ra2r;
 
 namespace {
+// 测试用武器（M5.1 后 SimWeapon 字段变多：显式赋值，避免聚合初始化告警）
+sim::SimWeapon test_weapon(int damage, int rof, int range) {
+    sim::SimWeapon w;
+    w.damage = damage;
+    w.rof = rof;
+    w.range = range;
+    return w;
+}
 // 空世界 + 一辆车（speed 68）
 sim::SimWorld make_world(int w = 64, int h = 64, int speed = 68, int kind = 1) {
     sim::SimWorld s;
@@ -835,6 +845,83 @@ TEST(SimReserve, ChokepointCrossingDoesNotStall) {
     }
 }
 
+// ── M5.1 战斗内核：护甲/Verses 伤害 + 主副武器选择 ───────────────────────────
+
+// 护甲下标顺序（原版 11 类；自证：rulesmd [AP] 注释"让 plate 几乎免疫"）
+TEST(SimCombat, ArmorIndexOrderMatchesOriginal) {
+    using ra2r::assets::armor_index;
+    EXPECT_EQ(armor_index("none"), sim::kArmorNone);
+    EXPECT_EQ(armor_index("flak"), sim::kArmorFlak);
+    EXPECT_EQ(armor_index("plate"), sim::kArmorPlate); // 第 3 项（AP 注释自证）
+    EXPECT_EQ(armor_index("light"), sim::kArmorLight);
+    EXPECT_EQ(armor_index("heavy"), sim::kArmorHeavy);
+    EXPECT_EQ(armor_index("concrete"), sim::kArmorConcrete);
+    EXPECT_EQ(armor_index("STEEL"), sim::kArmorSteel);   // 大小写不敏感
+    EXPECT_EQ(armor_index("bogus"), sim::kArmorNone);    // 未知回退 none
+}
+
+// Verses 伤害：Damage × Verses[armor]%（四舍五入）；0% = 免疫
+TEST(SimCombat, DamageUsesWarheadVerses) {
+    sim::SimWorld s;
+    sim::SimWeapon w;
+    w.damage = 100;
+    w.warhead.verses[sim::kArmorNone] = 100;
+    w.warhead.verses[sim::kArmorFlak] = 50;
+    w.warhead.verses[sim::kArmorPlate] = 0;
+    w.warhead.verses[sim::kArmorHeavy] = 25;
+    EXPECT_EQ(s.damage_against(w, sim::kArmorNone), 100);
+    EXPECT_EQ(s.damage_against(w, sim::kArmorFlak), 50);
+    EXPECT_EQ(s.damage_against(w, sim::kArmorPlate), 0);
+    EXPECT_EQ(s.damage_against(w, sim::kArmorHeavy), 25);
+    w.damage = 15; // 15×50% = 7.5 → 8（四舍五入）
+    EXPECT_EQ(s.damage_against(w, sim::kArmorFlak), 8);
+}
+
+// 主武器对目标护甲 0% → 改用副武器；两者都无效 → 不开火（返回 nullptr）
+TEST(SimCombat, SecondaryWeaponSelectedWhenPrimaryIneffective) {
+    sim::SimWorld s;
+    sim::SimUnit u;
+    u.weapon.damage = 50;
+    u.weapon.range = 4;
+    u.weapon.warhead.verses[sim::kArmorHeavy] = 0; // 主武器打不动重甲
+    u.weapon2.damage = 30;
+    u.weapon2.range = 5;
+    u.weapon2.warhead.verses[sim::kArmorHeavy] = 100; // 副武器专打重甲
+    u.has_secondary = true;
+    const sim::SimWeapon* w = s.effective_weapon(u, sim::kArmorHeavy);
+    ASSERT_NE(w, nullptr);
+    EXPECT_EQ(w->damage, 30) << "主武器无效时应改用副武器";
+    EXPECT_EQ(s.effective_weapon(u, sim::kArmorNone), &u.weapon) << "主武器有效时用主武器";
+    // 都无效 → 不开火
+    u.weapon.warhead.verses[sim::kArmorNone] = 0;
+    u.weapon2.warhead.verses[sim::kArmorNone] = 0;
+    EXPECT_EQ(s.effective_weapon(u, sim::kArmorNone), nullptr);
+}
+
+// 原版数据抽查（需游戏目录）：rulesmd [AP] 实测值（注释"让 plate 几乎免疫"自证顺序）
+TEST(SimCombat, OriginalRulesVersesSpotCheck) {
+    RA2R_REQUIRE_ASSETS();
+    const auto* db = test::rules_db();
+    ASSERT_NE(db, nullptr);
+    const auto* ap = db->warhead("AP");
+    ASSERT_NE(ap, nullptr);
+    EXPECT_EQ(ap->verses[sim::kArmorPlate], 15) << "第 3 项 = plate（rulesmd 注释自证）";
+    EXPECT_EQ(ap->verses[sim::kArmorHeavy], 100);
+    EXPECT_EQ(ap->verses[sim::kArmorSteel], 45);
+    EXPECT_EQ(ap->cell_spread_x100, 30); // CellSpread=.3
+    EXPECT_EQ(ap->percent_at_max, 50);   // PercentAtMax=.5
+    EXPECT_EQ(ap->prone_damage, 50);     // ProneDamage=50%
+    EXPECT_EQ(ap->inf_death, 3);
+    // E1：Armor=none + Secondary=Para + 主武器带弹头
+    const auto* e1 = db->unit("E1");
+    ASSERT_NE(e1, nullptr);
+    EXPECT_EQ(ra2r::assets::armor_index(e1->armor), sim::kArmorNone);
+    EXPECT_FALSE(e1->secondary.empty());
+    const auto* m60 = db->weapon(e1->primary);
+    ASSERT_NE(m60, nullptr);
+    EXPECT_FALSE(m60->warhead.empty());
+}
+
 // ── 步兵 idle 动作（IdleActionFrequency 语义）────────────────────────────────
 
 TEST(SimIdle, TriggersInExpectedWindowAndIsDeterministic) {
@@ -1125,7 +1212,7 @@ TEST(SimDefense, ManualAttackTurnsTurretAndDamages) {
     const uint32_t bid = s.spawn_building("Player", "GAPILL", 32, 32, 1, 1, 500, -50, false, 1,
                                           500);
     ASSERT_NE(bid, 0u);
-    ASSERT_TRUE(s.configure_building(bid, 0, {40, 20, 5}));
+    ASSERT_TRUE(s.configure_building(bid, 0, test_weapon(40, 20, 5)));
     const uint32_t uid = s.spawn_unit("Opponent", "E1", 2, 32, 36, 0, {}, false, 0, 51);
     ASSERT_NE(uid, 0u);
     ASSERT_TRUE(s.issue_build_attack(0, 0));
@@ -1146,7 +1233,7 @@ TEST(SimDefense, OutOfRangeAimsWithoutFiring) {
     s.blocked.assign(64 * 64, 0);
     const uint32_t bid = s.spawn_building("Player", "GAPILL", 32, 32, 1, 1, 500, -50, false, 1,
                                           500);
-    ASSERT_TRUE(s.configure_building(bid, 0, {40, 20, 5}));
+    ASSERT_TRUE(s.configure_building(bid, 0, test_weapon(40, 20, 5)));
     s.spawn_unit("Opponent", "E1", 2, 32, 42, 0, {}, false, 0, 51);
     ASSERT_TRUE(s.issue_build_attack(0, 0));
     for (int t = 0; t < 80; ++t) s.tick();
@@ -1162,8 +1249,8 @@ TEST(SimDefense, AutoAcquireFiresButNeutralDoesNot) {
     const uint32_t b1 = s.spawn_building("Player", "GAPILL", 32, 32, 1, 1, 500, -50, false, 1,
                                          500);
     const uint32_t b2 = s.spawn_building("Neutral", "GAPILL", 20, 20, 1, 1, 500, 0, false, 1, 500);
-    ASSERT_TRUE(s.configure_building(b1, 0, {40, 20, 5}));
-    ASSERT_TRUE(s.configure_building(b2, 0, {40, 20, 5}));
+    ASSERT_TRUE(s.configure_building(b1, 0, test_weapon(40, 20, 5)));
+    ASSERT_TRUE(s.configure_building(b2, 0, test_weapon(40, 20, 5)));
     s.spawn_unit("Opponent", "E1", 2, 32, 36, 0, {}, false, 0, 51);
     for (int t = 0; t < 90; ++t) s.tick();
     EXPECT_LT(s.units[0].hp, 256) << "玩家建筑应自动索敌开火";
@@ -1177,7 +1264,7 @@ TEST(SimDefense, StopAttackResumesAutoAcquire) {
     s.blocked.assign(64 * 64, 0);
     const uint32_t bid = s.spawn_building("Player", "GAPILL", 32, 32, 1, 1, 500, -50, false, 1,
                                           500);
-    ASSERT_TRUE(s.configure_building(bid, 0, {40, 20, 5}));
+    ASSERT_TRUE(s.configure_building(bid, 0, test_weapon(40, 20, 5)));
     s.spawn_unit("Opponent", "E1", 2, 32, 35, 0, {}, false, 0, 51);
     ASSERT_TRUE(s.issue_build_attack(0, 0));
     s.tick();
@@ -1195,8 +1282,8 @@ TEST(SimCombat, UnitAttackKillsTargetAndRemovesIt) {
     s.w = 32;
     s.h = 32;
     s.blocked.assign(32 * 32, 0);
-    s.spawn_unit("A", "HTNK", 1, 10, 10, 0, {90, 5, 3}, false, 0, 68);
-    s.spawn_unit("B", "HTNK", 1, 12, 10, 0, {1, 100, 1}, false, 0, 68);
+    s.spawn_unit("A", "HTNK", 1, 10, 10, 0, test_weapon(90, 5, 3), false, 0, 68);
+    s.spawn_unit("B", "HTNK", 1, 12, 10, 0, test_weapon(1, 100, 1), false, 0, 68);
     ASSERT_TRUE(s.issue_attack_unit(0, 1));
     for (int t = 0; t < 300 && s.units.size() > 1; ++t) s.tick();
     ASSERT_EQ(s.units.size(), 1u) << "目标应被击杀并移除";
@@ -1212,7 +1299,7 @@ TEST(SimDeterminism, IdenticalSequencesProduceIdenticalState) {
         s.h = 64;
         s.blocked.assign(64 * 64, 0);
         s.idle_freq_ticks = 60;
-        s.spawn_unit("Player", "HTNK", 1, 10, 10, 0, {90, 5, 3}, false, 0, 68);
+        s.spawn_unit("Player", "HTNK", 1, 10, 10, 0, test_weapon(90, 5, 3), false, 0, 68);
         s.spawn_unit("Opponent", "E1", 2, 30, 30, 0, {}, false, 0, 51);
         s.spawn_building("Player", "GAPOWR", 20, 20, 2, 2, 300, 100, false, 1, 750);
         s.issue_move(0, 22, 22);

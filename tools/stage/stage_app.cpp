@@ -198,6 +198,43 @@ ra2r::sim::UnitMotion unit_motion(const ra2r::assets::RulesDB& rules,
     return mo;
 }
 
+// rulesmd 武器 → 引擎 SimWeapon（M5.1：伤害/ROF/射程 + 弹头 Verses + Burst；
+// 抛射体 AA/AG 在 M5.2 接入）。弹头缺失时 Verses 全 100%（保持旧行为）。
+void sim_weapon_of(const ra2r::assets::RulesDB& rules, const std::string& wname,
+                   ra2r::sim::SimWeapon& w) {
+    const auto* wp = rules.weapon(wname);
+    if (!wp) {
+        w = ra2r::sim::SimWeapon{};
+        return;
+    }
+    w.damage = wp->damage;
+    w.rof = wp->rof;
+    w.range = wp->range;
+    w.burst = std::max(1, wp->burst);
+    w.warhead = ra2r::sim::SimWarhead{};
+    if (const auto* wh = rules.warhead(wp->warhead)) {
+        for (int i = 0; i < ra2r::sim::kArmorCount; ++i)
+            w.warhead.verses[i] = wh->verses[i];
+        w.warhead.cell_spread_x100 = wh->cell_spread_x100;
+        w.warhead.percent_at_max = wh->percent_at_max;
+        w.warhead.prone_damage = wh->prone_damage;
+        w.warhead.inf_death = wh->inf_death;
+    }
+}
+
+// 给 SimWorld 装上 M5.1 战斗注入（护甲 + 副武器）；load_map / 遭遇战两处共用。
+// 护甲用 assets::armor_index（11 类原版顺序）；副武器为空 = has_secondary 保持 false。
+void bind_combat_callbacks(StageApp& a) {
+    a.sim.armor_of = [&a](const std::string& type) {
+        const auto* u = a.rules.unit(type);
+        return u ? ra2r::assets::armor_index(u->armor) : ra2r::sim::kArmorNone;
+    };
+    a.sim.secondary_of = [&a](const std::string& type, ra2r::sim::SimWeapon& w) {
+        const auto* u = a.rules.unit(type);
+        if (u && !u->secondary.empty()) sim_weapon_of(a.rules, u->secondary, w);
+    };
+}
+
 // 生成/加载地图（模式 0=算法 1=平坦 2=加载）
 void generate_map(StageApp& a, std::string* error) {
     if (a.mode == 1) {
@@ -226,6 +263,7 @@ void generate_map(StageApp& a, std::string* error) {
         };
         ensure_rules(a);
         a.sim = {};
+        bind_combat_callbacks(a); // M5.1：护甲/副武器注入
         a.sim_active = a.sim.load_map(
             mf,
             [&](const std::string& type, int& fw, int& fh) {
@@ -1862,9 +1900,7 @@ bool start_skirmish(StageApp& a, std::string* error) {
     ra2r::assets::MapFile mf;
     if (!mf.open(a.map_files[a.map_sel], error)) return false;
     const auto weapon_of = [&](const std::string& type, ra2r::sim::SimWeapon& w) {
-        if (const auto* u = a.rules.unit(type))
-            if (const auto* wp = a.rules.weapon(u->primary))
-                w = {wp->damage, wp->rof, wp->range};
+        if (const auto* u = a.rules.unit(type)) sim_weapon_of(a.rules, u->primary, w);
     };
     const auto miner_of = [&](const std::string& type, bool& is_miner, int& cap) {
         if (const auto* u = a.rules.unit(type)) {
@@ -1913,6 +1949,7 @@ bool start_skirmish(StageApp& a, std::string* error) {
     a.sim.credits.clear();
     a.sim.build_queue.clear();
     a.sim.next_id = 1;
+    bind_combat_callbacks(a); // M5.1：护甲/副武器注入（遭遇战）
     // 单位工厂（rulesmd → SimUnit 属性）
     ra2r::sim::UnitFactory uf;
     uf.kind_of = [&](const std::string& type) {
@@ -1920,6 +1957,14 @@ bool start_skirmish(StageApp& a, std::string* error) {
         return u ? u->kind : 1;
     };
     uf.weapon = weapon_of;
+    uf.armor_of = [&](const std::string& type) {
+        const auto* u = a.rules.unit(type);
+        return u ? ra2r::assets::armor_index(u->armor) : ra2r::sim::kArmorNone;
+    };
+    uf.secondary = [&](const std::string& type, ra2r::sim::SimWeapon& w) {
+        const auto* u = a.rules.unit(type);
+        if (u && !u->secondary.empty()) sim_weapon_of(a.rules, u->secondary, w);
+    };
     uf.motion = [&](const std::string& type, ra2r::sim::UnitMotion& mo) {
         mo = unit_motion(a.rules, type);
     };

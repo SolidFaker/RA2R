@@ -38,6 +38,33 @@ enum SimOrder : uint8_t {
 };
 
 // 基础武器（stage 从 rulesmd 解析注入）
+// 原版 11 类护甲（`Verses=` 的下标顺序；名字 → 下标见 assets::armor_index）。
+// 数据自证：rulesmd `[AP]` 注释"让 plate 几乎免疫" → 第 3 项 = plate。
+enum SimArmor : int {
+    kArmorNone = 0,
+    kArmorFlak,
+    kArmorPlate,
+    kArmorLight,
+    kArmorMedium,
+    kArmorHeavy,
+    kArmorWood,
+    kArmorSteel,
+    kArmorConcrete,
+    kArmorSpecial1,
+    kArmorSpecial2,
+    kArmorCount
+};
+
+// 弹头（rulesmd [Warheads]，stage 注入）。M5.1 用 Verses；其余字段先解析入库
+//（M5.3 范围伤害/死亡动画、M5.6 特殊效果用）。
+struct SimWarhead {
+    int verses[kArmorCount] = {100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100};
+    int cell_spread_x100 = 0; // CellSpread= ×100（0 = 单体伤害）
+    int percent_at_max = 100; // PercentAtMax=（%）：边缘杀伤 = 圆心 × 该值
+    int prone_damage = 100;   // ProneDamage=（%）：对卧倒步兵
+    int inf_death = 0;        // InfDeath=：死亡动画档（0 = 默认）
+};
+
 struct SimWeapon {
     // damage = 0 且 range = 0 = **无武器**（默认即"无"；有武器必须显式注入
     // rulesmd Primary=）。旧默认 25/1 会把"没配武器"的建筑/单位变成 25 伤害的
@@ -45,6 +72,11 @@ struct SimWeapon {
     int damage = 0;
     int rof = 30;   // 冷却（逻辑帧）
     int range = 0;  // 射程（格，曼哈顿距离，向上取整）
+    // ── M5.1 战斗语义 ──
+    SimWarhead warhead;   // 弹头（Verses 决定对目标护甲的实际伤害）
+    bool can_aa = true;   // 抛射体 AA=（可打空中；M5.7 空中单位接入后生效）
+    bool can_ag = true;   // 抛射体 AG=（可打地面）
+    int burst = 1;        // Burst= 连发数（M5.2 抛射体节奏）
 };
 
 // 运动物理参数（rulesmd；stage 注入。0 = 无物理 = 原行为：瞬间起停/转向）
@@ -77,6 +109,10 @@ struct SimUnit {
     int hp = 256;
     bool alive = true;
     SimWeapon weapon;
+    // ── M5.1 战斗：护甲（kArmor* 下标）+ 副武器（Primary/Secondary 按目标选）──
+    int armor = kArmorNone;
+    SimWeapon weapon2;
+    bool has_secondary = false;
     uint8_t order = kOrderNone;
     int target = -1;               // 攻击/护卫目标下标（按 order 语义）
     int cooldown = 0;
@@ -129,6 +165,7 @@ struct SimBuilding {
     int hp = 256;
     bool alive = true;
     bool is_refinery = false;
+    int armor = kArmorNone; // M5.1：建筑护甲（Verses 结算用；数据来自 rulesmd Armor=）
     uint8_t dir = 0; // 地图存储朝向（0..255；炮塔 SHP 帧/体素 yaw 用）
     // 建造（M3 基础档：Cost/2 帧工期、半透明+进度条表现；原版生长动画待 M4）
     bool under_construction = false;
@@ -213,8 +250,22 @@ struct SimWorld {
                   const std::function<void(const std::string&, UnitMotion&)>& motion =
                       {});
 
+    // 护甲注入（rulesmd Armor= → kArmor* 下标；未设置 = kArmorNone）。
+    // spawn_unit / load_map 造单位时统一取用，避免逐调用点漏设。
+    std::function<int(const std::string&)> armor_of;
+    // 副武器注入（rulesmd Secondary=）：spawn/load_map 统一填 weapon2 + has_secondary
+    std::function<void(const std::string&, SimWeapon&)> secondary_of;
+
     // 推进一逻辑帧；返回是否有单位移动/转向/开火（渲染侧据此刷新）
     bool tick();
+
+    // ── M5.1 战斗结算 ──
+    // 对目标护甲的实际伤害 = Damage × Verses[armor]%（整数四舍五入；确定性）
+    int damage_against(const SimWeapon& w, int armor) const;
+    // 选武器（原版规则）：对目标护甲 Verses > 0% 者优先；主武器可用则用主武器，
+    // 主武器无效（0%）且副武器有效 → 用副武器；都无效返回 nullptr（不开火）。
+    const SimWeapon* effective_weapon(const SimUnit& u, int target_armor) const;
+    const SimWeapon* effective_weapon(const SimBuilding& b, int target_armor) const;
 
     // 指令：单位 idx 移动到格 (tc,tr)（为当前格/无路径时原地停止）。
     // 目标不可达返回 false 并保持原指令。

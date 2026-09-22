@@ -2,6 +2,7 @@
 #include "ra2r/assets/rules_db.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 
@@ -69,6 +70,8 @@ bool RulesDB::load(const uint8_t* rulesmd, size_t rules_n, const uint8_t* artmd,
             if (u.image.empty()) u.image = name;
             // 通用
             u.primary = rules_.get(name, "Primary", "");
+            u.secondary = rules_.get(name, "Secondary", ""); // M5.1：副武器
+            u.armor = rules_.get(name, "Armor", "");         // M5.1：护甲名
             u.harvester = is_yes(rules_.get(name, "Harvester", "no"));
             u.capacity = std::atoi(rules_.get(name, "Capacity", "20").c_str());
             if (u.capacity < 1) u.capacity = 1;
@@ -220,8 +223,70 @@ bool RulesDB::load(const uint8_t* rulesmd, size_t rules_n, const uint8_t* artmd,
         const float rng =
             static_cast<float>(std::atof(rules_.get(wname, "Range", "1").c_str()));
         w.range = rng > 0.0f ? static_cast<int>(std::ceil(rng)) : 1;
+        // M5.1：弹头 / 抛射体 / 连发（AA/AG 在 M5.2 解析抛射体时回填）
+        w.warhead = rules_.get(wname, "Warhead", "");
+        w.projectile = rules_.get(wname, "Projectile", "");
+        w.burst = std::max(1, std::atoi(rules_.get(wname, "Burst", "1").c_str()));
+    }
+    // ── M5.1 弹头（[Warheads] 列表 + 逐节字段；Verses 为 11 项百分比）──
+    warheads_.clear();
+    std::map<std::string, bool> whnames;
+    for (const auto& [k, wname] : rules_.section("Warheads")) {
+        (void)k;
+        if (!wname.empty()) whnames[wname] = true;
+    }
+    for (const auto& [wname, dummy] : whnames) {
+        (void)dummy;
+        if (!rules_.has_section(wname)) continue;
+        WarheadDef& h = warheads_[upper(wname)];
+        h.name = wname;
+        const std::string verses = rules_.get(wname, "Verses", "");
+        if (!verses.empty()) {
+            const std::vector<std::string> parts = split_list(verses);
+            for (size_t i = 0; i < parts.size() && i < 11; ++i)
+                h.verses[i] = std::atoi(parts[i].c_str());
+        }
+        // CellSpread 是格数小数（.3 → 30）；PercentAtMax/ProneDamage 是
+        // 带 % 的百分比（"50%" → 50）——两者格式不同，分别解析。
+        const std::string cs = rules_.get(wname, "CellSpread", "");
+        h.cell_spread_x100 =
+            cs.empty() ? 0 : static_cast<int>(std::lround(std::atof(cs.c_str()) * 100.0));
+        // 百分比字段两种写法都要吃：`ProneDamage=50%`（整数百分比）与
+        // `PercentAtMax=.5`（小数比例）——含 '%' 按整数读，否则按比例 ×100。
+        const auto pct = [&](const char* key, int def) {
+            const std::string v = rules_.get(wname, key, "");
+            if (v.empty()) return def;
+            if (v.find('%') != std::string::npos) return std::atoi(v.c_str());
+            return static_cast<int>(std::lround(std::atof(v.c_str()) * 100.0));
+        };
+        h.percent_at_max = std::max(0, pct("PercentAtMax", 100));
+        h.prone_damage = std::max(0, pct("ProneDamage", 100));
+        h.inf_death = std::atoi(rules_.get(wname, "InfDeath", "0").c_str());
+        h.em_effect = is_yes(rules_.get(wname, "EMEffect", "no"));
+        h.mind_control = is_yes(rules_.get(wname, "MindControl", "no"));
+        h.teleport = is_yes(rules_.get(wname, "Teleport", "no"));
+        h.iron_curtain = is_yes(rules_.get(wname, "IronCurtain", "no"));
+        h.rad_level = std::atoi(rules_.get(wname, "RadLevel", "0").c_str());
     }
     return true;
+}
+
+// 护甲名 → 原版 11 类下标（顺序自证见 rules_db.h；未知 = none(0)）
+int armor_index(const std::string& name) {
+    static const char* const kNames[11] = {"none",   "flak",    "plate",     "light",
+                                           "medium", "heavy",   "wood",      "steel",
+                                           "concrete", "special_1", "special_2"};
+    for (int i = 0; i < 11; ++i) {
+        const char* a = kNames[i];
+        const char* b = name.c_str();
+        size_t j = 0;
+        for (; a[j] && b[j]; ++j)
+            if (std::tolower(static_cast<unsigned char>(a[j])) !=
+                std::tolower(static_cast<unsigned char>(b[j])))
+                break;
+        if (!a[j] && !b[j]) return i;
+    }
+    return 0;
 }
 
 const UnitTypeDef* RulesDB::unit(const std::string& name) const {
@@ -232,6 +297,11 @@ const UnitTypeDef* RulesDB::unit(const std::string& name) const {
 const WeaponDef* RulesDB::weapon(const std::string& name) const {
     const auto it = weapons_.find(upper(name));
     return it != weapons_.end() ? &it->second : nullptr;
+}
+
+const WarheadDef* RulesDB::warhead(const std::string& name) const {
+    const auto it = warheads_.find(upper(name));
+    return it != warheads_.end() ? &it->second : nullptr;
 }
 
 const CountryDef* RulesDB::country(const std::string& name) const {

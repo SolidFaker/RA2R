@@ -39,6 +39,8 @@ struct SkirmishCfg {
 struct UnitFactory {
     std::function<int(const std::string&)> kind_of;                  // 1=载具 2=步兵
     std::function<void(const std::string&, SimWeapon&)> weapon;      // Primary= → 伤害/射速/射程
+    std::function<int(const std::string&)> armor_of;                 // Armor= → 11 类护甲下标
+    std::function<void(const std::string&, SimWeapon&)> secondary;   // Secondary= → 副武器
     std::function<void(const std::string&, bool&, int&)> miner;      // Harvester=/Capacity=
     std::function<void(const std::string&, UnitMotion&)> motion;    // Speed=/ROT=/Accelerates= 等
 };

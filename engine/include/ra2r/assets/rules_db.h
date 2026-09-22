@@ -42,7 +42,9 @@ struct UnitTypeDef {
     std::string image; // 美术名（artmd/rulesmd Image=，缺省 = name）
     int kind = 0;      // 渲染 kind：0=建筑 1=载具 2=步兵
     // 通用
-    std::string primary; // Primary= 武器名（载具/步兵/防御建筑）
+    std::string primary;   // Primary= 武器名（载具/步兵/防御建筑）
+    std::string secondary; // Secondary= 副武器名（按目标护甲选择；M5.1）
+    std::string armor;     // Armor= 护甲名（armor_index 换算；M5.1）
     bool harvester = false;
     int capacity = 20; // 采矿容量（Harvester=yes 时）
     // 运动物理（rulesmd；载具/步兵）
@@ -108,7 +110,32 @@ struct WeaponDef {
     int damage = 25;
     int rof = 30;   // 冷却（逻辑帧）
     int range = 1;  // 射程（格，曼哈顿，向上取整；M3 基础档）
+    // ── M5.1 战斗语义 ──
+    std::string warhead;   // Warhead= 弹头名（[Warheads] 节）
+    std::string projectile;// Projectile= 抛射体名（[Projectiles] 节；M5.2）
+    int burst = 1;         // Burst= 连发数
+    bool can_aa = true;    // 抛射体 AA=（可打空中）
+    bool can_ag = true;    // 抛射体 AG=（可打地面）
 };
+
+// 弹头（rulesmd [Warheads]）：Verses 为对 11 类护甲的百分比（顺序见 sim::SimArmor）。
+// 顺序自证：rulesmd [AP] 注释"让 plate 几乎免疫" → 第 3 项 = plate。
+struct WarheadDef {
+    std::string name;
+    int verses[11] = {100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100};
+    int cell_spread_x100 = 0; // CellSpread= ×100
+    int percent_at_max = 100; // PercentAtMax=（%）
+    int prone_damage = 100;   // ProneDamage=（%）
+    int inf_death = 0;        // InfDeath=
+    bool em_effect = false;   // EMEffect=yes（EMP 弹头；M5.6）
+    bool mind_control = false;// MindControl=yes（M5.6）
+    bool teleport = false;    // Teleport=yes（M5.6）
+    bool iron_curtain = false;// IronCurtain=yes（M5.6）
+    int rad_level = 0;        // RadLevel=（辐射强度；M5.6）
+};
+
+// 护甲名 → 原版 11 类下标（大小写不敏感；未知 = none(0)）
+int armor_index(const std::string& name);
 
 class RulesDB {
 public:
@@ -119,6 +146,7 @@ public:
     // 类型化查询（未收录返回 nullptr）
     const UnitTypeDef* unit(const std::string& name) const;
     const WeaponDef* weapon(const std::string& name) const;
+    const WarheadDef* warhead(const std::string& name) const;
     // 国家 / 颜色（遭遇战阵营与阵营色）
     const CountryDef* country(const std::string& name) const;
     const ColorDef* color(const std::string& name) const;
@@ -143,6 +171,7 @@ private:
     core::IniFile art_;
     std::map<std::string, UnitTypeDef> units_;
     std::map<std::string, WeaponDef> weapons_;
+    std::map<std::string, WarheadDef> warheads_;
     std::vector<CountryDef> countries_;
     std::map<std::string, size_t> country_index_; // 大写名 → countries_ 下标
     std::vector<ColorDef> colors_;

@@ -49,8 +49,18 @@ uint32_t make_unit(SimWorld& world, const std::string& house, const std::string&
     UnitMotion mo;
     mo.max_speed = kind == 2 ? 51 : 68;
     if (f.motion) f.motion(type, mo);
-    return world.spawn_unit(house, type, kind, col, row, 0, w, miner, cap,
-                             kind == 2 ? 51 : 68, mo);
+    SimWeapon sec;
+    if (f.secondary) f.secondary(type, sec);
+    const uint32_t id = world.spawn_unit(house, type, kind, col, row, 0, w, miner, cap,
+                                        kind == 2 ? 51 : 68, mo);
+    if (id != 0) { // M5.1：护甲 + 副武器（spawn_unit 只注入主武器/护甲回调）
+        SimUnit& u = world.units.back();
+        if (sec.damage > 0 && sec.range > 0) {
+            u.weapon2 = sec;
+            u.has_secondary = true;
+        }
+    }
+    return id;
 }
 
 // 格是否可用（图内 + 无地形/建筑阻挡）
