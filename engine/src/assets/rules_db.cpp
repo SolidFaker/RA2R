@@ -72,6 +72,11 @@ bool RulesDB::load(const uint8_t* rulesmd, size_t rules_n, const uint8_t* artmd,
             u.primary = rules_.get(name, "Primary", "");
             u.secondary = rules_.get(name, "Secondary", ""); // M5.1：副武器
             u.armor = rules_.get(name, "Armor", "");         // M5.1：护甲名
+            // M5.4：老兵/精英能力 + 精英武器
+            u.veteran_abilities = vet_ability_mask(rules_.get(name, "VeteranAbilities", ""));
+            u.elite_abilities = vet_ability_mask(rules_.get(name, "EliteAbilities", ""));
+            u.elite_primary = rules_.get(name, "ElitePrimary", "");
+            u.elite_secondary = rules_.get(name, "EliteSecondary", "");
             u.harvester = is_yes(rules_.get(name, "Harvester", "no"));
             u.capacity = std::atoi(rules_.get(name, "Capacity", "20").c_str());
             if (u.capacity < 1) u.capacity = 1;
@@ -303,7 +308,46 @@ bool RulesDB::load(const uint8_t* rulesmd, size_t rules_n, const uint8_t* artmd,
         w.can_aa = it->second.aa;
         w.can_ag = it->second.ag;
     }
+    // ── M5.4 老兵参数（[General]；小数 ×100 存整数）──
+    {
+        const auto gx100 = [&](const char* key, int def) {
+            const std::string v = rules_.get("General", key, "");
+            return v.empty() ? def
+                             : static_cast<int>(std::lround(std::atof(v.c_str()) * 100.0));
+        };
+        veteran_.ratio_x100 = gx100("VeteranRatio", 300);
+        veteran_.combat_x100 = gx100("VeteranCombat", 110);
+        veteran_.armor_x100 = gx100("VeteranArmor", 150);
+        veteran_.speed_x100 = gx100("VeteranSpeed", 120);
+        veteran_.rof_x100 = gx100("VeteranROF", 60);
+        veteran_.sight_x100 = gx100("VeteranSight", 100);
+        veteran_.cap = std::atoi(rules_.get("General", "VeteranCap", "2").c_str());
+        if (veteran_.cap < 0) veteran_.cap = 0;
+    }
     return true;
+}
+
+// 能力名列表 → 位掩码（逗号/空格分隔；大小写不敏感）
+uint32_t vet_ability_mask(const std::string& list) {
+    uint32_t mask = 0;
+    std::string cur;
+    const auto flush = [&]() {
+        if (cur.empty()) return;
+        const std::string u = upper(cur);
+        if (u == "FASTER") mask |= kVetFaster;
+        else if (u == "STRONGER") mask |= kVetStronger;
+        else if (u == "FIREPOWER") mask |= kVetFirepower;
+        else if (u == "ROF") mask |= kVetRof;
+        else if (u == "SIGHT") mask |= kVetSight;
+        else if (u == "SELF_HEAL") mask |= kVetSelfHeal;
+        cur.clear();
+    };
+    for (const char ch : list) {
+        if (ch == ',' || ch == ' ' || ch == '\t') flush();
+        else cur.push_back(ch);
+    }
+    flush();
+    return mask;
 }
 
 // 护甲名 → 原版 11 类下标（顺序自证见 rules_db.h；未知 = none(0)）

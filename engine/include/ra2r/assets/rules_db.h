@@ -45,6 +45,11 @@ struct UnitTypeDef {
     std::string primary;   // Primary= 武器名（载具/步兵/防御建筑）
     std::string secondary; // Secondary= 副武器名（按目标护甲选择；M5.1）
     std::string armor;     // Armor= 护甲名（armor_index 换算；M5.1）
+    // ── M5.4 老兵/精英 ──
+    uint32_t veteran_abilities = 0; // VeteranAbilities= 位掩码（VetAbility）
+    uint32_t elite_abilities = 0;   // EliteAbilities= 位掩码（与老兵叠加）
+    std::string elite_primary;      // ElitePrimary= 精英主武器
+    std::string elite_secondary;    // EliteSecondary= 精英副武器
     bool harvester = false;
     int capacity = 20; // 采矿容量（Harvester=yes 时）
     // 运动物理（rulesmd；载具/步兵）
@@ -156,6 +161,34 @@ struct ProjectileDef {
     int acceleration = 0;           // Acceleration=（M5.2 先存）
 };
 
+// 老兵/精英能力位（rulesmd VeteranAbilities=/EliteAbilities= 列表）。
+// 语义（RULES.txt/rules教程.TXT + rulesmd [General] 乘数）：
+//   FASTER 速度×VeteranSpeed；STRONGER 上限血×VeteranArmor；
+//   FIREPOWER 伤害×VeteranCombat；ROF 冷却×VeteranROF；SIGHT 视野（引擎暂无迷雾）；
+//   SELF_HEAL 自动回血；其余（CLOAK/EXPLODES/SENSORS…）先记录不生效。
+enum VetAbility : uint32_t {
+    kVetFaster = 1u << 0,
+    kVetStronger = 1u << 1,
+    kVetFirepower = 1u << 2,
+    kVetRof = 1u << 3,
+    kVetSight = 1u << 4,
+    kVetSelfHeal = 1u << 5,
+};
+
+// [General] 老兵参数（小数 ×100 存整数；VeteranRatio ×100 为比例）
+struct VeteranCfg {
+    int ratio_x100 = 300;  // VeteranRatio=3.0：升一级需击杀"自身价值×该值"
+    int combat_x100 = 110; // VeteranCombat=1.1：伤害乘数（FIREPOWER）
+    int armor_x100 = 150;  // VeteranArmor=1.5：上限血乘数（STRONGER）
+    int speed_x100 = 120;  // VeteranSpeed=1.2：速度乘数（FASTER）
+    int rof_x100 = 60;     // VeteranROF=0.6：冷却乘数（ROF，越小越快）
+    int sight_x100 = 100;  // VeteranSight=0.0 → 引擎暂不生效（存 100 = ×1）
+    int cap = 2;           // VeteranCap=2（最高 2 级：0=新兵 1=老兵 2=精英）
+};
+
+// 能力名列表 → 位掩码（大小写不敏感；未知名忽略）
+uint32_t vet_ability_mask(const std::string& list);
+
 // 护甲名 → 原版 11 类下标（大小写不敏感；未知 = none(0)）
 int armor_index(const std::string& name);
 
@@ -170,6 +203,7 @@ public:
     const WeaponDef* weapon(const std::string& name) const;
     const WarheadDef* warhead(const std::string& name) const;
     const ProjectileDef* projectile(const std::string& name) const;
+    const VeteranCfg& veteran() const { return veteran_; }
     // 国家 / 颜色（遭遇战阵营与阵营色）
     const CountryDef* country(const std::string& name) const;
     const ColorDef* color(const std::string& name) const;
@@ -196,6 +230,7 @@ private:
     std::map<std::string, WeaponDef> weapons_;
     std::map<std::string, WarheadDef> warheads_;
     std::map<std::string, ProjectileDef> projectiles_;
+    VeteranCfg veteran_;
     std::vector<CountryDef> countries_;
     std::map<std::string, size_t> country_index_; // 大写名 → countries_ 下标
     std::vector<ColorDef> colors_;

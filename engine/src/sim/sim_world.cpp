@@ -225,6 +225,9 @@ bool SimWorld::load_map(const assets::MapFile& map,
             su.decel_step = mo.decel_step;
         }
         su.hp = u.health;
+        su.hp_base = su.hp_max = su.hp;
+        su.speed_base = su.speed;
+        if (veteran_of) veteran_of(u.id, su); // M5.4：老兵能力/价值/精英武器
         su.armor = armor_of ? armor_of(u.id) : kArmorNone; // M5.1：护甲
         weapon(u.id, su.weapon);
         if (secondary_of) {
@@ -249,6 +252,9 @@ bool SimWorld::load_map(const assets::MapFile& map,
         su.idle_rng = su.id * 1664525u + 12345u; // 步兵 idle 动作随机流播种
         su.hp = n.health;
         su.speed = 51; // 步兵 ≈3 格/秒
+        su.hp_base = su.hp_max = su.hp;
+        su.speed_base = su.speed;
+        if (veteran_of) veteran_of(n.id, su); // M5.4：老兵能力/价值/精英武器
         {
             UnitMotion mo;
             mo.max_speed = su.speed;
@@ -838,6 +844,12 @@ int SimWorld::damage_against(const SimWeapon& sw, int armor) const {
 }
 
 const SimWeapon* SimWorld::effective_weapon(const SimUnit& u, int target_armor) const {
+    // M5.4：精英（2 级）优先用 ElitePrimary/EliteSecondary
+    if (u.veterancy >= 2 && u.has_elite) {
+        if (damage_against(u.elite_weapon, target_armor) > 0) return &u.elite_weapon;
+        if (u.has_secondary && damage_against(u.elite_weapon2, target_armor) > 0)
+            return &u.elite_weapon2;
+    }
     if (damage_against(u.weapon, target_armor) > 0) return &u.weapon;
     if (u.has_secondary && damage_against(u.weapon2, target_armor) > 0) return &u.weapon2;
     return nullptr;
@@ -846,6 +858,44 @@ const SimWeapon* SimWorld::effective_weapon(const SimUnit& u, int target_armor) 
 const SimWeapon* SimWorld::effective_weapon(const SimBuilding& b, int target_armor) const {
     if (damage_against(b.weapon, target_armor) > 0) return &b.weapon;
     return nullptr;
+}
+
+// ── M5.4 老兵/精英（rulesmd VeteranAbilities/EliteAbilities + [General] 乘数）──
+// 当前等级生效的能力：1 级 = VeteranAbilities；2 级 = 老兵 + 精英叠加（原版语义）
+uint32_t SimWorld::vet_ability_mask(const SimUnit& u) const {
+    uint32_t m = u.veterancy >= 1 ? u.vet_flags : 0;
+    if (u.veterancy >= 2) m |= u.elite_flags;
+    return m;
+}
+
+int SimWorld::vet_mult(uint32_t mask, uint32_t ability, int x100) const {
+    return (mask & ability) ? x100 : 100;
+}
+
+// 晋升：等级上限 veteran.cap；每升一级按能力重算上限血（STRONGER）与速度（FASTER），
+// 上限血提升时同步补足新增部分（原版升星即回血）
+void SimWorld::promote(SimUnit& u) {
+    while (u.veterancy < veteran.cap &&
+           u.xp >= u.value * veteran.ratio_x100 * (u.veterancy + 1) / 100) {
+        ++u.veterancy;
+        const uint32_t mask = vet_ability_mask(u);
+        const int new_max = u.hp_base * vet_mult(mask, kVetStronger, veteran.armor_x100) / 100;
+        if (new_max > u.hp_max) u.hp += new_max - u.hp_max;
+        u.hp_max = new_max;
+        u.speed = u.speed_base * vet_mult(mask, kVetFaster, veteran.speed_x100) / 100;
+        if (u.speed < 1) u.speed = 1;
+    }
+}
+
+// 击杀记经验：目标价值（Cost=）给击杀者；随后尝试晋升
+void SimWorld::grant_xp(uint32_t shooter_id, int amount) {
+    if (shooter_id == 0 || amount <= 0) return;
+    for (auto& u : units) {
+        if (u.id != shooter_id) continue;
+        u.xp += amount;
+        promote(u);
+        return;
+    }
 }
 
 // ── M5.2 抛射体（全实体弹道）────────────────────────────────────────────────
@@ -870,13 +920,25 @@ bool SimWorld::fire_weapon(const std::string& owner, uint32_t shooter_id, int fc
     const int tcol = is_b ? buildings[ti].col : units[ti].col;
     const int trow = is_b ? buildings[ti].row : units[ti].row;
     const int tarmor = is_b ? buildings[ti].armor : units[ti].armor;
-    const int dmg = damage_against(sw, tarmor);
+    int dmg = damage_against(sw, tarmor);
     if (dmg <= 0) return false;
+    // M5.4：FIREPOWER 能力 → 伤害乘 VeteranCombat
+    if (!is_b) {
+        for (const auto& su : units) {
+            if (su.id != shooter_id) continue;
+            dmg = dmg * vet_mult(vet_ability_mask(su), kVetFirepower, veteran.combat_x100) / 100;
+            break;
+        }
+    }
+    if (dmg <= 0) dmg = 1;
     if (sw.proj.speed <= 0) { // 瞬时命中：保持旧行为（既有测试/无弹道武器）
-        if (is_b)
+        if (is_b) {
             buildings[ti].hp -= dmg;
-        else
+        } else {
+            const bool was_alive = units[ti].hp > 0;
             units[ti].hp -= dmg;
+            if (was_alive && units[ti].hp <= 0) grant_xp(shooter_id, units[ti].value);
+        }
         return true;
     }
     SimProjectile p;
@@ -934,7 +996,10 @@ void SimWorld::apply_area_damage(const SimWarhead& wh, int base_damage, int col,
     for (auto& u : units) {
         if (!u.alive || (skip_unit_id != 0 && u.id == skip_unit_id)) continue;
         const int d = dmg_at(u.col - col, u.row - row);
-        if (d > 0) u.hp -= d;
+        if (d <= 0) continue;
+        const bool was_alive = u.hp > 0;
+        u.hp -= d;
+        if (was_alive && u.hp <= 0) grant_xp(skip_unit_id, u.value); // M5.4
     }
     for (auto& b : buildings) {
         if (!b.alive) continue;
@@ -1014,10 +1079,14 @@ bool SimWorld::advance_projectiles() {
                 } else if (decode_target(p.target_id, is_b, ti) &&
                            (is_b ? ti < buildings.size() : ti < units.size()) &&
                            (is_b ? buildings[ti].alive : units[ti].alive)) {
-                    if (is_b)
+                    if (is_b) {
                         buildings[ti].hp -= p.damage;
-                    else
+                    } else {
+                        const bool was_alive = units[ti].hp > 0;
                         units[ti].hp -= p.damage;
+                        if (was_alive && units[ti].hp <= 0)
+                            grant_xp(p.shooter_id, units[ti].value); // M5.4
+                    }
                 }
             }
             p.alive = false;
@@ -1046,6 +1115,14 @@ bool SimWorld::tick() {
         if (!u.alive) continue;
         if (u.cooldown > 0) --u.cooldown;
         if (u.make_way_cd > 0) --u.make_way_cd; // 让路冷却（避免反复横挪抖动）
+        // M5.4：SELF_HEAL 能力（精英步兵等）缓慢回血（1 hp / 15 帧）
+        if ((vet_ability_mask(u) & kVetSelfHeal) != 0 && u.hp > 0 && u.hp < u.hp_max) {
+            if (++u.heal_clock >= 15) {
+                u.heal_clock = 0;
+                ++u.hp;
+                changed = true;
+            }
+        }
         const bool stand = u.frac == 0 && u.next_col == u.col && u.next_row == u.row;
         if (u.is_miner && (u.order == kOrderNone || u.order == kOrderHarvest)) {
             // 采矿循环：空闲自动采集；满载 → 最近精炼厂卸货 → 资金
@@ -1137,7 +1214,12 @@ bool SimWorld::tick() {
                             else
                                 u.burst_left = static_cast<uint8_t>(
                                     std::max(0, sw->burst - 1));
-                            u.cooldown = u.burst_left > 0 ? 3 : (sw->rof > 0 ? sw->rof : 1);
+                            // M5.4：ROF 能力 → 冷却乘 VeteranROF（越小越快）
+                            const int rof_m =
+                                vet_mult(vet_ability_mask(u), kVetRof, veteran.rof_x100);
+                            u.cooldown = u.burst_left > 0
+                                             ? 3
+                                             : std::max(1, sw->rof * rof_m / 100);
                             changed = true;
                         }
                     }
@@ -1185,7 +1267,12 @@ bool SimWorld::tick() {
                             else
                                 u.burst_left = static_cast<uint8_t>(
                                     std::max(0, sw->burst - 1));
-                            u.cooldown = u.burst_left > 0 ? 3 : (sw->rof > 0 ? sw->rof : 1);
+                            // M5.4：ROF 能力 → 冷却乘 VeteranROF（越小越快）
+                            const int rof_m =
+                                vet_mult(vet_ability_mask(u), kVetRof, veteran.rof_x100);
+                            u.cooldown = u.burst_left > 0
+                                             ? 3
+                                             : std::max(1, sw->rof * rof_m / 100);
                             changed = true;
                         }
                     }
@@ -1652,6 +1739,9 @@ uint32_t SimWorld::spawn_unit(const std::string& owner, const std::string& type,
         secondary_of(type, u.weapon2);
         u.has_secondary = u.weapon2.damage > 0 && u.weapon2.range > 0;
     }
+    if (veteran_of) veteran_of(type, u); // M5.4：老兵能力/价值/精英武器
+    u.hp_base = u.hp_max = u.hp;
+    u.speed_base = u.speed;
     u.col = u.next_col = col;
     u.row = u.next_row = row;
     u.subcell = static_cast<uint8_t>(sc);

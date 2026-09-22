@@ -75,6 +75,8 @@ struct PlacedObject {
     uint32_t idle_start = 0;
     // 炮塔朝向 0..255（载具；与 dir 不同时独立光栅合成）
     uint8_t turret_dir = 0;
+    // 老兵等级（M5.4：0=新兵 1=老兵 2=精英；渲染金色斜杠徽章）
+    uint8_t veterancy = 0;
     // 车体俯仰（弧度，载具体素专用）：上下坡时整模随地形坡度前倾/后仰
     //（原版按行驶方向的格高差实时计算；0 = 平地）
     float tilt = 0.0f;

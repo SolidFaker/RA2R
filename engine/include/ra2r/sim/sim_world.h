@@ -79,6 +79,26 @@ struct SimProjectileSpec {
     int arm_x10 = 0;              // Arm=×10（引信距离，格）
 };
 
+// 老兵能力位（数值与 assets::VetAbility 一致；sim 层不依赖 assets）
+enum SimVetAbility : uint32_t {
+    kVetFaster = 1u << 0,
+    kVetStronger = 1u << 1,
+    kVetFirepower = 1u << 2,
+    kVetRof = 1u << 3,
+    kVetSight = 1u << 4,
+    kVetSelfHeal = 1u << 5,
+};
+
+// 老兵参数（rulesmd [General]，stage 从 assets::VeteranCfg 注入；×100 整数）
+struct SimVeteranCfg {
+    int ratio_x100 = 300;  // 升一级需击杀"自身价值 × 该值"
+    int combat_x100 = 110; // FIREPOWER：伤害乘数
+    int armor_x100 = 150;  // STRONGER：上限血乘数
+    int speed_x100 = 120;  // FASTER：速度乘数
+    int rof_x100 = 60;     // ROF：冷却乘数（越小越快）
+    int cap = 2;           // 最高等级（0=新兵 1=老兵 2=精英）
+};
+
 struct SimWeapon {
     // damage = 0 且 range = 0 = **无武器**（默认即"无"；有武器必须显式注入
     // rulesmd Primary=）。旧默认 25/1 会把"没配武器"的建筑/单位变成 25 伤害的
@@ -130,6 +150,19 @@ struct SimUnit {
     SimWeapon weapon2;
     bool has_secondary = false;
     uint8_t burst_left = 0; // M5.3：连发剩余（Burst= 的后续发；冷却用 k_burst_gap）
+    // ── M5.4 老兵/精英 ──
+    uint8_t veterancy = 0;    // 0=新兵 1=老兵 2=精英
+    int xp = 0;               // 经验（击杀目标价值累加）
+    int value = 0;            // 自身价值（Cost=；被击杀时给对方 XP）
+    uint32_t vet_flags = 0;   // VeteranAbilities 位掩码（assets::VetAbility）
+    uint32_t elite_flags = 0; // EliteAbilities（与老兵叠加）
+    int hp_max = 256;         // 上限血（STRONGER 提升）
+    int hp_base = 256;        // 初始上限（STRONGER 计算基准）
+    int speed_base = 0;       // 初始上限速度（FASTER 计算基准）
+    int heal_clock = 0;       // SELF_HEAL 节拍
+    SimWeapon elite_weapon;   // ElitePrimary=
+    SimWeapon elite_weapon2;  // EliteSecondary=
+    bool has_elite = false;   // 有精英武器可换
     uint8_t order = kOrderNone;
     int target = -1;               // 攻击/护卫目标下标（按 order 语义）
     int cooldown = 0;
@@ -301,6 +334,10 @@ struct SimWorld {
     std::function<int(const std::string&)> armor_of;
     // 副武器注入（rulesmd Secondary=）：spawn/load_map 统一填 weapon2 + has_secondary
     std::function<void(const std::string&, SimWeapon&)> secondary_of;
+    // M5.4：老兵注入（VeteranAbilities/EliteAbilities/ElitePrimary/EliteSecondary/
+    // Cost= 价值）——spawn/load_map 统一调用，避免逐调用点漏设
+    std::function<void(const std::string&, SimUnit&)> veteran_of;
+    SimVeteranCfg veteran;
 
     // 推进一逻辑帧；返回是否有单位移动/转向/开火（渲染侧据此刷新）
     bool tick();
@@ -318,6 +355,11 @@ struct SimWorld {
     bool fire_weapon(const std::string& owner, uint32_t shooter_id, int fc, int fr,
                      const SimWeapon& sw, uint32_t target_kind_id);
     bool advance_projectiles();
+    // M5.4：击杀记经验（victim 的价值给 shooter）→ 自动晋升 + 能力生效
+    void grant_xp(uint32_t shooter_id, int amount);
+    void promote(SimUnit& u);
+    uint32_t vet_ability_mask(const SimUnit& u) const; // 当前等级生效的能力位
+    int vet_mult(uint32_t mask, uint32_t ability, int x100) const;
     // M5.3：CellSpread 范围伤害（以 (col,row) 为圆心、半径 = CellSpread 格；
     // 距离线性衰减：圆心 100%、边缘 PercentAtMax%；skip_unit_id = 发射者豁免）。
     // spread==0 时不调用（单体伤害在命中路径直接结算）。

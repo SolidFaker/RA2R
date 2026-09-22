@@ -885,6 +885,26 @@ DeaccelerationFactor）+ 转向（ROT/TurretROT）
 - **M5.3 尾（未做）**：`AnimList` 命中动画、`Bright=` 闪光、`InfDeath` 死亡动画档、
   `Arcing` 抛物线 z 与可见弹体渲染（多数原版弹体 Inviso，观感影响小）。
 
+### 3.40 M5.4 老兵与精英（VeteranAbilities/EliteAbilities）
+- **数据**：`[General]` `VeteranRatio/Combat/Armor/Speed/ROF/Sight/Cap`（小数 ×100
+  存整数）；单位 `VeteranAbilities/EliteAbilities/ElitePrimary/EliteSecondary`。
+  能力名 → 位掩码（`vet_ability_mask`）；语义见 RULES.txt/rules教程.TXT：
+  FASTER 速度×VeteranSpeed、STRONGER 上限血×VeteranArmor、FIREPOWER 伤害×
+  VeteranCombat、ROF 冷却×VeteranROF（=0.6，越小越快）、SIGHT 视野（引擎暂无
+  迷雾，仅记录）、SELF_HEAL 自动回血。
+- **XP/晋升**：击杀目标时把**目标价值（Cost=）**记给击杀者（瞬时命中、抛射体
+  命中、范围伤害三条路径都记）；阈值 = 自身价值 × VeteranRatio × 等级（1 级
+  = ×1、2 级 = ×2），`VeteranCap=2`。晋升时按能力重算上限血/速度，上限血
+  提升同步补足（原版升星回血）。
+- **精英换装**：2 级且 `ElitePrimary` 有效 → `effective_weapon` 优先返回精英武器
+  （沿用"对目标护甲 Verses>0%"规则）；`EliteSecondary` 同理。
+- **自愈**：SELF_HEAL 每 15 帧回 1 hp（到上限血为止）。
+- **渲染**：单位上方 1/2 道金色斜杠徽章（`PlacedObject.veterancy`）。
+- **注入**：`SimWorld::veteran_of`（能力位/价值/精英武器）+ `SimWorld::veteran`
+  参数（`bind_combat_callbacks` 统一装，load_map/遭遇战共用）。
+- **验证**：`SimVeteran.*` 4 例（阈值与能力乘数、精英换装、击杀记 XP、
+  自愈节拍）；总 145；三场景基线未变。
+
 ## 4. 构建/工具链类
 
 - 无管理员工具链：WinLibs MinGW（免安装）+ pip CMake + SDL3 mingw 预编译包，全部放 `I:\tools\`（不入库）。

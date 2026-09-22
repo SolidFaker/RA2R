@@ -1019,6 +1019,81 @@ TEST(SimArea, BurstFiresMultipleShotsBeforeRof) {
     EXPECT_EQ(s.units[0].burst_left, 0) << "三发打完应复位";
 }
 
+// ── M5.4 老兵/精英：XP 阈值、能力乘数、精英换装、自愈 ────────────────────────
+
+// XP 阈值 = 自身价值 × VeteranRatio × 等级；晋升按能力重算上限血/速度
+TEST(SimVeteran, PromotionThresholdAndAbilityMultipliers) {
+    sim::SimWorld s;
+    s.w = 32;
+    s.h = 32;
+    s.blocked.assign(32 * 32, 0);
+    s.veteran.ratio_x100 = 300; // 3.0
+    s.veteran.armor_x100 = 150;
+    s.veteran.speed_x100 = 120;
+    ASSERT_GT(s.spawn_unit("Player", "HTNK", 1, 10, 10, 0, test_weapon(50, 20, 4), false, 0, 60),
+              0u);
+    sim::SimUnit& u = s.units[0];
+    u.value = 100;
+    u.vet_flags = sim::kVetStronger | sim::kVetFaster;
+    u.hp_base = u.hp_max = u.hp = 200;
+    u.speed = u.speed_base = 60; // 显式基准（spawn 默认运动参数会覆盖 speed）
+    EXPECT_EQ(u.veterancy, 0);
+    u.xp = 299; // 差 1 点不升
+    s.promote(u);
+    EXPECT_EQ(u.veterancy, 0);
+    u.xp = 300; // 阈值 = 100 × 3.0
+    s.promote(u);
+    EXPECT_EQ(u.veterancy, 1) << "达到阈值应升到老兵";
+    EXPECT_EQ(u.hp_max, 300) << "STRONGER：上限血 ×1.5";
+    EXPECT_EQ(u.hp, 300) << "升星应补足新增上限";
+    EXPECT_EQ(u.speed, 72) << "FASTER：速度 ×1.2（60 → 72）";
+    u.xp = 600; // 二级阈值 = 价值 × 3.0 × 2
+    s.promote(u);
+    EXPECT_EQ(u.veterancy, 2) << "应升到精英";
+}
+
+// 精英换装：2 级时用 ElitePrimary（对目标护甲有效时）
+TEST(SimVeteran, EliteWeaponReplacesPrimaryAtLevelTwo) {
+    sim::SimWorld s;
+    sim::SimUnit u;
+    u.weapon = test_weapon(10, 20, 4);
+    u.elite_weapon = test_weapon(30, 20, 5);
+    u.has_elite = true;
+    u.veterancy = 1;
+    EXPECT_EQ(s.effective_weapon(u, sim::kArmorNone), &u.weapon) << "1 级仍用主武器";
+    u.veterancy = 2;
+    EXPECT_EQ(s.effective_weapon(u, sim::kArmorNone), &u.elite_weapon) << "2 级换精英武器";
+}
+
+// 击杀记经验：目标价值给击杀者（达到阈值即晋升）
+TEST(SimVeteran, KillGrantsXpToShooter) {
+    sim::SimWorld s = make_world(32, 32);
+    ASSERT_GT(s.spawn_unit("Enemy", "E1", 2, 20, 16, 0, {}, false, 0, 51), 0u);
+    s.units[1].hp = 5;    // 一枪打死
+    s.units[1].value = 100;
+    s.units[0].weapon = test_weapon(50, 20, 8);
+    s.units[0].value = 100;
+    s.veteran.ratio_x100 = 300;
+    ASSERT_TRUE(s.issue_attack_unit(0, 1));
+    for (int t = 0; t < 60 && s.units.size() > 1; ++t) s.tick();
+    ASSERT_LE(s.units.size(), 1u) << "目标应被击杀";
+    EXPECT_EQ(s.units[0].xp, 100) << "击杀应获得目标价值经验";
+}
+
+// SELF_HEAL：精英步兵缓慢回血（1 hp / 15 帧）
+TEST(SimVeteran, SelfHealRegeneratesSlowly) {
+    sim::SimWorld s = make_world(32, 32, 51, 2); // 步兵
+    sim::SimUnit& u = s.units[0];
+    u.hp_base = u.hp_max = 100;
+    u.hp = 50;
+    u.vet_flags = sim::kVetSelfHeal;
+    u.veterancy = 1;
+    for (int t = 0; t < 15; ++t) s.tick();
+    EXPECT_EQ(u.hp, 51) << "15 帧回 1 点";
+    for (int t = 0; t < 45; ++t) s.tick();
+    EXPECT_EQ(u.hp, 54) << "持续回血";
+}
+
 // ── 步兵 idle 动作（IdleActionFrequency 语义）────────────────────────────────
 
 TEST(SimIdle, TriggersInExpectedWindowAndIsDeterministic) {

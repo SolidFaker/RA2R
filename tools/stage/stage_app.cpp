@@ -246,6 +246,27 @@ void bind_combat_callbacks(StageApp& a) {
         const auto* u = a.rules.unit(type);
         if (u && !u->secondary.empty()) sim_weapon_of(a.rules, u->secondary, w);
     };
+    // M5.4：老兵能力/价值/精英武器 + [General] 乘数
+    a.sim.veteran_of = [&a](const std::string& type, ra2r::sim::SimUnit& u) {
+        const auto* t = a.rules.unit(type);
+        if (!t) return;
+        u.value = t->cost;
+        u.vet_flags = t->veteran_abilities;
+        u.elite_flags = t->elite_abilities;
+        if (!t->elite_primary.empty()) {
+            sim_weapon_of(a.rules, t->elite_primary, u.elite_weapon);
+            u.has_elite = u.elite_weapon.damage > 0 && u.elite_weapon.range > 0;
+        }
+        if (!t->elite_secondary.empty())
+            sim_weapon_of(a.rules, t->elite_secondary, u.elite_weapon2);
+    };
+    const auto& vc = a.rules.veteran();
+    a.sim.veteran.ratio_x100 = vc.ratio_x100;
+    a.sim.veteran.combat_x100 = vc.combat_x100;
+    a.sim.veteran.armor_x100 = vc.armor_x100;
+    a.sim.veteran.speed_x100 = vc.speed_x100;
+    a.sim.veteran.rof_x100 = vc.rof_x100;
+    a.sim.veteran.cap = vc.cap;
 }
 
 // 生成/加载地图（模式 0=算法 1=平坦 2=加载）
@@ -678,6 +699,27 @@ void render_all(StageApp& a, std::string* error) {
             draw_selection_markers(a, grid, bw, bh, ox, oy, canvas);
         draw_sim_fx(a, grid, bw, bh, ox, oy, canvas);
         draw_building_hp_bars(a, grid, bw, bh, ox, oy, canvas);
+        // M5.4：老兵等级徽章（单位上方 1/2 道金色斜杠，原版星级标记的简化）
+        for (const auto& o : objs) {
+            if (o.kind == 0 || o.veterancy == 0) continue;
+            int px, py;
+            grid.cell_to_pixel(o.cx, o.cy, px, py);
+            const int cxp = ox + px + grid.tile_w / 2 + o.off_x;
+            const int cyp = oy + py + grid.tile_h / 2 + o.off_y -
+                            o.height * ra2r::render::kHeightLevelPx - 46;
+            for (int k = 0; k < o.veterancy && k < 2; ++k) {
+                const int x0 = cxp - 8 + k * 9, y0 = cyp;
+                for (int t = 0; t < 9; ++t) { // 斜杠：右下到左上
+                    const int x = x0 + t, y = y0 - t;
+                    if (x < 0 || y < 0 || x >= bw || y >= bh) continue;
+                    uint8_t* d = canvas.data() + (static_cast<size_t>(y) * bw + x) * 4;
+                    d[0] = 255;
+                    d[1] = 210;
+                    d[2] = 40;
+                    d[3] = 255;
+                }
+            }
+        }
         g_perf.marks += ms_since(p_mk0);
     }
     // 建造落点预览：**逐格**标记——可建格绿色、被占（建筑/覆盖物/矿石/单位/
@@ -940,6 +982,7 @@ void append_sim_objects(StageApp& a, std::vector<ra2r::render::PlacedObject>& ob
         // 子格（步兵 0..2 等腰三角分布）：移动中也保持偏移
         //（否则同格 3 人贴在一起看上去只有 1 个）
         po.subcell = u.subcell;
+        po.veterancy = u.veterancy; // M5.4：老兵等级徽章
         // 上下坡车体俯仰（原版实时按坡度倾斜体素整模）：当前格与段终点格的高差
         // ÷ 两格屏幕距离 → 坡度角。下坡为正（车头压向低处），平地/静止 = 0。
         if (u.kind == 1 && (u.next_col != u.col || u.next_row != u.row) &&
