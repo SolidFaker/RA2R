@@ -345,6 +345,12 @@ bool RulesDB::load(const uint8_t* rulesmd, size_t rules_n, const uint8_t* artmd,
         veteran_.cap = std::atoi(rules_.get("General", "VeteranCap", "2").c_str());
         if (veteran_.cap < 0) veteran_.cap = 0;
     }
+    // M5.6：特殊武器参数（[General]）
+    iron_curtain_frames_ = std::atoi(rules_.get("General", "IronCurtainDuration", "750").c_str());
+    if (iron_curtain_frames_ < 1) iron_curtain_frames_ = 1;
+    rad_max_ = std::atoi(rules_.get("General", "RadLevelMax", "500").c_str());
+    rad_delay_ = std::atoi(rules_.get("General", "RadLevelDelay", "90").c_str());
+    if (rad_delay_ < 1) rad_delay_ = 1;
     return true;
 }
 

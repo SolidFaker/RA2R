@@ -926,6 +926,24 @@ DeaccelerationFactor）+ 转向（ROT/TurretROT）
 - **延后（按计划）**：进驻建筑（`OccupyWeapon` 已解析，机制 M6 前补）、
   多载员/运输机。
 
+### 3.42 M5.6 特殊武器效果与工程师占领
+- **弹头特殊效果**（`SimWarhead` 标志 + `apply_warhead_effects`，命中与范围伤害
+  共用）：`MindControl`（归属改为控制方，记录原归属，控制者死亡自动恢复）、
+  `EMEffect`（瘫痪 `emp_frames`，期间不能移动/开火）、`IronCurtain`（无敌
+  `IronCurtainDuration=750` 帧，免伤）、`Teleport`（超时空：目标移出战场）、
+  `RadLevel`（命中格辐射累加，上限 `RadLevelMax=500`，每 `RadLevelDelay=90`
+  帧衰减 1，格内单位每帧受 `max(1, rad/10)` 伤害）。
+- **纯效果武器**：伤害为 0 只要带效果标志也算"可用/命中"（`weapon_usable` +
+  `fire_weapon` 的 `has_fx` 放宽）——原版心灵控制类武器即零伤害。
+- **工程师占领**：`issue_capture(engineer, building)` —— 相邻即时（建筑换归属、
+  工程师消耗）；较远则走过去（`capture_id` 记录目标），tick 在到达时完成。
+- **参数**：`[General] IronCurtainDuration/RadLevelMax/RadLevelDelay` 解析入库
+  （EMP 时长原版无明确键，取 10s 档并在代码注明）。
+- **验证**：`SimSpecial.*` 6 例（心灵控制+恢复、EMP 禁移动、铁幕免伤、传送移除、
+  辐射持续伤害、工程师占领）；总 153；三场景基线未变。
+- **延后**：间谍渗透、恐怖机器人寄生、`DeployFire`/`Spawner`（字段已解析，
+  机制按计划在 M6 前补）。
+
 ## 4. 构建/工具链类
 
 - 无管理员工具链：WinLibs MinGW（免安装）+ pip CMake + SDL3 mingw 预编译包，全部放 `I:\tools\`（不入库）。

@@ -219,6 +219,12 @@ void sim_weapon_of(const ra2r::assets::RulesDB& rules, const std::string& wname,
         w.warhead.percent_at_max = wh->percent_at_max;
         w.warhead.prone_damage = wh->prone_damage;
         w.warhead.inf_death = wh->inf_death;
+        // M5.6：特殊效果标志
+        w.warhead.em_effect = wh->em_effect;
+        w.warhead.mind_control = wh->mind_control;
+        w.warhead.iron_curtain = wh->iron_curtain;
+        w.warhead.teleport = wh->teleport;
+        w.warhead.rad_level = wh->rad_level;
     }
     // M5.2：弹道（无 Projectile= 或无 Speed= → speed=0 = 瞬时命中，保持旧行为）
     w.proj = ra2r::sim::SimProjectileSpec{};
@@ -280,6 +286,9 @@ void bind_combat_callbacks(StageApp& a) {
     a.sim.veteran.speed_x100 = vc.speed_x100;
     a.sim.veteran.rof_x100 = vc.rof_x100;
     a.sim.veteran.cap = vc.cap;
+    a.sim.iron_curtain_frames = a.rules.iron_curtain_frames(); // M5.6
+    a.sim.rad_max = a.rules.rad_max();
+    a.sim.rad_delay = a.rules.rad_delay();
 }
 
 // 生成/加载地图（模式 0=算法 1=平坦 2=加载）

@@ -214,6 +214,10 @@ public:
     const WarheadDef* warhead(const std::string& name) const;
     const ProjectileDef* projectile(const std::string& name) const;
     const VeteranCfg& veteran() const { return veteran_; }
+    // M5.6 特殊武器参数（[General]）
+    int iron_curtain_frames() const { return iron_curtain_frames_; }
+    int rad_max() const { return rad_max_; }
+    int rad_delay() const { return rad_delay_; }
     // 国家 / 颜色（遭遇战阵营与阵营色）
     const CountryDef* country(const std::string& name) const;
     const ColorDef* color(const std::string& name) const;
@@ -240,7 +244,10 @@ private:
     std::map<std::string, WeaponDef> weapons_;
     std::map<std::string, WarheadDef> warheads_;
     std::map<std::string, ProjectileDef> projectiles_;
-    VeteranCfg veteran_;
+    VeteranCfg veteran_; // M5.6 特殊武器参数（[General]）
+    int iron_curtain_frames_ = 750; // IronCurtainDuration=
+    int rad_max_ = 500;             // RadLevelMax=
+    int rad_delay_ = 90;            // RadLevelDelay=
     std::vector<CountryDef> countries_;
     std::map<std::string, size_t> country_index_; // 大写名 → countries_ 下标
     std::vector<ColorDef> colors_;

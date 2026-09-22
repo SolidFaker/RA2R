@@ -1146,6 +1146,106 @@ TEST(SimIFV, AllPassengerModesMapToFvWeaponSlots) {
     EXPECT_EQ(fv->weapons[1], "RepairBullet") << "IFVMode=1 → Weapon2（工程师）";
 }
 
+// ── M5.6 特殊武器效果（心灵控制/EMP/铁幕/传送/辐射）与工程师占领 ─────────────
+
+// 心灵控制：目标归属改为控制方；控制者死亡后恢复
+TEST(SimSpecial, MindControlSwitchesOwnerAndReverts) {
+    sim::SimWorld s = make_world(32, 32);
+    ASSERT_GT(s.spawn_unit("Enemy", "E1", 2, 20, 16, 0, {}, false, 0, 51), 0u);
+    sim::SimWeapon w = test_weapon(0, 20, 8); // 纯控制武器（伤害 0）
+    w.warhead.mind_control = true;
+    s.units[0].weapon = w;
+    ASSERT_TRUE(s.issue_attack_unit(0, 1));
+    for (int t = 0; t < 30; ++t) s.tick();
+    ASSERT_EQ(s.units.size(), 2u);
+    EXPECT_EQ(s.units[1].owner, "Player") << "被心灵控制后应归属控制方";
+    EXPECT_EQ(s.units[1].mc_by, s.units[0].id);
+    // 控制者死亡（直接置死由 tick 清理）→ 恢复原归属
+    s.units[0].hp = 0;
+    for (int t = 0; t < 5; ++t) s.tick();
+    for (const auto& u : s.units) {
+        if (u.type == "E1") {
+            EXPECT_EQ(u.owner, "Enemy") << "控制者死亡应恢复原归属";
+        }
+    }
+}
+
+// EMP：瘫痪期间不能移动（指令无效）
+TEST(SimSpecial, EmpDisablesUnit) {
+    sim::SimWorld s = make_world(32, 32);
+    ASSERT_GT(s.spawn_unit("Enemy", "E1", 2, 20, 16, 0, {}, false, 0, 51), 0u);
+    sim::SimWeapon w = test_weapon(0, 20, 8);
+    w.warhead.em_effect = true;
+    s.units[0].weapon = w;
+    ASSERT_TRUE(s.issue_attack_unit(0, 1));
+    for (int t = 0; t < 30 && s.units[1].emp_ticks == 0; ++t) s.tick();
+    ASSERT_GT(s.units[1].emp_ticks, 0) << "应被 EMP 瘫痪";
+    const int c0 = s.units[1].col, r0 = s.units[1].row;
+    ASSERT_TRUE(s.issue_move(1, 25, 16)); // 瘫痪中下移动指令
+    for (int t = 0; t < 30 && s.units[1].emp_ticks > 0; ++t) s.tick();
+    EXPECT_EQ(s.units[1].col, c0) << "瘫痪期间不得移动";
+    EXPECT_EQ(s.units[1].row, r0);
+}
+
+// 铁幕：免伤（无敌帧内 hp 不变）
+TEST(SimSpecial, IronCurtainBlocksDamage) {
+    sim::SimWorld s = make_world(32, 32);
+    ASSERT_GT(s.spawn_unit("Enemy", "E1", 2, 20, 16, 0, {}, false, 0, 51), 0u);
+    sim::SimWeapon w = test_weapon(0, 20, 8);
+    w.warhead.iron_curtain = true;
+    s.units[0].weapon = w;
+    ASSERT_TRUE(s.issue_attack_unit(0, 1));
+    for (int t = 0; t < 30 && s.units[1].iron_ticks == 0; ++t) s.tick();
+    ASSERT_GT(s.units[1].iron_ticks, 0) << "应获得铁幕";
+    const int hp0 = s.units[1].hp;
+    // 换高伤害武器继续打（无敌期间应免伤）
+    s.units[0].weapon = test_weapon(100, 5, 8);
+    s.units[0].cooldown = 0;
+    s.tick();
+    EXPECT_EQ(s.units[1].hp, hp0) << "铁幕期间应免伤";
+}
+
+// 传送（超时空）：目标被传走（移出战场）
+TEST(SimSpecial, TeleportRemovesTarget) {
+    sim::SimWorld s = make_world(32, 32);
+    ASSERT_GT(s.spawn_unit("Enemy", "E1", 2, 20, 16, 0, {}, false, 0, 51), 0u);
+    sim::SimWeapon w = test_weapon(0, 20, 8);
+    w.warhead.teleport = true;
+    s.units[0].weapon = w;
+    ASSERT_TRUE(s.issue_attack_unit(0, 1));
+    for (int t = 0; t < 30 && s.units.size() > 1; ++t) s.tick();
+    EXPECT_LE(s.units.size(), 1u) << "被传送的目标应移出战场";
+}
+
+// 辐射：命中格辐射场，逐帧伤害且随时间衰减
+TEST(SimSpecial, RadiationDamagesOverTime) {
+    sim::SimWorld s = make_world(32, 32);
+    ASSERT_GT(s.spawn_unit("Enemy", "E1", 2, 20, 16, 0, {}, false, 0, 51), 0u);
+    sim::SimWeapon w = test_weapon(0, 20, 8);
+    w.warhead.rad_level = 100;
+    s.units[0].weapon = w;
+    ASSERT_TRUE(s.issue_attack_unit(0, 1));
+    for (int t = 0; t < 40 && s.units[1].hp == s.units[1].hp_max; ++t) s.tick();
+    // 命中后应开始受辐射伤害
+    int hp_before = s.units[1].hp;
+    for (int t = 0; t < 30; ++t) s.tick();
+    EXPECT_LT(s.units[1].hp, hp_before) << "辐射场应持续造成伤害";
+}
+
+// 工程师占领：相邻即时，建筑换归属、工程师消耗
+TEST(SimSpecial, EngineerCaptureTakesBuilding) {
+    sim::SimWorld s = make_world(32, 32);
+    // 敌方建筑（手动放置；用 spawn_building 简化）
+    const uint32_t bid = s.spawn_building("Enemy", "GAPOWR", 20, 16, 2, 2, 800, 200, false, 1,
+                                          750);
+    ASSERT_GT(bid, 0u);
+    ASSERT_GT(s.spawn_unit("Player", "ENGINEER", 2, 21, 16, 0, {}, false, 0, 51), 0u);
+    const size_t eng = s.units.size() - 1;
+    ASSERT_TRUE(s.issue_capture(eng, 0));
+    EXPECT_EQ(s.buildings[0].owner, "Player") << "占领后建筑应换归属";
+    EXPECT_EQ(s.units.size(), eng) << "工程师应被消耗";
+}
+
 // ── 步兵 idle 动作（IdleActionFrequency 语义）────────────────────────────────
 
 TEST(SimIdle, TriggersInExpectedWindowAndIsDeterministic) {

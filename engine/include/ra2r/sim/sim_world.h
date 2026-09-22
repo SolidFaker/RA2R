@@ -63,6 +63,12 @@ struct SimWarhead {
     int percent_at_max = 100; // PercentAtMax=（%）：边缘杀伤 = 圆心 × 该值
     int prone_damage = 100;   // ProneDamage=（%）：对卧倒步兵
     int inf_death = 0;        // InfDeath=：死亡动画档（0 = 默认）
+    // ── M5.6 特殊效果 ──
+    bool em_effect = false;     // EMEffect=yes（EMP 瘫痪）
+    bool mind_control = false;  // MindControl=yes（心灵控制）
+    bool iron_curtain = false;  // IronCurtain=yes（铁幕无敌）
+    bool teleport = false;      // Teleport=yes（超时空传走）
+    int rad_level = 0;          // RadLevel=（辐射强度）
 };
 
 // 抛射体规格（rulesmd [Projectiles]，M5.2 全实体弹道）。speed = 0 = **瞬时命中**
@@ -169,6 +175,12 @@ struct SimUnit {
     uint32_t load_target = 0;   // 装载中：目标载具的单位 id（0 = 无；步兵用）
     SimWeapon weapon_saved;     // 上车前的武器（载具保存；下车恢复）
     bool has_secondary_saved = false;
+    // ── M5.6 特殊效果状态 ──
+    int emp_ticks = 0;          // EMP 瘫痪剩余帧（>0 不能动/不能开火）
+    int iron_ticks = 0;         // 铁幕无敌剩余帧（>0 免伤）
+    uint32_t mc_by = 0;         // 心灵控制者单位 id（0 = 未被控制）
+    std::string mc_owner;       // 被控制前的归属（控制者死亡后恢复）
+    uint32_t capture_id = 0;    // 工程师占领中：目标建筑 id（0 = 无）
     uint8_t order = kOrderNone;
     int target = -1;               // 攻击/护卫目标下标（按 order 语义）
     int cooldown = 0;
@@ -344,6 +356,13 @@ struct SimWorld {
     // Cost= 价值）——spawn/load_map 统一调用，避免逐调用点漏设
     std::function<void(const std::string&, SimUnit&)> veteran_of;
     SimVeteranCfg veteran;
+    // ── M5.6 特殊武器/辐射 ──
+    std::vector<int16_t> radiation; // 每格辐射强度（0 = 无；[General] RadLevelMax 上限）
+    int rad_clock = 0;              // 辐射衰减节拍（RadLevelDelay 帧降 1）
+    int iron_curtain_frames = 750;  // [General] IronCurtainDuration=
+    int emp_frames = 150;           // EMP 瘫痪帧数（原版未给明确键，取 10s 档）
+    int rad_max = 500;              // [General] RadLevelMax=
+    int rad_delay = 90;             // [General] RadLevelDelay=
     // M5.5：Gunner 载具武器解析（载具类型 + 乘客类型 → 武器；stage 按乘客
     // IFVMode= 选 Weapon(mode+1)/EliteWeapon(mode+1)）。elite = 载具是否 2 级。
     std::function<void(const std::string&, const std::string&, bool, SimWeapon&)> gunner_weapon;
@@ -372,6 +391,12 @@ struct SimWorld {
     // M5.5：装载/卸载（Gunner 载具：乘客上车换武器、下车恢复）
     bool issue_load(size_t carrier_idx, size_t passenger_idx);
     bool issue_unload(size_t carrier_idx);
+    // M5.6：弹头特殊效果（心灵控制/EMP/铁幕/传送/辐射）——命中与范围伤害共用
+    void apply_warhead_effects(const SimWarhead& wh, SimUnit& t, uint32_t shooter_id,
+                               const std::string& shooter_owner, int col, int row);
+    bool unit_invulnerable(const SimUnit& u) const { return u.iron_ticks > 0; }
+    // M5.6：工程师占领（相邻即时；否则走过去由 tick 完成）
+    bool issue_capture(size_t engineer_idx, size_t building_idx);
     // M5.3：CellSpread 范围伤害（以 (col,row) 为圆心、半径 = CellSpread 格；
     // 距离线性衰减：圆心 100%、边缘 PercentAtMax%；skip_unit_id = 发射者豁免）。
     // spread==0 时不调用（单体伤害在命中路径直接结算）。

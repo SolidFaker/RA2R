@@ -123,6 +123,8 @@ bool SimWorld::load_map(const assets::MapFile& map,
     min_d = map.min_d();
     min_s = map.min_s();
     blocked.assign(static_cast<size_t>(w) * h, 0);
+    radiation.assign(static_cast<size_t>(w) * h, 0); // M5.6：辐射场
+    rad_clock = 0;
     buildings.clear();
     units.clear();
     explosions.clear();
@@ -843,21 +845,68 @@ int SimWorld::damage_against(const SimWeapon& sw, int armor) const {
     return (sw.damage * v + 50) / 100; // 四舍五入（整数确定性）
 }
 
+// M5.6：武器可用性 = 对目标护甲有伤害 **或** 纯效果武器（心灵控制/EMP/铁幕/传送/辐射）
+static bool weapon_usable(const SimWeapon& w, int armor, const SimWorld& world) {
+    if (world.damage_against(w, armor) > 0) return true;
+    return w.warhead.mind_control || w.warhead.em_effect || w.warhead.iron_curtain ||
+           w.warhead.teleport || w.warhead.rad_level > 0;
+}
+
 const SimWeapon* SimWorld::effective_weapon(const SimUnit& u, int target_armor) const {
     // M5.4：精英（2 级）优先用 ElitePrimary/EliteSecondary
     if (u.veterancy >= 2 && u.has_elite) {
-        if (damage_against(u.elite_weapon, target_armor) > 0) return &u.elite_weapon;
-        if (u.has_secondary && damage_against(u.elite_weapon2, target_armor) > 0)
+        if (weapon_usable(u.elite_weapon, target_armor, *this)) return &u.elite_weapon;
+        if (u.has_secondary && weapon_usable(u.elite_weapon2, target_armor, *this))
             return &u.elite_weapon2;
     }
-    if (damage_against(u.weapon, target_armor) > 0) return &u.weapon;
-    if (u.has_secondary && damage_against(u.weapon2, target_armor) > 0) return &u.weapon2;
+    if (weapon_usable(u.weapon, target_armor, *this)) return &u.weapon;
+    if (u.has_secondary && weapon_usable(u.weapon2, target_armor, *this)) return &u.weapon2;
     return nullptr;
 }
 
 const SimWeapon* SimWorld::effective_weapon(const SimBuilding& b, int target_armor) const {
-    if (damage_against(b.weapon, target_armor) > 0) return &b.weapon;
+    if (weapon_usable(b.weapon, target_armor, *this)) return &b.weapon;
     return nullptr;
+}
+
+// ── M5.6 弹头特殊效果（心灵控制/EMP/铁幕/传送/辐射）────────────────────────
+// 命中与范围伤害共用：目标单位 + 命中格。语义：
+//   MindControl  → 目标归属改为攻击方（记录原归属，控制者死亡后恢复）
+//   EMEffect     → 目标瘫痪 emp_frames 帧（不能移动/开火）
+//   IronCurtain  → 目标无敌 iron_curtain_frames 帧（免伤）
+//   Teleport     → 目标被传走（原版超时空兵：目标移出战场；此处直接移除）
+//   RadLevel     → 命中格辐射累加（上限 RadLevelMax），每 RadLevelDelay 帧衰减 1
+void SimWorld::apply_warhead_effects(const SimWarhead& wh, SimUnit& t, uint32_t shooter_id,
+                                     const std::string& shooter_owner, int col, int row) {
+    if (wh.mind_control && shooter_id != 0 && t.kind == 2 && t.mc_by == 0) {
+        t.mc_owner = t.owner;
+        t.mc_by = shooter_id;
+        t.owner = shooter_owner;
+    }
+    if (wh.em_effect) t.emp_ticks = std::max(t.emp_ticks, emp_frames);
+    if (wh.iron_curtain) t.iron_ticks = std::max(t.iron_ticks, iron_curtain_frames);
+    if (wh.teleport) t.hp = 0; // 传走 = 移出战场
+    if (wh.rad_level > 0 && col >= 0 && row >= 0 && col < w && row < h &&
+        radiation.size() == static_cast<size_t>(w) * h) {
+        const size_t i = static_cast<size_t>(row) * w + col;
+        radiation[i] = static_cast<int16_t>(std::min(rad_max, radiation[i] + wh.rad_level));
+    }
+}
+
+// M5.6：工程师占领建筑（相邻即时；较远则走过去，tick 在到达时完成）
+bool SimWorld::issue_capture(size_t engineer_idx, size_t building_idx) {
+    if (engineer_idx >= units.size() || building_idx >= buildings.size()) return false;
+    SimUnit& e = units[engineer_idx];
+    SimBuilding& b = buildings[building_idx];
+    if (!e.alive || !b.alive || e.kind != 2 || e.owner == b.owner) return false;
+    const int d = std::abs(e.col - b.col) + std::abs(e.row - b.row);
+    if (d > 1) {
+        e.capture_id = b.id;
+        return set_move_target(e, b.col, b.row);
+    }
+    b.owner = e.owner; // 占领：建筑换归属（工程师消耗）
+    remove_unit(engineer_idx);
+    return true;
 }
 
 // ── M5.5 装载/卸载（IFV Gunner=yes：乘客决定载具武器）──────────────────────
@@ -977,7 +1026,11 @@ bool SimWorld::fire_weapon(const std::string& owner, uint32_t shooter_id, int fc
     const int trow = is_b ? buildings[ti].row : units[ti].row;
     const int tarmor = is_b ? buildings[ti].armor : units[ti].armor;
     int dmg = damage_against(sw, tarmor);
-    if (dmg <= 0) return false;
+    // M5.6：纯效果武器（心灵控制/EMP/铁幕/传送/辐射）伤害可为 0 仍要命中
+    const bool has_fx = sw.warhead.mind_control || sw.warhead.em_effect ||
+                        sw.warhead.iron_curtain || sw.warhead.teleport ||
+                        sw.warhead.rad_level > 0;
+    if (dmg <= 0 && !has_fx) return false;
     // M5.4：FIREPOWER 能力 → 伤害乘 VeteranCombat
     if (!is_b) {
         for (const auto& su : units) {
@@ -990,9 +1043,10 @@ bool SimWorld::fire_weapon(const std::string& owner, uint32_t shooter_id, int fc
     if (sw.proj.speed <= 0) { // 瞬时命中：保持旧行为（既有测试/无弹道武器）
         if (is_b) {
             buildings[ti].hp -= dmg;
-        } else {
+        } else if (!unit_invulnerable(units[ti])) { // M5.6：铁幕免伤
             const bool was_alive = units[ti].hp > 0;
             units[ti].hp -= dmg;
+            apply_warhead_effects(sw.warhead, units[ti], shooter_id, owner, fc, fr);
             if (was_alive && units[ti].hp <= 0) grant_xp(shooter_id, units[ti].value);
         }
         return true;
@@ -1053,8 +1107,10 @@ void SimWorld::apply_area_damage(const SimWarhead& wh, int base_damage, int col,
         if (!u.alive || (skip_unit_id != 0 && u.id == skip_unit_id)) continue;
         const int d = dmg_at(u.col - col, u.row - row);
         if (d <= 0) continue;
+        if (unit_invulnerable(u)) continue; // M5.6：铁幕免伤
         const bool was_alive = u.hp > 0;
         u.hp -= d;
+        apply_warhead_effects(wh, u, skip_unit_id, u.owner, u.col, u.row); // M5.6
         if (was_alive && u.hp <= 0) grant_xp(skip_unit_id, u.value); // M5.4
     }
     for (auto& b : buildings) {
@@ -1137,9 +1193,11 @@ bool SimWorld::advance_projectiles() {
                            (is_b ? buildings[ti].alive : units[ti].alive)) {
                     if (is_b) {
                         buildings[ti].hp -= p.damage;
-                    } else {
+                    } else if (!unit_invulnerable(units[ti])) { // M5.6：铁幕免伤
                         const bool was_alive = units[ti].hp > 0;
                         units[ti].hp -= p.damage;
+                        apply_warhead_effects(p.warhead, units[ti], p.shooter_id, p.owner,
+                                              p.col, p.row);
                         if (was_alive && units[ti].hp <= 0)
                             grant_xp(p.shooter_id, units[ti].value); // M5.4
                     }
@@ -1169,6 +1227,14 @@ bool SimWorld::tick() {
     if (advance_projectiles()) changed = true;
     for (auto& u : units) { // 固定索引序遍历（确定性）
         if (!u.alive) continue;
+        // M5.6：EMP 瘫痪（不能移动/开火；仍走冷却与状态计时）
+        if (u.iron_ticks > 0) --u.iron_ticks;
+        if (u.emp_ticks > 0) {
+            --u.emp_ticks;
+            if (u.cooldown > 0) --u.cooldown;
+            changed = true;
+            continue;
+        }
         if (u.cooldown > 0) --u.cooldown;
         if (u.make_way_cd > 0) --u.make_way_cd; // 让路冷却（避免反复横挪抖动）
         // M5.4：SELF_HEAL 能力（精英步兵等）缓慢回血（1 hp / 15 帧）
@@ -1360,6 +1426,43 @@ bool SimWorld::tick() {
         if (turned) changed = true;
         if (advance_segment(u)) changed = true;
     }
+    // ── M5.6 心灵控制释放 + 辐射伤害/衰减 ──
+    for (auto& u : units) {
+        if (!u.alive || u.mc_by == 0) continue;
+        bool ctrl_alive = false;
+        for (const auto& o : units)
+            if (o.alive && o.id == u.mc_by) {
+                ctrl_alive = true;
+                break;
+            }
+        if (!ctrl_alive) { // 控制者死亡 → 恢复原归属
+            u.owner = u.mc_owner;
+            u.mc_by = 0;
+            u.mc_owner.clear();
+            changed = true;
+        }
+    }
+    if (radiation.size() == static_cast<size_t>(w) * h) {
+        if (++rad_clock >= std::max(1, rad_delay)) { // 辐射衰减（RadLevelDelay）
+            rad_clock = 0;
+            bool any = false;
+            for (auto& rad : radiation) {
+                if (rad > 0) {
+                    --rad;
+                    any = true;
+                }
+            }
+            if (any) changed = true;
+        }
+        for (auto& u : units) { // 辐射伤害（强度/10 每帧，至少 1）
+            if (!u.alive) continue;
+            const int rad = radiation[static_cast<size_t>(u.row) * w + u.col];
+            if (rad <= 0) continue;
+            u.hp -= std::max(1, rad / 10);
+            changed = true;
+        }
+    }
+
     // ── M5.5 装载到达判定：乘客到达载具格 → 上车（索引会变，处理完立即跳出）──
     for (size_t i = 0; i < units.size(); ++i) {
         if (!units[i].alive || units[i].load_target == 0) continue;
@@ -1377,6 +1480,28 @@ bool SimWorld::tick() {
         if (units[i].col == units[ci].col && units[i].row == units[ci].row) {
             if (issue_load(ci, i)) changed = true;
             break; // issue_load 会移除单位（下标失效）
+        }
+    }
+
+    // ── M5.6 工程师占领到达：工程师走到建筑旁 → 占领（索引会变，处理完跳出）──
+    for (size_t i = 0; i < units.size(); ++i) {
+        if (!units[i].alive || units[i].capture_id == 0) continue;
+        const uint32_t bid = units[i].capture_id;
+        size_t bi = buildings.size();
+        for (size_t j = 0; j < buildings.size(); ++j)
+            if (buildings[j].alive && buildings[j].id == bid) {
+                bi = j;
+                break;
+            }
+        if (bi >= buildings.size()) {
+            units[i].capture_id = 0;
+            continue;
+        }
+        const int d = std::abs(units[i].col - buildings[bi].col) +
+                      std::abs(units[i].row - buildings[bi].row);
+        if (d <= 1) {
+            issue_capture(i, bi);
+            break; // issue_capture 会移除工程师（下标失效）
         }
     }
 
