@@ -984,6 +984,41 @@ TEST(SimProjectile, HomingTracksMovingTarget) {
     EXPECT_LT(s.units[1].hp, hp0) << "追踪弹应命中移动目标";
 }
 
+// ── M5.3 范围伤害（CellSpread/PercentAtMax）与连发（Burst）────────────────────
+
+// 范围伤害：命中点附近多单位同时受伤、按距离线性衰减、发射者豁免
+TEST(SimArea, SpreadDamagesNearbyAndFallsOffWithDistance) {
+    sim::SimWorld s = make_world(32, 32);
+    ASSERT_GT(s.spawn_unit("Enemy", "HTNK", 1, 18, 16, 0, {}, false, 0, 68), 0u); // 目标
+    ASSERT_GT(s.spawn_unit("Enemy", "HTNK", 1, 19, 16, 0, {}, false, 0, 68), 0u); // 邻格
+    sim::SimWeapon w = test_weapon(100, 20, 8);
+    w.proj.speed = 64;
+    w.warhead.cell_spread_x100 = 200; // CellSpread=2 格
+    w.warhead.percent_at_max = 0;     // 边缘 0%（线性衰减）
+    s.units[0].weapon = w;
+    ASSERT_TRUE(s.issue_attack_unit(0, 1));
+    const int hp_a = s.units[1].hp, hp_b = s.units[2].hp, hp_self = s.units[0].hp;
+    for (int t = 0; t < 200 && s.units[1].hp == hp_a; ++t) s.tick();
+    EXPECT_LT(s.units[1].hp, hp_a) << "目标应受伤";
+    EXPECT_LT(s.units[2].hp, hp_b) << "相邻格单位应受范围伤害";
+    EXPECT_LT(s.units[1].hp, s.units[2].hp) << "圆心伤害应高于 1 格处（线性衰减）";
+    EXPECT_EQ(s.units[0].hp, hp_self) << "发射者应豁免自伤";
+}
+
+// 连发：Burst=3 在进入 ROF 前连打 3 发（间隔 3 帧）
+TEST(SimArea, BurstFiresMultipleShotsBeforeRof) {
+    sim::SimWorld s = make_world(32, 32);
+    ASSERT_GT(s.spawn_unit("Enemy", "HTNK", 1, 20, 16, 0, {}, false, 0, 68), 0u);
+    sim::SimWeapon w = test_weapon(10, 90, 8); // 长 ROF：3 发必须在 90 帧前打完
+    w.burst = 3;
+    s.units[0].weapon = w;
+    ASSERT_TRUE(s.issue_attack_unit(0, 1));
+    const int hp0 = s.units[1].hp;
+    for (int t = 0; t < 12; ++t) s.tick();
+    EXPECT_LE(s.units[1].hp, hp0 - 30) << "Burst=3 应连打 3 发（3×10 伤害）";
+    EXPECT_EQ(s.units[0].burst_left, 0) << "三发打完应复位";
+}
+
 // ── 步兵 idle 动作（IdleActionFrequency 语义）────────────────────────────────
 
 TEST(SimIdle, TriggersInExpectedWindowAndIsDeterministic) {

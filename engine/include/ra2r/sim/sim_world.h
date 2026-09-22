@@ -129,6 +129,7 @@ struct SimUnit {
     int armor = kArmorNone;
     SimWeapon weapon2;
     bool has_secondary = false;
+    uint8_t burst_left = 0; // M5.3：连发剩余（Burst= 的后续发；冷却用 k_burst_gap）
     uint8_t order = kOrderNone;
     int target = -1;               // 攻击/护卫目标下标（按 order 语义）
     int cooldown = 0;
@@ -228,6 +229,7 @@ struct SimProjectile {
     int speed = 0;        // 速度大小（追踪弹保持恒定）
     int rot = 0;          // ROT=（>0 = 追踪弹，每帧按 rot/256 向目标收敛）
     uint32_t target_id = 0; // 目标（units 下标+1；建筑 + kBuildingBit）
+    uint32_t shooter_id = 0; // 发射者单位 id（范围伤害自伤豁免）
     int tcol = 0, trow = 0; // 目标格（到达判据/直射终点）
     SimWarhead warhead;
     int damage = 0;
@@ -313,9 +315,14 @@ struct SimWorld {
     // M5.2：开火 = 有弹道（proj.speed>0）则生成抛射体，否则瞬时命中（旧行为）。
     // target_kind_id：单位 = units 下标 +1；建筑 = buildings 下标 +1 + kBuildingBit。
     static constexpr uint32_t kBuildingBit = 0x80000000u;
-    bool fire_weapon(const std::string& owner, int fc, int fr, const SimWeapon& sw,
-                     uint32_t target_kind_id);
+    bool fire_weapon(const std::string& owner, uint32_t shooter_id, int fc, int fr,
+                     const SimWeapon& sw, uint32_t target_kind_id);
     bool advance_projectiles();
+    // M5.3：CellSpread 范围伤害（以 (col,row) 为圆心、半径 = CellSpread 格；
+    // 距离线性衰减：圆心 100%、边缘 PercentAtMax%；skip_unit_id = 发射者豁免）。
+    // spread==0 时不调用（单体伤害在命中路径直接结算）。
+    void apply_area_damage(const SimWarhead& wh, int base_damage, int col, int row,
+                           uint32_t skip_unit_id);
 
     // 指令：单位 idx 移动到格 (tc,tr)（为当前格/无路径时原地停止）。
     // 目标不可达返回 false 并保持原指令。

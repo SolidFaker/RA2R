@@ -861,8 +861,8 @@ bool decode_target(uint32_t tid, bool& is_building, size_t& idx) {
 } // namespace
 
 // 开火：有弹道（proj.speed>0）生成抛射体；否则瞬时命中（无弹道数据/旧行为）。
-bool SimWorld::fire_weapon(const std::string& owner, int fc, int fr, const SimWeapon& sw,
-                           uint32_t target_kind_id) {
+bool SimWorld::fire_weapon(const std::string& owner, uint32_t shooter_id, int fc, int fr,
+                           const SimWeapon& sw, uint32_t target_kind_id) {
     bool is_b = false;
     size_t ti = 0;
     if (!decode_target(target_kind_id, is_b, ti)) return false;
@@ -887,6 +887,7 @@ bool SimWorld::fire_weapon(const std::string& owner, int fc, int fr, const SimWe
     p.speed = sw.proj.speed;
     p.rot = sw.proj.rot;
     p.target_id = target_kind_id;
+    p.shooter_id = shooter_id;
     p.tcol = tcol;
     p.trow = trow;
     p.warhead = sw.warhead;
@@ -907,6 +908,44 @@ bool SimWorld::fire_weapon(const std::string& owner, int fc, int fr, const SimWe
     if (p.vx == 0 && p.vy == 0) p.vx = p.speed > 0 ? 1 : 0; // 极小速度兜底
     projectiles.push_back(std::move(p));
     return true;
+}
+
+// M5.3：CellSpread 范围伤害。距离用引擎格差（≈ 地图格，行 = 地图行、列含固定
+// 奇偶偏移）的欧氏距离 ×100 与 CellSpread×100 比较；杀伤线性衰减：
+// 圆心 = 100%，半径处 = PercentAtMax%。整数运算（sqrt 结果先量化成整数再比），
+// 与平台无关、可复现。发射者自身豁免（原版不炸自己）。
+void SimWorld::apply_area_damage(const SimWarhead& wh, int base_damage, int col, int row,
+                                 uint32_t skip_unit_id) {
+    if (base_damage <= 0) return;
+    const int spread_x100 = wh.cell_spread_x100;
+    if (spread_x100 <= 0) return;
+    const int edge = std::clamp(wh.percent_at_max, 0, 100);
+    const auto dmg_at = [&](int dc, int dr) -> int {
+        const long long d2 =
+            static_cast<long long>(dc) * dc + static_cast<long long>(dr) * dr;
+        const long long d_x100 =
+            std::llround(std::sqrt(static_cast<double>(d2)) * 100.0); // 整数化（确定性）
+        if (d_x100 > spread_x100) return 0;
+        const long long pct =
+            (100LL * (spread_x100 - d_x100) + static_cast<long long>(edge) * d_x100) /
+            spread_x100;
+        return static_cast<int>(base_damage * pct / 100);
+    };
+    for (auto& u : units) {
+        if (!u.alive || (skip_unit_id != 0 && u.id == skip_unit_id)) continue;
+        const int d = dmg_at(u.col - col, u.row - row);
+        if (d > 0) u.hp -= d;
+    }
+    for (auto& b : buildings) {
+        if (!b.alive) continue;
+        // 多格建筑取地基最近格的距离
+        int best = -1;
+        for (const auto& fc : b.footprint_cells) {
+            const int d = dmg_at(fc.first - col, fc.second - row);
+            if (d > best) best = d;
+        }
+        if (best > 0) b.hp -= best;
+    }
 }
 
 // 每 tick 推进所有抛射体：追踪转向 → 位移（归一化进格）→ 地形阻挡 → 命中/超时。
@@ -969,9 +1008,12 @@ bool SimWorld::advance_projectiles() {
         if (p.col == p.tcol && p.row == p.trow && std::abs(p.fx) <= 128 &&
             std::abs(p.fy) <= 128) {
             if (p.travelled * 10 >= p.arm_x10 * 256) { // Arm= 引信
-                if (decode_target(p.target_id, is_b, ti) &&
-                    (is_b ? ti < buildings.size() : ti < units.size()) &&
-                    (is_b ? buildings[ti].alive : units[ti].alive)) {
+                if (p.warhead.cell_spread_x100 > 0) {
+                    // M5.3：范围伤害（含目标与友军；发射者豁免）
+                    apply_area_damage(p.warhead, p.damage, p.col, p.row, p.shooter_id);
+                } else if (decode_target(p.target_id, is_b, ti) &&
+                           (is_b ? ti < buildings.size() : ti < units.size()) &&
+                           (is_b ? buildings[ti].alive : units[ti].alive)) {
                     if (is_b)
                         buildings[ti].hp -= p.damage;
                     else
@@ -1087,9 +1129,15 @@ bool SimWorld::tick() {
                     if (attacking && u.cooldown == 0) {
                         SimUnit& tv = units[static_cast<size_t>(u.target)];
                         if (const SimWeapon* sw = effective_weapon(u, tv.armor)) { // M5.1/5.2
-                            fire_weapon(u.owner, u.col, u.row, *sw,
+                            fire_weapon(u.owner, u.id, u.col, u.row, *sw,
                                         static_cast<uint32_t>(u.target) + 1);
-                            u.cooldown = sw->rof > 0 ? sw->rof : 1;
+                            // M5.3 连发：余发按 3 帧间隔连打，打完进 ROF
+                            if (u.burst_left > 0)
+                                --u.burst_left;
+                            else
+                                u.burst_left = static_cast<uint8_t>(
+                                    std::max(0, sw->burst - 1));
+                            u.cooldown = u.burst_left > 0 ? 3 : (sw->rof > 0 ? sw->rof : 1);
                             changed = true;
                         }
                     }
@@ -1130,9 +1178,14 @@ bool SimWorld::tick() {
                     if (u.cooldown == 0) {
                         if (const SimWeapon* sw = effective_weapon(
                                 u, buildings[static_cast<size_t>(u.target)].armor)) {
-                            fire_weapon(u.owner, u.col, u.row, *sw,
+                            fire_weapon(u.owner, u.id, u.col, u.row, *sw,
                                         static_cast<uint32_t>(u.target) + 1 + kBuildingBit);
-                            u.cooldown = sw->rof > 0 ? sw->rof : 1;
+                            if (u.burst_left > 0) // M5.3 连发
+                                --u.burst_left;
+                            else
+                                u.burst_left = static_cast<uint8_t>(
+                                    std::max(0, sw->burst - 1));
+                            u.cooldown = u.burst_left > 0 ? 3 : (sw->rof > 0 ? sw->rof : 1);
                             changed = true;
                         }
                     }
@@ -1307,7 +1360,7 @@ bool SimWorld::tick() {
         if (in_range && std::abs(diff) <= 16 && b.cooldown == 0) {
             SimUnit& tv = units[static_cast<size_t>(b.target)];
             if (const SimWeapon* sw = effective_weapon(b, tv.armor)) { // M5.1/5.2
-                fire_weapon(b.owner, b.col, b.row, *sw, static_cast<uint32_t>(b.target) + 1);
+                fire_weapon(b.owner, 0, b.col, b.row, *sw, static_cast<uint32_t>(b.target) + 1);
                 b.cooldown = sw->rof > 0 ? sw->rof : 1;
                 changed = true;
             }

@@ -870,6 +870,21 @@ DeaccelerationFactor）+ 转向（ROT/TurretROT）
 - **待办（M5.2 尾）**：`Image=` 可见弹体的渲染（多数原版弹体 Inviso/Image=none，
   故先不做也不影响观感）与 `Burst` 连发节奏、`Arcing` 抛物线 z。
 
+### 3.39 M5.3 范围伤害（CellSpread）+ 连发（Burst）
+- **范围伤害**：`apply_area_damage()` —— 以命中点为圆心、半径 `CellSpread` 格，
+  距离线性衰减：圆心 = 100%、半径处 = `PercentAtMax%`；友军/建筑同结算
+  （多格建筑取地基最近格距离），**发射者豁免**（`SimProjectile.shooter_id`）。
+  距离 = 引擎格差的欧氏距离（行 = 地图行、列含固定奇偶偏移 → ≈ 地图格），
+  `sqrt` 结果先量化成整数再比较（与平台无关、可复现）。
+- **单体 vs 范围**：`CellSpread==0` → 命中路径直接结算单体伤害（M5.1/5.2 行为）；
+  `>0` → 只走范围结算（避免对目标双算）。
+- **连发**：`Burst=` 余发按 3 帧间隔连打，打完进 ROF（`SimUnit.burst_left`）；
+  `Burst=1` 与原行为完全一致。
+- **验证**：`SimArea.*` 2 例（范围伤害多目标 + 距离衰减 + 发射者豁免；Burst=3
+  在 ROF 前打满 3 发并复位）；总 141；三场景基线未变（本批未改变这些场景）。
+- **M5.3 尾（未做）**：`AnimList` 命中动画、`Bright=` 闪光、`InfDeath` 死亡动画档、
+  `Arcing` 抛物线 z 与可见弹体渲染（多数原版弹体 Inviso，观感影响小）。
+
 ## 4. 构建/工具链类
 
 - 无管理员工具链：WinLibs MinGW（免安装）+ pip CMake + SDL3 mingw 预编译包，全部放 `I:\tools\`（不入库）。
