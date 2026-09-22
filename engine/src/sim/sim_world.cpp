@@ -229,7 +229,8 @@ bool SimWorld::load_map(const assets::MapFile& map,
         su.hp = u.health;
         su.hp_base = su.hp_max = su.hp;
         su.speed_base = su.speed;
-        if (veteran_of) veteran_of(u.id, su); // M5.4：老兵能力/价值/精英武器
+        if (veteran_of) veteran_of(u.id, su); // M5.4
+        if (role_of) role_of(u.id, su);       // M5.7/M5.8
         su.armor = armor_of ? armor_of(u.id) : kArmorNone; // M5.1：护甲
         weapon(u.id, su.weapon);
         if (secondary_of) {
@@ -256,7 +257,8 @@ bool SimWorld::load_map(const assets::MapFile& map,
         su.speed = 51; // 步兵 ≈3 格/秒
         su.hp_base = su.hp_max = su.hp;
         su.speed_base = su.speed;
-        if (veteran_of) veteran_of(n.id, su); // M5.4：老兵能力/价值/精英武器
+        if (veteran_of) veteran_of(n.id, su); // M5.4
+        if (role_of) role_of(n.id, su);       // M5.7/M5.8
         {
             UnitMotion mo;
             mo.max_speed = su.speed;
@@ -293,6 +295,7 @@ bool SimWorld::load_map(const assets::MapFile& map,
 // 原版《格子预订》：预订即 next_col/next_row，规划与占位都视其已占用 ——
 // 两个单位不能同时把同一格当作下一步（先规划者预订成功，后者改道/排队）。
 bool unit_touches_cell(const SimUnit& u, int col, int row) {
+    if (u.air) return false; // M5.7：飞行单位不占地面格（门禁/预订与它无关）
     if (u.col == col && u.row == row) return true;
     return (u.next_col != u.col || u.next_row != u.row) && u.next_col == col &&
            u.next_row == row;
@@ -437,7 +440,7 @@ bool SimWorld::advance_segment(SimUnit& u) {
     // 预订格占用 → 最多推进到**本格边缘**（半格 = 朝向目标格的那条边）
     // 后原地等位。否则渲染位置会越进被占格再被拉回（闪现的主要来源）。
     {
-        SimUnit* blk = blocker_at(u, u.next_col, u.next_row);
+        SimUnit* blk = u.air ? nullptr : blocker_at(u, u.next_col, u.next_row);
         if (blk) {
             const int cap = kFracMax / 2;
             const int before = u.frac;
@@ -666,6 +669,39 @@ const FlowField* SimWorld::flow_for(int tc, int tr, int slots, bool naval) {
     return &flow_cache.back().field;
 }
 
+// M5.7：空中直飞航路 —— 贪心选"屏幕距离目标最近"的合法邻步（nav_neighbours），
+// 忽略地形与占用；最多 512 步防环；确定性（固定邻序 + 严格更优才换步）。
+std::vector<std::pair<int, int>> SimWorld::air_path(int sc, int sr, int tc, int tr) const {
+    std::vector<std::pair<int, int>> out;
+    int c = sc, r = sr;
+    const auto dist2 = [](int c0, int r0, int c1, int r1) {
+        const long long dx = 60LL * (c1 - c0) + 30LL * ((r1 & 1) - (r0 & 1));
+        const long long dy = 15LL * (r1 - r0);
+        return dx * dx + dy * dy;
+    };
+    for (int step = 0; step < 512 && (c != tc || r != tr); ++step) {
+        NavStep nb[8];
+        const int n = nav_neighbours(r, (min_s + min_d) & 1, nb);
+        int bc = c, br = r;
+        long long best = dist2(c, r, tc, tr);
+        for (int i = 0; i < n; ++i) {
+            const int nc = c + nb[i].dc, nr = r + nb[i].dr;
+            if (nc < 0 || nr < 0 || nc >= w || nr >= h) continue;
+            const long long d = dist2(nc, nr, tc, tr);
+            if (d < best) {
+                best = d;
+                bc = nc;
+                br = nr;
+            }
+        }
+        if (bc == c && br == r) break; // 无更近邻步
+        c = bc;
+        r = br;
+        out.emplace_back(c, r);
+    }
+    return out;
+}
+
 // 用已建好的流场给单位布置路径（失败 → 清路径并驻停，返回是否可达）。
 // 移动中重下令（反复右键改目标 / 编队反复改点）：从当前段**终点**续接并保留
 // 段内进度 frac，否则 frac 归零会让单位视觉上"复位到格心"（OpenRA 同思路：
@@ -683,8 +719,11 @@ bool SimWorld::set_move_target_field(SimUnit& u, const FlowField* f, int tc, int
         return i < f->goal.size() && f->goal[i] != 0;
     };
     const bool start_at_goal = at_goal(sc, sr);
-    std::vector<std::pair<int, int>> path =
-        (f && !start_at_goal) ? flow_path(*f, sc, sr) : std::vector<std::pair<int, int>>{};
+    std::vector<std::pair<int, int>> path;
+    if (u.air)
+        path = air_path(sc, sr, tc, tr); // M5.7：空中直飞（忽略流场/地形）
+    else if (f && !start_at_goal)
+        path = flow_path(*f, sc, sr);
     // 移动前"预订检测"（原版）：路线第一步已被他人预订/占据 → 改用单位感知
     // 规划（先规划者预订成功，本人改道），避免走到段边界才发现被堵再弹回。
     if (!path.empty() && blocker_at(u, path.front().first, path.front().second)) {
@@ -723,7 +762,7 @@ bool SimWorld::set_move_target_field(SimUnit& u, const FlowField* f, int tc, int
 
 // 单目标移动：流场（目标 + 必要时周围可走格）→ 布置路径
 bool SimWorld::set_move_target(SimUnit& u, int tc, int tr) {
-    return set_move_target_field(u, flow_for(tc, tr, 1), tc, tr);
+    return set_move_target_field(u, flow_for(tc, tr, 1, u.naval), tc, tr); // M5.8
 }
 
 // 段边界被单位堵住超时 → 绕行重规划：把"对本人不可入"的单位格当临时障碍
@@ -731,6 +770,7 @@ bool SimWorld::set_move_target(SimUnit& u, int tc, int tr) {
 // 不能从段终点续接）。仅改这一个单位的路径，已预订成功的单位不受影响。
 bool SimWorld::replan_around_units(SimUnit& u) {
     if (u.dest_col < 0) return false;
+    if (u.air) return false; // M5.7：空中直飞，无绕行
     bool at_slot = false;
     std::vector<std::pair<int, int>> path =
         plan_avoiding_units(u, u.col, u.row, u.dest_col, u.dest_row, &at_slot);
@@ -856,20 +896,29 @@ static bool weapon_usable(const SimWeapon& w, int armor, const SimWorld& world) 
            w.warhead.teleport || w.warhead.rad_level > 0;
 }
 
-const SimWeapon* SimWorld::effective_weapon(const SimUnit& u, int target_armor) const {
+const SimWeapon* SimWorld::effective_weapon(const SimUnit& u, int target_armor,
+                                             bool target_air) const {
     // M5.4：精英（2 级）优先用 ElitePrimary/EliteSecondary
     if (u.veterancy >= 2 && u.has_elite) {
         if (weapon_usable(u.elite_weapon, target_armor, *this)) return &u.elite_weapon;
         if (u.has_secondary && weapon_usable(u.elite_weapon2, target_armor, *this))
             return &u.elite_weapon2;
     }
-    if (weapon_usable(u.weapon, target_armor, *this)) return &u.weapon;
-    if (u.has_secondary && weapon_usable(u.weapon2, target_armor, *this)) return &u.weapon2;
+    const auto kind_ok = [&](const SimWeapon& sw2) {
+        return target_air ? sw2.can_aa : sw2.can_ag; // M5.7：目标种类过滤
+    };
+    if (weapon_usable(u.weapon, target_armor, *this) && kind_ok(u.weapon)) return &u.weapon;
+    if (u.has_secondary && weapon_usable(u.weapon2, target_armor, *this) &&
+        kind_ok(u.weapon2))
+        return &u.weapon2;
     return nullptr;
 }
 
-const SimWeapon* SimWorld::effective_weapon(const SimBuilding& b, int target_armor) const {
-    if (weapon_usable(b.weapon, target_armor, *this)) return &b.weapon;
+const SimWeapon* SimWorld::effective_weapon(const SimBuilding& b, int target_armor,
+                                             bool target_air) const {
+    if (weapon_usable(b.weapon, target_armor, *this) &&
+        (target_air ? b.weapon.can_aa : b.weapon.can_ag)) // M5.7
+        return &b.weapon;
     return nullptr;
 }
 
@@ -1331,7 +1380,7 @@ bool SimWorld::tick() {
                         dir_toward(u.col, u.row, t.col, t.row) * 32);
                     if (attacking && u.cooldown == 0) {
                         SimUnit& tv = units[static_cast<size_t>(u.target)];
-                        if (const SimWeapon* sw = effective_weapon(u, tv.armor)) { // M5.1/5.2
+                        if (const SimWeapon* sw = effective_weapon(u, tv.armor, tv.air)) { // M5.1/5.2
                             fire_weapon(u.owner, u.id, u.col, u.row, *sw,
                                         static_cast<uint32_t>(u.target) + 1);
                             // M5.3 连发：余发按 3 帧间隔连打，打完进 ROF
@@ -1651,7 +1700,7 @@ bool SimWorld::tick() {
         const bool in_range = manhattan(b.col, b.row, t.col, t.row) <= b.weapon.range;
         if (in_range && std::abs(diff) <= 16 && b.cooldown == 0) {
             SimUnit& tv = units[static_cast<size_t>(b.target)];
-            if (const SimWeapon* sw = effective_weapon(b, tv.armor)) { // M5.1/5.2
+            if (const SimWeapon* sw = effective_weapon(b, tv.armor, tv.air)) { // M5.1/5.2
                 fire_weapon(b.owner, 0, b.col, b.row, *sw, static_cast<uint32_t>(b.target) + 1);
                 b.cooldown = sw->rof > 0 ? sw->rof : 1;
                 changed = true;
@@ -1945,6 +1994,7 @@ uint32_t SimWorld::spawn_unit(const std::string& owner, const std::string& type,
         u.has_secondary = u.weapon2.damage > 0 && u.weapon2.range > 0;
     }
     if (veteran_of) veteran_of(type, u); // M5.4：老兵能力/价值/精英武器
+    if (role_of) role_of(type, u);       // M5.7/M5.8：air/naval/underwater
     u.hp_base = u.hp_max = u.hp;
     u.speed_base = u.speed;
     u.col = u.next_col = col;

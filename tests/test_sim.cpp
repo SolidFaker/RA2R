@@ -1246,6 +1246,63 @@ TEST(SimSpecial, EngineerCaptureTakesBuilding) {
     EXPECT_EQ(s.units.size(), eng) << "工程师应被消耗";
 }
 
+// ── M5.7 飞行单位：直线飞行、忽略地形/占用、AA/AG 目标种类 ──────────────────
+
+// 空中直飞：墙不挡飞机（地面单位会被挡）
+TEST(SimAir, FliesOverWallsAndIgnoresOccupancy) {
+    sim::SimWorld s = make_world(32, 32);
+    for (int r = 0; r < 32; ++r) s.blocked[r * 32 + 20] = 1; // 整列墙
+    s.units[0].air = true;
+    ASSERT_TRUE(s.issue_move(0, 26, 16));
+    int t = 0;
+    while (t < 600 && (s.units[0].col != 26 || s.units[0].row != 16)) {
+        s.tick();
+        ++t;
+    }
+    EXPECT_EQ(s.units[0].col, 26) << "飞机应飞越墙体";
+    EXPECT_EQ(s.units[0].row, 16);
+    EXPECT_TRUE(s.projectiles.empty());
+}
+
+// 对空/对地：can_ag=no 的武器打不了地面；can_aa=no 的打不了空中
+TEST(SimAir, AaAgTargetKindGating) {
+    sim::SimWorld s;
+    sim::SimUnit u;
+    u.weapon = test_weapon(50, 20, 6);
+    u.weapon.can_aa = true;
+    u.weapon.can_ag = false; // 纯对空
+    EXPECT_EQ(s.effective_weapon(u, sim::kArmorNone, false), nullptr) << "对空武器不得打地面";
+    EXPECT_NE(s.effective_weapon(u, sim::kArmorNone, true), nullptr) << "应能打空中";
+    u.weapon.can_aa = false;
+    u.weapon.can_ag = true; // 纯对地
+    EXPECT_NE(s.effective_weapon(u, sim::kArmorNone, false), nullptr);
+    EXPECT_EQ(s.effective_weapon(u, sim::kArmorNone, true), nullptr) << "对地武器不得打空中";
+}
+
+// ── M5.8 海军：舰船走水面航路（naval_nav）────────────────────────────────────
+
+TEST(SimNavy, UsesNavalNavInsteadOfGroundNav) {
+    sim::SimWorld s = make_world(32, 32);
+    // 水面航路：只留第 16 行一条水道（其余全不可航行）
+    s.naval_nav.assign(32 * 32, 1);
+    for (int c = 5; c <= 30; ++c) s.naval_nav[16 * 32 + c] = 0;
+    s.units[0].naval = true;
+    ASSERT_TRUE(s.issue_move(0, 26, 16));
+    int t = 0;
+    while (t < 900 && (s.units[0].col != 26 || s.units[0].row != 16)) {
+        s.tick();
+        ++t;
+    }
+    EXPECT_EQ(s.units[0].col, 26) << "舰船应沿水面水道航行";
+    EXPECT_EQ(s.units[0].row, 16);
+    // 水面外（如 (26,20)）不可达 → 不下达/原地
+    const int c0 = s.units[0].col, r0 = s.units[0].row;
+    s.issue_move(0, 26, 20);
+    for (int i = 0; i < 200; ++i) s.tick();
+    EXPECT_EQ(s.units[0].row, r0) << "陆上目标不可达，舰船应原地";
+    EXPECT_EQ(s.units[0].col, c0);
+}
+
 // ── 步兵 idle 动作（IdleActionFrequency 语义）────────────────────────────────
 
 TEST(SimIdle, TriggersInExpectedWindowAndIsDeterministic) {

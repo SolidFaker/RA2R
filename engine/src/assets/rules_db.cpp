@@ -190,6 +190,12 @@ bool RulesDB::load(const uint8_t* rulesmd, size_t rules_n, const uint8_t* artmd,
     collect("VehicleTypes", 1);
     collect("AircraftTypes", 1);
     collect("InfantryTypes", 2);
+    // M5.7：飞机类型表 → air=true（直线飞行、不占格、免地面门禁）
+    for (const auto& [k, aname] : rules_.section("AircraftTypes")) {
+        (void)k;
+        const auto it = units_.find(upper(aname));
+        if (it != units_.end()) it->second.air = true;
+    }
 
     // ── 国家（[Countries] 顺序表 + 各国家节）──
     countries_.clear();

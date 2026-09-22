@@ -383,8 +383,13 @@ struct SimWorld {
     int damage_against(const SimWeapon& sw, int armor) const;
     // 选武器（原版规则）：对目标护甲 Verses > 0% 者优先；主武器可用则用主武器，
     // 主武器无效（0%）且副武器有效 → 用副武器；都无效返回 nullptr（不开火）。
-    const SimWeapon* effective_weapon(const SimUnit& u, int target_armor) const;
-    const SimWeapon* effective_weapon(const SimBuilding& b, int target_armor) const;
+    // M5.7：target_air = 目标是否飞行单位（对空只能 AA=yes 武器）
+    const SimWeapon* effective_weapon(const SimUnit& u, int target_armor,
+                                       bool target_air = false) const;
+    const SimWeapon* effective_weapon(const SimBuilding& b, int target_armor,
+                                       bool target_air = false) const;
+    // M5.7：空中直飞航路（贪心选屏幕距离目标最近的合法邻步；忽略地形/占用）
+    std::vector<std::pair<int, int>> air_path(int sc, int sr, int tc, int tr) const;
     // M5.2：开火 = 有弹道（proj.speed>0）则生成抛射体，否则瞬时命中（旧行为）。
     // target_kind_id：单位 = units 下标 +1；建筑 = buildings 下标 +1 + kBuildingBit。
     static constexpr uint32_t kBuildingBit = 0x80000000u;

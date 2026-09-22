@@ -279,6 +279,14 @@ void bind_combat_callbacks(StageApp& a) {
         if (idx >= list.size()) return;
         sim_weapon_of(a.rules, list[idx], out);
     };
+    // M5.7/M5.8：角色注入（飞行/舰船/潜艇）
+    a.sim.role_of = [&a](const std::string& type, ra2r::sim::SimUnit& u) {
+        const auto* t = a.rules.unit(type);
+        if (!t) return;
+        u.air = t->air;
+        u.naval = t->naval;
+        u.underwater = t->underwater;
+    };
     const auto& vc = a.rules.veteran();
     a.sim.veteran.ratio_x100 = vc.ratio_x100;
     a.sim.veteran.combat_x100 = vc.combat_x100;

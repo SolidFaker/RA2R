@@ -944,6 +944,27 @@ DeaccelerationFactor）+ 转向（ROT/TurretROT）
 - **延后**：间谍渗透、恐怖机器人寄生、`DeployFire`/`Spawner`（字段已解析，
   机制按计划在 M6 前补）。
 
+### 3.43 M5.7 飞行单位 / M5.8 海军
+- **数据**：`[AircraftTypes]` → `air=true`（飞机）；`Naval=yes`、`Underwater=yes`、
+  `AirportBound=`、`Fighter=`、`NavalTargeting=/LandTargeting=`（槽位；-1 未设）。
+- **飞行（M5.7）**：`air_path()` 空中直飞航路——贪心选"屏幕距离目标最近"的合法
+  邻步（`nav_neighbours`），忽略地形与占用，最多 512 步防环（确定性：固定邻序 +
+  严格更优才换步）；`set_move_target_field` 对飞行单位直接走直飞（忽略流场）；
+  飞行单位**不占地面格**（`unit_touches_cell` 直接 false）、**免地面门禁**
+  （`advance_segment` 的 blocker 置空）、**不绕行**（`replan_around_units` 提前返回）。
+- **目标种类（M5.7 验收点）**：`effective_weapon(u/b, armor, target_air)` ——
+  对空只认 `can_aa=yes`、对地只认 `can_ag=yes`（AA/AG 来自抛射体，M5.2 已回填）；
+  三处开火点传入目标的 `air` 标志。
+- **海军（M5.8）**：`SimWorld::naval_nav`（1 = 不可航行；stage 注入水面掩码）+
+  `flow_for(tc,tr,slots,naval)` 流场缓存键含 naval → 舰船走水面航路
+  （`set_move_target` 传 `u.naval`）；`naval_nav` 为空时退化为地面图。
+- **注入**：`role_of` 回调（stage 统一装：air/naval/underwater）；
+  `veteran_of` 顺带注入载员容量（M5.5）。
+- **验证**：`SimAir.*` 2 例（飞越整列墙、AA/AG 目标种类门禁）+ `SimNavy.*` 1 例
+  （只沿水面水道航行、陆上目标不可达则原地）；总 156；三场景基线未变。
+- **延后**：飞机返场/停机坪（`AirportBound`）、潜艇下潜/声呐反潜、
+  `NavalTargeting/LandTargeting` 槽位选武器（字段已解析）。
+
 ## 4. 构建/工具链类
 
 - 无管理员工具链：WinLibs MinGW（免安装）+ pip CMake + SDL3 mingw 预编译包，全部放 `I:\tools\`（不入库）。
