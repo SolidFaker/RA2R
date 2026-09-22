@@ -860,6 +860,62 @@ const SimWeapon* SimWorld::effective_weapon(const SimBuilding& b, int target_arm
     return nullptr;
 }
 
+// ── M5.5 装载/卸载（IFV Gunner=yes：乘客决定载具武器）──────────────────────
+// issue_load：相邻（曼哈顿 ≤1）即时上车；较远则给乘客下移动指令到载具格，
+// 由 tick 在到达时完成装载（load_target 记目标载具 id）。上车后：乘客从单位表
+// 移除（remove_unit 负责目标下标重映射），载具 passenger_type = 乘客类型，
+// 武器换成 gunner_weapon 解析结果（保存原武器，下车恢复）。
+bool SimWorld::issue_load(size_t carrier_idx, size_t passenger_idx) {
+    if (carrier_idx >= units.size() || passenger_idx >= units.size()) return false;
+    SimUnit& carrier = units[carrier_idx];
+    SimUnit& pax = units[passenger_idx];
+    if (!carrier.alive || !pax.alive || carrier.id == pax.id) return false;
+    if (carrier.passenger_cap <= 0 || !carrier.passenger_type.empty()) return false; // 不能载/满员
+    if (pax.kind == 1) return false; // 只有步兵能上载具（原版 FV 只载 1 步兵）
+    const int d = std::abs(pax.col - carrier.col) + std::abs(pax.row - carrier.row);
+    if (d > 1) { // 远：走过去（到格后由 tick 完成装载）
+        pax.load_target = carrier.id;
+        return set_move_target(pax, carrier.col, carrier.row);
+    }
+    // 近：即时上车（保存载具原武器 → 换 Gunner 武器）
+    carrier.weapon_saved = carrier.weapon;
+    carrier.has_secondary_saved = carrier.has_secondary;
+    if (gunner_weapon) {
+        SimWeapon nw;
+        gunner_weapon(carrier.type, pax.type, carrier.veterancy >= 2, nw);
+        if (nw.damage > 0 && nw.range > 0) {
+            carrier.weapon = nw;
+            carrier.has_secondary = false;
+        }
+    }
+    carrier.passenger_type = pax.type;
+    remove_unit(passenger_idx);
+    return true;
+}
+
+// issue_unload：乘客在载具相邻空地落位；载具恢复原武器
+bool SimWorld::issue_unload(size_t carrier_idx) {
+    if (carrier_idx >= units.size()) return false;
+    SimUnit& carrier = units[carrier_idx];
+    if (!carrier.alive || carrier.passenger_type.empty()) return false;
+    const std::string ptype = carrier.passenger_type;
+    static const int kRing[8][2] = {{1, 0},  {-1, 0}, {0, 1},  {0, -1},
+                                    {1, 1},  {-1, 1}, {1, -1}, {-1, -1}};
+    for (const auto& d : kRing) {
+        const int c = carrier.col + d[0], r = carrier.row + d[1];
+        if (c < 0 || r < 0 || c >= w || r >= h) continue;
+        if (!blocked.empty() && blocked[static_cast<size_t>(r) * w + c]) continue;
+        const uint32_t nid = spawn_unit(carrier.owner, ptype, 2, c, r, 0, SimWeapon{}, false, 0,
+                                        51);
+        if (nid == 0) continue; // 格被占/满
+        carrier.passenger_type.clear();
+        carrier.weapon = carrier.weapon_saved; // 恢复上车前武器
+        carrier.has_secondary = carrier.has_secondary_saved;
+        return true;
+    }
+    return false;
+}
+
 // ── M5.4 老兵/精英（rulesmd VeteranAbilities/EliteAbilities + [General] 乘数）──
 // 当前等级生效的能力：1 级 = VeteranAbilities；2 级 = 老兵 + 精英叠加（原版语义）
 uint32_t SimWorld::vet_ability_mask(const SimUnit& u) const {
@@ -1304,6 +1360,26 @@ bool SimWorld::tick() {
         if (turned) changed = true;
         if (advance_segment(u)) changed = true;
     }
+    // ── M5.5 装载到达判定：乘客到达载具格 → 上车（索引会变，处理完立即跳出）──
+    for (size_t i = 0; i < units.size(); ++i) {
+        if (!units[i].alive || units[i].load_target == 0) continue;
+        const uint32_t cid = units[i].load_target;
+        size_t ci = units.size();
+        for (size_t j = 0; j < units.size(); ++j)
+            if (units[j].alive && units[j].id == cid) {
+                ci = j;
+                break;
+            }
+        if (ci >= units.size()) { // 载具已不存在
+            units[i].load_target = 0;
+            continue;
+        }
+        if (units[i].col == units[ci].col && units[i].row == units[ci].row) {
+            if (issue_load(ci, i)) changed = true;
+            break; // issue_load 会移除单位（下标失效）
+        }
+    }
+
     // ── 步兵 idle 动作调度（原版 IdleActionFrequency 语义）──
     // 静止且无指令时，按 0.5~2× 均值间隔随机播放 Idle1/Idle2（sim 只发布触发，
     // 动画长度由渲染层按 artmd 序列帧数截断）；确定性：每单位独立 LCG 流。

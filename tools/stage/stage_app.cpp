@@ -253,12 +253,25 @@ void bind_combat_callbacks(StageApp& a) {
         u.value = t->cost;
         u.vet_flags = t->veteran_abilities;
         u.elite_flags = t->elite_abilities;
+        u.passenger_cap = t->passengers; // M5.5：载员容量
         if (!t->elite_primary.empty()) {
             sim_weapon_of(a.rules, t->elite_primary, u.elite_weapon);
             u.has_elite = u.elite_weapon.damage > 0 && u.elite_weapon.range > 0;
         }
         if (!t->elite_secondary.empty())
             sim_weapon_of(a.rules, t->elite_secondary, u.elite_weapon2);
+    };
+    // M5.5：Gunner 载具武器解析（乘客 IFVMode= → Weapon(mode+1)；精英用 EliteWeapon）
+    a.sim.gunner_weapon = [&a](const std::string& gtype, const std::string& ptype, bool elite,
+                               ra2r::sim::SimWeapon& out) {
+        const auto* g = a.rules.unit(gtype);
+        const auto* p = a.rules.unit(ptype);
+        if (!g || !p || p->ifv_mode < 0) return;
+        const size_t idx = static_cast<size_t>(p->ifv_mode); // 0 基下标 = IFVMode
+        const auto& list =
+            (elite && idx < g->elite_weapons.size()) ? g->elite_weapons : g->weapons;
+        if (idx >= list.size()) return;
+        sim_weapon_of(a.rules, list[idx], out);
     };
     const auto& vc = a.rules.veteran();
     a.sim.veteran.ratio_x100 = vc.ratio_x100;

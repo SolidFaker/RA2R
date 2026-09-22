@@ -77,6 +77,26 @@ bool RulesDB::load(const uint8_t* rulesmd, size_t rules_n, const uint8_t* artmd,
             u.elite_abilities = vet_ability_mask(rules_.get(name, "EliteAbilities", ""));
             u.elite_primary = rules_.get(name, "ElitePrimary", "");
             u.elite_secondary = rules_.get(name, "EliteSecondary", "");
+            // M5.5：运输/进驻（IFV 武器槽 1..N；乘客 IFVMode= 选槽 = 模式+1）
+            u.gunner = is_yes(rules_.get(name, "Gunner", "no"));
+            u.passengers = std::atoi(rules_.get(name, "Passengers", "0").c_str());
+            {
+                const std::string m = rules_.get(name, "IFVMode", "");
+                u.ifv_mode = m.empty() ? -1 : std::atoi(m.c_str());
+            }
+            u.weapons.clear();
+            u.elite_weapons.clear();
+            for (int i = 1; i <= 20; ++i) {
+                const std::string w = rules_.get(name, "Weapon" + std::to_string(i), "");
+                if (!w.empty()) u.weapons.push_back(w);
+                const std::string ew =
+                    rules_.get(name, "EliteWeapon" + std::to_string(i), "");
+                if (!ew.empty()) u.elite_weapons.push_back(ew);
+            }
+            u.occupy_weapon = rules_.get(name, "OccupyWeapon", "");
+            u.elite_occupy_weapon = rules_.get(name, "EliteOccupyWeapon", "");
+            u.can_be_occupied = is_yes(rules_.get(name, "CanBeOccupied", "no"));
+            u.max_occupants = std::atoi(rules_.get(name, "MaxNumberOccupants", "0").c_str());
             u.harvester = is_yes(rules_.get(name, "Harvester", "no"));
             u.capacity = std::atoi(rules_.get(name, "Capacity", "20").c_str());
             if (u.capacity < 1) u.capacity = 1;
@@ -210,12 +230,13 @@ bool RulesDB::load(const uint8_t* rulesmd, size_t rules_n, const uint8_t* artmd,
     for (const auto& [name, u] : units_) {
         (void)name;
         add_ref(u.primary);
-        for (const char* key : {"Secondary", "Weapon1", "Weapon2", "Weapon3", "Weapon4",
-                                "Weapon5", "Weapon6", "EliteWeapon1", "EliteWeapon2",
-                                "EliteWeapon3", "EliteWeapon4", "EliteWeapon5",
-                                "EliteWeapon6"}) {
-            add_ref(rules_.get(u.name, key, ""));
+        for (int i = 1; i <= 20; ++i) { // M5.5：IFV 武器槽最多 20（原版 WeaponCount=17）
+            add_ref(rules_.get(u.name, "Weapon" + std::to_string(i), ""));
+            add_ref(rules_.get(u.name, "EliteWeapon" + std::to_string(i), ""));
         }
+        add_ref(rules_.get(u.name, "Secondary", ""));
+        add_ref(rules_.get(u.name, "OccupyWeapon", ""));
+        add_ref(rules_.get(u.name, "EliteOccupyWeapon", ""));
     }
     for (const auto& [wname, dummy] : wnames) {
         (void)dummy;

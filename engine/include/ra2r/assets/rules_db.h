@@ -45,6 +45,16 @@ struct UnitTypeDef {
     std::string primary;   // Primary= 武器名（载具/步兵/防御建筑）
     std::string secondary; // Secondary= 副武器名（按目标护甲选择；M5.1）
     std::string armor;     // Armor= 护甲名（armor_index 换算；M5.1）
+    // ── M5.5 运输/进驻（IFV Gunner 换武器 + 进驻武器）──
+    bool gunner = false;      // Gunner=yes（IFV：乘客决定武器）
+    int passengers = 0;       // Passengers= 载员数
+    int ifv_mode = -1;        // IFVMode=（乘客用；IFV 武器槽 = 模式+1）
+    std::vector<std::string> weapons;       // Weapon1..N=
+    std::vector<std::string> elite_weapons; // EliteWeapon1..N=
+    std::string occupy_weapon;              // OccupyWeapon=（进驻武器；机制 M6 前补）
+    std::string elite_occupy_weapon;        // EliteOccupyWeapon=
+    bool can_be_occupied = false;           // CanBeOccupied=yes（可进驻建筑）
+    int max_occupants = 0;                  // MaxNumberOccupants=
     // ── M5.4 老兵/精英 ──
     uint32_t veteran_abilities = 0; // VeteranAbilities= 位掩码（VetAbility）
     uint32_t elite_abilities = 0;   // EliteAbilities= 位掩码（与老兵叠加）

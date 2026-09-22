@@ -163,6 +163,12 @@ struct SimUnit {
     SimWeapon elite_weapon;   // ElitePrimary=
     SimWeapon elite_weapon2;  // EliteSecondary=
     bool has_elite = false;   // 有精英武器可换
+    // ── M5.5 运输/进驻（IFV Gunner=：乘客决定武器）──
+    std::string passenger_type; // 载员类型（空 = 无；载具用）
+    int passenger_cap = 0;      // Passengers=（载具容量；0 = 不能载）
+    uint32_t load_target = 0;   // 装载中：目标载具的单位 id（0 = 无；步兵用）
+    SimWeapon weapon_saved;     // 上车前的武器（载具保存；下车恢复）
+    bool has_secondary_saved = false;
     uint8_t order = kOrderNone;
     int target = -1;               // 攻击/护卫目标下标（按 order 语义）
     int cooldown = 0;
@@ -338,6 +344,9 @@ struct SimWorld {
     // Cost= 价值）——spawn/load_map 统一调用，避免逐调用点漏设
     std::function<void(const std::string&, SimUnit&)> veteran_of;
     SimVeteranCfg veteran;
+    // M5.5：Gunner 载具武器解析（载具类型 + 乘客类型 → 武器；stage 按乘客
+    // IFVMode= 选 Weapon(mode+1)/EliteWeapon(mode+1)）。elite = 载具是否 2 级。
+    std::function<void(const std::string&, const std::string&, bool, SimWeapon&)> gunner_weapon;
 
     // 推进一逻辑帧；返回是否有单位移动/转向/开火（渲染侧据此刷新）
     bool tick();
@@ -360,6 +369,9 @@ struct SimWorld {
     void promote(SimUnit& u);
     uint32_t vet_ability_mask(const SimUnit& u) const; // 当前等级生效的能力位
     int vet_mult(uint32_t mask, uint32_t ability, int x100) const;
+    // M5.5：装载/卸载（Gunner 载具：乘客上车换武器、下车恢复）
+    bool issue_load(size_t carrier_idx, size_t passenger_idx);
+    bool issue_unload(size_t carrier_idx);
     // M5.3：CellSpread 范围伤害（以 (col,row) 为圆心、半径 = CellSpread 格；
     // 距离线性衰减：圆心 100%、边缘 PercentAtMax%；skip_unit_id = 发射者豁免）。
     // spread==0 时不调用（单体伤害在命中路径直接结算）。

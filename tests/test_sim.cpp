@@ -1094,6 +1094,58 @@ TEST(SimVeteran, SelfHealRegeneratesSlowly) {
     EXPECT_EQ(u.hp, 54) << "持续回血";
 }
 
+// ── M5.5 IFV（Gunner 载具：乘客决定武器）与装载/卸载 ────────────────────────
+
+// 装载/卸载：相邻上车（保存原武器 → 换 Gunner 武器）、乘客移出地图、下车恢复
+TEST(SimIFV, LoadSwapsWeaponAndUnloadRestores) {
+    sim::SimWorld s = make_world(32, 32);
+    s.units[0].passenger_cap = 1;
+    s.units[0].weapon = test_weapon(10, 20, 4);
+    int gunner_calls = 0;
+    s.gunner_weapon = [&](const std::string&, const std::string&, bool, sim::SimWeapon& out) {
+        ++gunner_calls;
+        out = test_weapon(99, 30, 7); // 模拟 IFV 模式武器
+    };
+    ASSERT_GT(s.spawn_unit("Player", "E1", 2, 17, 16, 0, {}, false, 0, 51), 0u); // 相邻乘客
+    ASSERT_TRUE(s.issue_load(0, 1));
+    EXPECT_EQ(gunner_calls, 1);
+    EXPECT_EQ(s.units.size(), 1u) << "乘客应从地图移除";
+    EXPECT_EQ(s.units[0].passenger_type, "E1");
+    EXPECT_EQ(s.units[0].weapon.damage, 99) << "上车后应使用 Gunner 武器";
+    ASSERT_TRUE(s.issue_unload(0));
+    EXPECT_EQ(s.units.size(), 2u) << "下车应重新落位";
+    EXPECT_EQ(s.units[0].weapon.damage, 10) << "下车应恢复原武器";
+    EXPECT_TRUE(s.units[0].passenger_type.empty());
+}
+
+// IFV 全组合（原版数据）：[InfantryTypes] 中每个 IFVMode>=0 的乘客，
+// 模式+1 必须落在 FV 的武器槽内（IFVMode=N → Weapon(N+1)）
+TEST(SimIFV, AllPassengerModesMapToFvWeaponSlots) {
+    RA2R_REQUIRE_ASSETS();
+    const auto* db = test::rules_db();
+    ASSERT_NE(db, nullptr);
+    const auto* fv = db->unit("FV");
+    ASSERT_NE(fv, nullptr);
+    ASSERT_FALSE(fv->weapons.empty());
+    int checked = 0;
+    for (const auto& [k, pname] : db->rules().section("InfantryTypes")) {
+        (void)k;
+        const auto* p = db->unit(pname);
+        if (!p || p->ifv_mode < 0) continue;
+        EXPECT_LT(static_cast<size_t>(p->ifv_mode), fv->weapons.size())
+            << pname << " IFVMode=" << p->ifv_mode << " 超出 FV 武器槽";
+        ++checked;
+    }
+    EXPECT_GT(checked, 10) << "原版应有多名可上 IFV 的步兵";
+    // 具体抽查：GI（E1）IFVMode=2 → Weapon3=CRM60；工程师槽 = RepairBullet
+    const auto* e1 = db->unit("E1");
+    ASSERT_NE(e1, nullptr);
+    EXPECT_EQ(e1->ifv_mode, 2);
+    ASSERT_GE(fv->weapons.size(), 3u);
+    EXPECT_EQ(fv->weapons[2], "CRM60") << "IFVMode=2 → Weapon3（GI 的 IFV 武器）";
+    EXPECT_EQ(fv->weapons[1], "RepairBullet") << "IFVMode=1 → Weapon2（工程师）";
+}
+
 // ── 步兵 idle 动作（IdleActionFrequency 语义）────────────────────────────────
 
 TEST(SimIdle, TriggersInExpectedWindowAndIsDeterministic) {

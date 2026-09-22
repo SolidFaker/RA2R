@@ -905,6 +905,27 @@ DeaccelerationFactor）+ 转向（ROT/TurretROT）
 - **验证**：`SimVeteran.*` 4 例（阈值与能力乘数、精英换装、击杀记 XP、
   自愈节拍）；总 145；三场景基线未变。
 
+### 3.41 M5.5 IFV（Gunner 载具）与装载/卸载
+- **原版数据模型**（rulesmd [FV] 实测）：`Gunner=yes` + `Passengers=1` +
+  `WeaponCount=17` + `Weapon1..17`/`EliteWeapon1..17`；乘客用 `IFVMode=N`
+  选槽，**武器槽 = 模式 + 1**（E1 IFVMode=2 → Weapon3=CRM60 实测吻合；
+  工程师 IFVMode=1 → Weapon2=RepairBullet）。
+- **解析**：`Gunner/Passengers/IFVMode/Weapon1..20/EliteWeapon1..20/
+  OccupyWeapon/EliteOccupyWeapon/CanBeOccupied/MaxNumberOccupants`；
+  武器收集表同步扩展到 20 槽 + OccupyWeapon。
+- **sim**：`issue_load(carrier, passenger)` —— 相邻（曼哈顿 ≤1）即时上车；
+  远则给乘客下移动指令（`load_target` 记载具 id），tick 在到达同格时完成装载；
+  上车后乘客从单位表移除（沿用 `remove_unit` 的目标下标重映射）、载具
+  `passenger_type` = 乘客类型、武器换成 `gunner_weapon` 回调解析结果（保存
+  原武器）；`issue_unload` 在相邻空地落位并恢复原武器。
+- **注入**：`SimWorld::gunner_weapon`（stage 按 `IFVMode` 取
+  `Weapon(mode+1)/EliteWeapon(mode+1)`）；`veteran_of` 顺带注入 `passengers`。
+- **验证**：`SimIFV.*` 2 例（装载换武器/卸载恢复+落位；**全组合**：遍历原版
+  `[InfantryTypes]` 检查每个 `IFVMode>=0` 的乘客模式+1 都落在 FV 武器槽内，
+  并抽查 E1/工程师的具体槽位）；总 147；三场景基线未变。
+- **延后（按计划）**：进驻建筑（`OccupyWeapon` 已解析，机制 M6 前补）、
+  多载员/运输机。
+
 ## 4. 构建/工具链类
 
 - 无管理员工具链：WinLibs MinGW（免安装）+ pip CMake + SDL3 mingw 预编译包，全部放 `I:\tools\`（不入库）。
