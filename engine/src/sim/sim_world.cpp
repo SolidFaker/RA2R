@@ -270,6 +270,15 @@ bool SimWorld::load_map(const assets::MapFile& map,
 // 系数为 0 = 立即到位（**不是不能移动**）；对准且有活动段时每帧
 // 至少推进 1 frac，保证不会卡死；③ 炮塔按 TurretROT（缺省 ROT）转向：
 // 攻击/护卫目标优先，否则跟随行进方向。返回本帧车体朝向是否变化。
+// 单位占据的格：静止 = 1 格；行进中 = 2 格（当前格 + **已预订的下一格**）。
+// 原版《格子预订》：预订即 next_col/next_row，规划与占位都视其已占用 ——
+// 两个单位不能同时把同一格当作下一步（先规划者预订成功，后者改道/排队）。
+bool unit_touches_cell(const SimUnit& u, int col, int row) {
+    if (u.col == col && u.row == row) return true;
+    return (u.next_col != u.col || u.next_row != u.row) && u.next_col == col &&
+           u.next_row == row;
+}
+
 bool SimWorld::segment_aligned(const SimUnit& u) const {
     if (u.next_col == u.col && u.next_row == u.row) return false;
     const int want = dir_of(u.col, u.row, u.next_col, u.next_row) * 32;
@@ -321,7 +330,65 @@ bool SimWorld::update_motion(SimUnit& u) {
     return turned;
 }
 
-// 段推进（到达落格 + 余量进下一段；所有订单共用）
+// 目标格的挡路者（含"已预订"该格的单位）。nullptr = 可入。
+// 例外：双方互换（对方当前格 = 本格，且对方预订格 = 我的当前格）
+// → 双方同时通过（原版对非正面碰撞的差异化处理）。
+SimUnit* SimWorld::blocker_at(SimUnit& u, int col, int row) {
+    if (free_subcell(col, row, u.kind, u.id) >= 0) return nullptr; // 格内仍有容量
+    for (auto& o : units) {
+        if (!o.alive || o.id == u.id) continue;
+        if (!unit_touches_cell(o, col, row)) continue;
+        if (o.col == col && o.row == row && o.next_col == u.col && o.next_row == u.row)
+            continue; // 与我互换位置 → 放行
+        // 同一格之争（双方都在**走向**该格）：先预订者优先（res_tick 小者；
+        // 同帧则 id 小者）。我先预订 → 放行（对方会在自己的门禁里让位）。
+        const bool o_walking = o.next_col != o.col || o.next_row != o.row;
+        if (o_walking && o.next_col == col && o.next_row == row) {
+            const bool o_prior =
+                o.res_tick < u.res_tick || (o.res_tick == u.res_tick && o.id < u.id);
+            if (!o_prior) continue;
+        }
+        return &o;
+    }
+    return nullptr;
+}
+
+// 让路（OpenRA 的 Nudge / 原版空闲单位避让）：被挡者发现挡路者是**空闲友军**时，
+// 请它横挪一格，避免"一辆趴窝、全队干等"（也用于解开精炼厂/窄道口的死锁）。
+// 选择顺序固定（确定性）：优先侧向，排除地形阻挡/被占格，且绝不挪进被挡者的
+// 当前格与预订格（否则等于没让）。挪完原地待命（不自动回位，与原版一致）。
+bool SimWorld::make_way(SimUnit& blocker, const SimUnit& blocked_unit) {
+    if (blocker.owner != blocked_unit.owner) return false; // 只请友军让路
+    if (blocker.make_way_cd > 0) return false;             // 冷却中：别让来让去抖个不停
+    const bool idle = blocker.order == kOrderNone && blocker.path.empty() &&
+                      blocker.next_col == blocker.col && blocker.next_row == blocker.row &&
+                      blocker.frac == 0;
+    if (!idle) return false;
+    // 被挡者的行进屏幕方向：用来剔除"顺着对方去路往前挪"的候选
+    //（否则对方会一路追着你请求让路 → 像跳格子一样往前窜）。
+    const int fdx = 60 * (blocked_unit.next_col - blocked_unit.col) +
+                    30 * ((blocked_unit.next_row & 1) - (blocked_unit.row & 1));
+    const int fdy = 15 * (blocked_unit.next_row - blocked_unit.row);
+    NavStep nb[8];
+    const int n = nav_neighbours(blocker.row, (min_s + min_d) & 1, nb);
+    for (int i = 0; i < n; ++i) {
+        const int c = blocker.col + nb[i].dc, r = blocker.row + nb[i].dr;
+        if (c < 0 || r < 0 || c >= w || r >= h) continue;
+        if (free_subcell(c, r, blocker.kind, blocker.id) < 0) continue; // 地形/被占
+        if (c == blocked_unit.col && r == blocked_unit.row) continue;   // 别挪进行车线
+        if (c == blocked_unit.next_col && r == blocked_unit.next_row) continue;
+        const int sdx = 60 * (c - blocker.col) + 30 * ((r & 1) - (blocker.row & 1));
+        const int sdy = 15 * (r - blocker.row);
+        if (sdx * fdx + sdy * fdy > 0) continue; // 别顺着对方去路往前挤
+        if (set_move_target(blocker, c, r)) {
+            blocker.order = kOrderMove;
+            blocker.make_way_cd = 40;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool SimWorld::advance_segment(SimUnit& u) {
     if (u.next_col == u.col && u.next_row == u.row) {
         u.frac = 0;
@@ -347,24 +414,50 @@ bool SimWorld::advance_segment(SimUnit& u) {
     // 保证不卡死：只要还有活动段，每帧至少推进 1 frac
     //（刚启动或系数极小时速度为 0/极低，也不能冻住）。
     if (inc <= 0) inc = 1;
+    // 预订门禁（**每帧**而非只在跨格时检查）：目标格被他人当前格/
+    // 预订格占用 → 最多推进到**本格边缘**（半格 = 朝向目标格的那条边）
+    // 后原地等位。否则渲染位置会越进被占格再被拉回（闪现的主要来源）。
+    {
+        SimUnit* blk = blocker_at(u, u.next_col, u.next_row);
+        if (blk) {
+            const int cap = kFracMax / 2;
+            const int before = u.frac;
+            if (u.frac < cap) u.frac = std::min(cap, u.frac + inc);
+            // 挡路者仍在行进 → 排队等它让开（**不重规划**，逐帧重规划会
+            // 造成方向抖动/画面闪现）；挡路者静止或等位超时（30 帧）
+            // → 当临时障碍绕行重规划（仅这一个单位改道）。
+            const bool blk_moving = blk->next_col != blk->col || blk->next_row != blk->row ||
+                                    blk->frac > 0;
+            // 同一格之争（对方也**正走向**我要进的格）：等它没意义 → 立刻改道。
+            const bool same_target = blk_moving && blk->next_col == u.next_col &&
+                                     blk->next_row == u.next_row;
+            if (same_target) {
+                if (u.wait_ticks == 0 || u.wait_ticks % 5 == 0) replan_around_units(u);
+                ++u.wait_ticks;
+                return u.frac != before;
+            }
+            if (!blk_moving) {
+                // 顺序同 OpenRA：① 目标就在对方那格（或紧邻）→ **不抢目的地格**，
+                // 就近落槽位；② 否则先绕行重规划；③ 绕不过去（死角/全被围）才请
+                // 空闲友军让一格（Nudge），别惊动本来停得好好的单位。
+                const bool at_goal_cell = u.next_col == u.dest_col && u.next_row == u.dest_row;
+                const bool replanned =
+                    (u.wait_ticks == 0 || u.wait_ticks % 5 == 0) ? replan_around_units(u) : false;
+                if (!at_goal_cell && !replanned && (u.wait_ticks == 0 || u.wait_ticks % 20 == 0))
+                    make_way(*blk, u);
+            } else if (u.wait_ticks >= 30) {
+                if (u.wait_ticks % 5 == 0) replan_around_units(u);
+            }
+            ++u.wait_ticks;
+            return u.frac != before;
+        }
+    }
+    u.wait_ticks = 0;
     // 推进本帧增量，并在**同一帧内**结算跨过的格心（frac 恒 < 256）：
     // 若把 >256 的残留留到下一帧，渲染位置会越过格心再被拉回（每格一次抖动）。
     // 跨段时余量按新旧段长度换算（frac 是"段内百分比"，同余量=同屏幕距离）。
     u.frac += inc;
     while (u.frac >= kFracMax) {
-        // 格占用门禁（原版：一格 1 载具 或 ≤3 步兵）：目标格已满 → 停在段
-        // 边界等位（frac 钳在 255，下一逻辑帧重试）；等位超时（30 帧）→ 把
-        // 占位单位当临时障碍绕行重规划，避免互相堵死。
-        if (free_subcell(u.next_col, u.next_row, u.kind, u.id) < 0) {
-            u.frac -= inc; // 撤销本帧增量：停在格内原位置（不越界进占格）
-            if (u.frac < 0) u.frac = 0;
-            // 动态障碍（车辆/人物）：**立即**为被挡单位重算绕行路径（首帧就重算）；
-            // 仍被挡则每 5 帧再试（避免每帧一次全图 Dijkstra 拖慢逻辑帧）
-            if (u.wait_ticks == 0 || u.wait_ticks % 5 == 0) replan_around_units(u);
-            ++u.wait_ticks;
-            break;
-        }
-        u.wait_ticks = 0;
         const int rem = u.frac - kFracMax; // 旧段余量（旧段单位）
         u.prev_col = u.col; // 渲染转角平滑用（上一格 = 本段起点）
         u.prev_row = u.row;
@@ -385,6 +478,7 @@ bool SimWorld::advance_segment(SimUnit& u) {
         }
         u.next_col = u.path.front().first;
         u.next_row = u.path.front().second;
+        u.res_tick = logic_ticks; // 新预订：争格时"先预订者优先"
         u.path.erase(u.path.begin());
         u.next2_col = u.path.empty() ? -1 : u.path.front().first;
         u.next2_row = u.path.empty() ? -1 : u.path.front().second;
@@ -476,6 +570,51 @@ std::vector<std::pair<int, int>> SimWorld::nav_sources_in(const std::vector<uint
     return out;
 }
 
+// 同 nav_sources_in，但槽位按"离起点 (sc,sr) 的曼哈顿距离"升序排（近者优先）。
+// 用于目标格被占时就近落点：单位停在贴近目标的一侧，而不迈到远侧。
+std::vector<std::pair<int, int>> SimWorld::nav_sources_near(const std::vector<uint8_t>& nav,
+                                                             int sc, int sr, int tc, int tr,
+                                                             int slots) const {
+    std::vector<std::pair<int, int>> out = nav_sources_in(nav, tc, tr, slots);
+    std::stable_sort(out.begin(), out.end(), [&](const auto& a, const auto& b) {
+        return manhattan(sc, sr, a.first, a.second) < manhattan(sc, sr, b.first, b.second);
+    });
+    return out;
+}
+
+// 单位感知局部规划（原版预订机制）：他人**静止格**与**行进中单位的预订格**
+// 视为障碍（刚好与本人相同格可入的情况除外——步兵同格/车辆占格规则仍生效）；
+// 行进中单位的当前格不算障碍（它正要离开，后车可接力排队）。
+std::vector<std::pair<int, int>> SimWorld::plan_avoiding_units(const SimUnit& u, int sc, int sr,
+                                                                int tc, int tr,
+                                                                bool* at_slot) const {
+    if (at_slot) *at_slot = false;
+    std::vector<uint8_t> nav = blocked;
+    const auto mark = [&](int c, int r) {
+        if (c < 0 || r < 0 || c >= w || r >= h) return;
+        if (free_subcell(c, r, u.kind, u.id) >= 0) return; // 该格对本人仍可入
+        const size_t i = static_cast<size_t>(r) * w + c;
+        if (i < nav.size()) nav[i] = 1;
+    };
+    for (const auto& o : units) {
+        if (!o.alive || o.id == u.id) continue;
+        const bool o_moving = o.next_col != o.col || o.next_row != o.row;
+        if (o_moving) mark(o.next_col, o.next_row); // 预订格：硬障碍
+        else mark(o.col, o.row);                    // 静止单位：硬障碍
+    }
+    const std::vector<std::pair<int, int>> slots =
+        nav_sources_near(nav, sc, sr, tc, tr, 1);
+    if (slots.empty()) return {};
+    FlowField f;
+    if (!build_flow_field(nav, w, h, (min_s + min_d) & 1, slots, f)) return {};
+    const size_t gi = static_cast<size_t>(sr) * w + sc;
+    if (gi < f.goal.size() && f.goal[gi] != 0) { // 起点已是可落槽位
+        if (at_slot) *at_slot = true;
+        return {};
+    }
+    return flow_path(f, sc, sr);
+}
+
 const FlowField* SimWorld::flow_for(int tc, int tr, int slots) {
     if (slots < 1) slots = 1;
     if (slots > 16) slots = 16;
@@ -523,6 +662,12 @@ bool SimWorld::set_move_target_field(SimUnit& u, const FlowField* f, int tc, int
     const bool start_at_goal = at_goal(sc, sr);
     std::vector<std::pair<int, int>> path =
         (f && !start_at_goal) ? flow_path(*f, sc, sr) : std::vector<std::pair<int, int>>{};
+    // 移动前"预订检测"（原版）：路线第一步已被他人预订/占据 → 改用单位感知
+    // 规划（先规划者预订成功，本人改道），避免走到段边界才发现被堵再弹回。
+    if (!path.empty() && blocker_at(u, path.front().first, path.front().second)) {
+        std::vector<std::pair<int, int>> alt = plan_avoiding_units(u, sc, sr, tc, tr);
+        if (!alt.empty()) path = std::move(alt);
+    }
     if (mid) {
         u.path = std::move(path); // 当前段（col/next/frac/prev）保持不动
         // 转角平滑控制点：本段原有值优先保持（画面不跳变）；
@@ -545,6 +690,7 @@ bool SimWorld::set_move_target_field(SimUnit& u, const FlowField* f, int tc, int
     u.prev_row = u.row;
     u.next_col = u.path.front().first;
     u.next_row = u.path.front().second;
+    u.res_tick = logic_ticks; // 新预订：争格时"先预订者优先"
     u.path.erase(u.path.begin());
     u.next2_col = u.path.empty() ? -1 : u.path.front().first;
     u.next2_row = u.path.empty() ? -1 : u.path.front().second;
@@ -558,56 +704,46 @@ bool SimWorld::set_move_target(SimUnit& u, int tc, int tr) {
 }
 
 // 段边界被单位堵住超时 → 绕行重规划：把"对本人不可入"的单位格当临时障碍
-// （原 blocked + 占位单位），目标槽位也只取临时路网上的可走格。**从当前格**
-// 重规划（段终点被占，不能从段终点续接），成功则清掉旧段、从格心重新起步。
+// （原 blocked + 静止单位格 + 行进单位的预订格），**从当前格**重规划（段终点被占，
+// 不能从段终点续接）。仅改这一个单位的路径，已预订成功的单位不受影响。
 bool SimWorld::replan_around_units(SimUnit& u) {
     if (u.dest_col < 0) return false;
-    std::vector<uint8_t> nav = blocked;
-    for (const auto& o : units) {
-        if (!o.alive || o.id == u.id) continue;
-        if (free_subcell(o.col, o.row, u.kind, u.id) >= 0) continue; // 该格对本人可入
-        const size_t i = static_cast<size_t>(o.row) * w + o.col;
-        if (i < nav.size()) nav[i] = 1;
+    bool at_slot = false;
+    std::vector<std::pair<int, int>> path =
+        plan_avoiding_units(u, u.col, u.row, u.dest_col, u.dest_row, &at_slot);
+    if (path.empty()) {
+        // 已站到槽位（目标格被占而已）→ 原地驻停；但段中（frac>0）直接归零会看到
+        // "弹回格心"的闪现，故先等到超时（60 帧）再接受归位。
+        if (at_slot && (u.frac == 0 || u.wait_ticks >= 60)) {
+            u.path.clear();
+            u.next_col = u.col;
+            u.next_row = u.row;
+            u.frac = 0;
+            return true;
+        }
+        return false;
     }
-    const std::vector<std::pair<int, int>> slots = nav_sources_in(nav, u.dest_col, u.dest_row, 1);
-    if (slots.empty()) return false;
-    FlowField f;
-    if (!build_flow_field(nav, w, h, (min_s + min_d) & 1, slots, f)) return false;
-    const auto at_goal = [&](int c, int r) {
-        const size_t i = static_cast<size_t>(r) * w + c;
-        return i < f.goal.size() && f.goal[i] != 0;
-    };
-    if (at_goal(u.col, u.row)) { // 已站到槽位（段终点被占而已）→ 原地驻停
-        u.path.clear();
-        u.next_col = u.col;
-        u.next_row = u.row;
-        u.frac = 0;
-        return true;
-    }
-    std::vector<std::pair<int, int>> path = flow_path(f, u.col, u.row);
-    if (path.empty()) return false;
-    // **不弹回格心**：段终点被占才重算，此时把单位已走的屏幕位移投影到
-    // 新段方向上作为新 frac（方向接近时位置几乎不变；硬转弯也≤半个格），
-    // prev 保留（来向）交给渲染端做转角平滑，col 不动 —— 无闪现。
+    // **不弹回格心**：把已走的屏幕位移投影到新段方向上作新 frac
+    //（方向接近时位置几乎不变），prev 保留（来向）交给渲染端做转角平滑。
     const int n2c = path.front().first, n2r = path.front().second;
     const auto pix_delta = [&](int c0, int r0, int c1, int r1) {
-        return std::pair<int, int>{ (c1 - c0) * 60 + ((r1 & 1) - (r0 & 1)) * 30,
-                                     (r1 - r0) * 15 };
+        return std::pair<int, int>{(c1 - c0) * 60 + ((r1 & 1) - (r0 & 1)) * 30, (r1 - r0) * 15};
     };
     const auto [d1x, d1y] = pix_delta(u.col, u.row, u.next_col, u.next_row);
     const auto [d2x, d2y] = pix_delta(u.col, u.row, n2c, n2r);
-    const long long num = static_cast<long long>(d1x) * d2x +
-                          static_cast<long long>(d1y) * d2y;
-    const long long den = static_cast<long long>(d2x) * d2x +
-                          static_cast<long long>(d2y) * d2y;
+    const long long num = static_cast<long long>(d1x) * d2x + static_cast<long long>(d1y) * d2y;
+    const long long den = static_cast<long long>(d2x) * d2x + static_cast<long long>(d2y) * d2y;
     int frac2 = den > 0 ? static_cast<int>(num * u.frac / den) : 0;
     frac2 = std::clamp(frac2, 0, kFracMax - 1);
     u.path = std::move(path);
     u.path.erase(u.path.begin());
     u.next_col = n2c;
     u.next_row = n2r;
-    u.next2_col = u.path.empty() ? -1 : u.path.front().first;
-    u.next2_row = u.path.empty() ? -1 : u.path.front().second;
+    u.res_tick = logic_ticks; // 改道后重新预订
+    if (u.next2_col < 0 && !u.path.empty()) { // 保画面：本段已有控制点则不动
+        u.next2_col = u.path.front().first;
+        u.next2_row = u.path.front().second;
+    }
     u.frac = frac2;
     u.wait_ticks = 0;
     return true;
@@ -630,9 +766,14 @@ size_t SimWorld::issue_move_group(const std::vector<size_t>& unit_idx, int tc, i
     const auto key = [&](int c, int r) { return static_cast<size_t>(r) * w + c; };
     for (const auto& o : units) {
         if (!o.alive) continue;
-        CellUse& cu = use[key(o.col, o.row)];
-        if (o.kind == 2) ++cu.inf;
-        else cu.veh = true;
+        // 当前格 + 预订格（行进中）都计入占用，避免把目标定到他人即将进入的格
+        const auto debit = [&](int c, int r) {
+            CellUse& cu = use[key(c, r)];
+            if (o.kind == 2) ++cu.inf;
+            else cu.veh = true;
+        };
+        debit(o.col, o.row);
+        if (o.next_col != o.col || o.next_row != o.row) debit(o.next_col, o.next_row);
     }
     size_t ordered = 0;
     for (const size_t i : valid) {
@@ -682,6 +823,7 @@ bool SimWorld::tick() {
     for (auto& u : units) { // 固定索引序遍历（确定性）
         if (!u.alive) continue;
         if (u.cooldown > 0) --u.cooldown;
+        if (u.make_way_cd > 0) --u.make_way_cd; // 让路冷却（避免反复横挪抖动）
         const bool stand = u.frac == 0 && u.next_col == u.col && u.next_row == u.row;
         if (u.is_miner && (u.order == kOrderNone || u.order == kOrderHarvest)) {
             // 采矿循环：空闲自动采集；满载 → 最近精炼厂卸货 → 资金
@@ -1211,7 +1353,7 @@ int SimWorld::free_subcell(int col, int row, int kind, uint32_t ignore_unit_id) 
     bool slot_used[3] = {false, false, false};
     for (const auto& u : units) {
         if (!u.alive || (ignore_unit_id && u.id == ignore_unit_id)) continue;
-        if (u.col != col || u.row != row) continue;
+        if (!unit_touches_cell(u, col, row)) continue; // 当前格或已预订的下一格
         if (u.kind != 2 || kind != 2) return -1; // 载具占满整格（含与步兵互斥）
         ++infantry;
         if (u.subcell < 3) slot_used[u.subcell] = true;
@@ -1231,7 +1373,7 @@ bool SimWorld::cell_buildable(int col, int row, uint32_t ignore_unit_id) const {
     if (i < ore.size() && ore[i] > 0) return false;       // 矿石（采完后可建）
     for (const auto& u : units) {
         if (!u.alive || (ignore_unit_id && u.id == ignore_unit_id)) continue;
-        if (u.col == col && u.row == row) return false; // 单位占格
+        if (unit_touches_cell(u, col, row)) return false; // 单位占格（含行进中预订格）
     }
     return true;
 }

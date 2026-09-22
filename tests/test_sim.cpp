@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <string>
 #include <utility>
@@ -653,6 +654,184 @@ TEST(SimMove, GroupMoveApproachesBlockedTargetCell) {
         const auto& u = s.units[i];
         EXPECT_EQ(s.blocked[static_cast<size_t>(u.row) * 64 + u.col], 0) << "不得停在障碍格上";
         EXPECT_LE(std::abs(u.col - 30) + std::abs(u.row - 30), 4) << "应停在目标附近";
+    }
+}
+
+// ── 格预订（原版"预订-检测"：行进中占据当前格 + 预订的下一格）──────
+
+namespace {
+// 每帧渲染屏幕偏移变化量的最大值（px）：正常行进恒定 ~8.9px/帧，
+// 超过说明发生了位置跳变（闪现）。
+int max_render_step(sim::SimWorld& s) {
+    std::vector<std::pair<int, int>> prev(s.units.size(), {INT_MIN, INT_MIN});
+    int worst = 0;
+    for (int t = 0; t < 1200; ++t) {
+        s.tick();
+        for (size_t i = 0; i < s.units.size(); ++i) {
+            int ox = 0, oy = 0;
+            sim::unit_render_offset(s.units[i], ox, oy);
+            // 绝对屏幕坐标 = 格心 + 偏移（只跟这个才能检出跨格跳变）
+            const int px = s.units[i].col * 60 + (s.units[i].row & 1) * 30 + ox;
+            const int py = s.units[i].row * 15 + oy;
+            if (prev[i].first != INT_MIN)
+                worst = std::max(worst, std::max(std::abs(px - prev[i].first),
+                                                  std::abs(py - prev[i].second)));
+            prev[i] = {px, py};
+        }
+        bool moving = false;
+        for (size_t i = 0; i < s.units.size(); ++i)
+            if (s.unit_moving(i)) moving = true;
+        if (!moving) break;
+    }
+    return worst;
+}
+} // namespace
+
+// 行进中单位同时占据"当前格 + 已预订的下一格"：预订格对他人视为占用，
+// 离开后立即释放（不会出现原版那种"空气墙"）
+TEST(SimReserve, MovingUnitReservesItsNextCell) {
+    sim::SimWorld s;
+    s.w = 64;
+    s.h = 64;
+    s.blocked.assign(64 * 64, 0);
+    ASSERT_GT(s.spawn_unit("Player", "HTNK", 1, 10, 20, 0, {}, false, 0, 0), 0u);
+    ASSERT_TRUE(s.issue_move(0, 40, 20));
+    for (int i = 0; i < 200 && s.units[0].frac == 0; ++i) s.tick();
+    const int nc = s.units[0].next_col, nr = s.units[0].next_row;
+    ASSERT_TRUE(nc != s.units[0].col || nr != s.units[0].row) << "应处于行进中";
+    EXPECT_LT(s.free_subcell(nc, nr, 1), 0) << "预订格必须视为已占用";
+    EXPECT_EQ(s.spawn_unit("Player", "HTNK", 1, nc, nr, 0, {}, false, 0, 0), 0u)
+        << "不得在他人预订格上生成单位";
+    for (int i = 0; i < 900 && any_moving(s); ++i) s.tick();
+    EXPECT_EQ(s.free_subcell(nc, nr, 1), 0) << "离开后应释放预订";
+}
+
+// 预订冲突（互指对方格）：不死锁、不重叠、不闪现（用户强调的闪现场景）
+TEST(SimReserve, HeadOnOrdersResolveWithoutFlash) {
+    sim::SimWorld s;
+    s.w = 64;
+    s.h = 64;
+    s.blocked.assign(64 * 64, 0);
+    ASSERT_GT(s.spawn_unit("Player", "HTNK", 1, 20, 20, 0, {}, false, 0, 68), 0u);
+    ASSERT_GT(s.spawn_unit("Player", "HTNK", 1, 24, 20, 0, {}, false, 0, 68), 0u);
+    ASSERT_TRUE(s.issue_move_group({0, 1}, 22, 20)); // 两车抢同一点 → 各自落槽位
+    const int worst = max_render_step(s);
+    EXPECT_LE(worst, 15) << "每帧位移不得跳变（闪现）";
+    for (const auto& u : s.units) {
+        EXPECT_LE(std::abs(u.col - 22) + std::abs(u.row - 20), 3) << "应停在目标附近";
+    }
+    // 不重叠：载具各占一格
+    EXPECT_FALSE(s.units[0].col == s.units[1].col && s.units[0].row == s.units[1].row);
+}
+
+// 列队跟走：同一走廊两车一前一后 → 后车预订"前车当前格"接力，
+// 不逐帧重规划（画面连续）且均能到达
+TEST(SimReserve, ColumnFollowsWithoutFlash) {
+    sim::SimWorld s;
+    s.w = 64;
+    s.h = 64;
+    s.blocked.assign(64 * 64, 0);
+    ASSERT_GT(s.spawn_unit("Player", "HTNK", 1, 20, 20, 0, {}, false, 0, 68), 0u);
+    ASSERT_GT(s.spawn_unit("Player", "HTNK", 1, 23, 20, 0, {}, false, 0, 68), 0u);
+    ASSERT_TRUE(s.issue_move_group({0, 1}, 33, 20));
+    const int worst = max_render_step(s);
+    EXPECT_LE(worst, 15) << "每帧位移不得跳变（闪现）";
+    for (const auto& u : s.units) {
+        EXPECT_LE(std::abs(u.col - 33) + std::abs(u.row - 20), 3) << "应到达目标附近";
+    }
+}
+
+// 预订随单位消失而释放（派生自单位表，无残留状态）
+TEST(SimReserve, ReservationReleasedWhenUnitRemoved) {
+    sim::SimWorld s;
+    s.w = 32;
+    s.h = 32;
+    s.blocked.assign(32 * 32, 0);
+    ASSERT_GT(s.spawn_unit("Player", "HTNK", 1, 10, 10, 0, {}, false, 0, 0), 0u);
+    ASSERT_TRUE(s.issue_move(0, 30, 10));
+    for (int i = 0; i < 200 && s.units[0].frac == 0; ++i) s.tick();
+    const int nc = s.units[0].next_col, nr = s.units[0].next_row;
+    ASSERT_LT(s.free_subcell(nc, nr, 1), 0);
+    ASSERT_TRUE(s.remove_unit(0));
+    EXPECT_EQ(s.free_subcell(nc, nr, 1), 0) << "单位消失后预订必须释放";
+}
+
+// 让路（OpenRA Nudge）：绕不过去的死路里，空闲友军会横挪一格放行；
+// 敌人不让路（不惊动停机单位；"目的地格之争"见
+// SimMove.BlockedUnitReplansImmediatelyAroundDynamicObstacle）。
+TEST(SimReserve, IdleFriendlyMakesWayWhenNoDetour) {
+    sim::SimWorld s;
+    s.w = 64;
+    s.h = 64;
+    s.blocked.assign(64 * 64, 0);
+    // 把第 20 行封成 1 宽走廊（相邻四行整图宽全堵，两端也无出口），
+    // 只在 (15,22) 留一个侧口袋：被挡者无法绕行，只能请趴窝友军让位；
+    // 友军唯一可去的就是那个口袋。
+    for (int c = 0; c < 64; ++c)
+        for (int r : {18, 19, 21, 22}) s.blocked[r * 64 + c] = 1;
+    s.blocked[22 * 64 + 15] = 0; // 口袋（(15,20) 的正南邻格）
+    ASSERT_GT(s.spawn_unit("Player", "HTNK", 1, 15, 20, 0, {}, false, 0, 68), 0u); // 趴窝友军
+    ASSERT_GT(s.spawn_unit("Player", "HTNK", 1, 10, 20, 0, {}, false, 0, 68), 0u); // 被挡者
+    ASSERT_TRUE(s.issue_move(1, 25, 20));
+    int t = 0;
+    while (t < 1200 && any_moving(s)) {
+        s.tick();
+        ++t;
+    }
+    ASSERT_FALSE(any_moving(s));
+    EXPECT_EQ(s.units[1].col, 25) << "绕不过去的死路里，友军应让路后通过";
+    EXPECT_EQ(s.units[1].row, 20);
+    EXPECT_EQ(s.units[0].col, 15) << "让路者应挪进侧边口袋";
+    EXPECT_EQ(s.units[0].row, 22);
+}
+
+// 敌人不让路：敌方单位趴窝时，被挡单位只能等/绕，绝不与其重叠
+TEST(SimReserve, EnemyBlockerNeverYields) {
+    sim::SimWorld s;
+    s.w = 64;
+    s.h = 64;
+    s.blocked.assign(64 * 64, 0);
+    for (int c = 0; c < 64; ++c)
+        for (int r : {18, 19, 21, 22}) s.blocked[r * 64 + c] = 1;
+    s.blocked[22 * 64 + 15] = 0;
+    ASSERT_GT(s.spawn_unit("Enemy", "HTNK", 1, 15, 20, 0, {}, false, 0, 68), 0u);
+    ASSERT_GT(s.spawn_unit("Player", "HTNK", 1, 10, 20, 0, {}, false, 0, 68), 0u);
+    ASSERT_TRUE(s.issue_move(1, 25, 20));
+    for (int t = 0; t < 400; ++t) s.tick();
+    EXPECT_EQ(s.units[0].col, 15) << "敌方单位不得让路";
+    EXPECT_EQ(s.units[0].row, 20);
+    EXPECT_TRUE(s.units[1].col != 15 || s.units[1].row != 20) << "不得与敌人重叠";
+}
+
+// 拥堵吞吐回归（OpenRA 式多单位协调的验收）：8 辆车挤过 1 格宽缺口。
+// 未做"同格之争先预订者优先 + 让路"前，这种场景会退化成每 30 帧一跳（实测
+// 同规模编队耗时 4 倍以上）；现在要求限时内全员精确落位。
+TEST(SimReserve, ChokepointCrossingDoesNotStall) {
+    sim::SimWorld s;
+    s.w = 64;
+    s.h = 64;
+    s.blocked.assign(64 * 64, 0);
+    for (int r = 0; r < 64; ++r) s.blocked[r * 64 + 30] = 1; // 整列墙
+    s.blocked[20 * 64 + 30] = 0;                             // 唯一缺口
+    std::vector<size_t> idx;
+    const int start[8][2] = {{18, 16}, {18, 20}, {18, 24}, {20, 18},
+                             {20, 22}, {22, 18}, {22, 22}, {20, 26}};
+    for (const auto& p : start) {
+        if (s.spawn_unit("Player", "HTNK", 1, p[0], p[1], 0, {}, false, 0, 68))
+            idx.push_back(s.units.size() - 1);
+    }
+    ASSERT_EQ(idx.size(), 8u);
+    ASSERT_EQ(s.issue_move_group(idx, 36, 20), 8u);
+    int t = 0;
+    while (t < 500 && any_moving(s)) {
+        s.tick();
+        ++t;
+    }
+    EXPECT_FALSE(any_moving(s)) << "拥堵不得退化成长时间等待（限 500 帧）";
+    for (const size_t i : idx) {
+        const auto& u = s.units[i];
+        EXPECT_LE(std::abs(u.col - u.dest_col) + std::abs(u.row - u.dest_row), 1)
+            << "编队成员应各自精确落位";
     }
 }
 

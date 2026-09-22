@@ -91,6 +91,12 @@ struct SimUnit {
     // 的路网上绕行重规划（单位互相堵住时的出路）。
     int dest_col = -1, dest_row = -1;
     int wait_ticks = 0; // 段边界等位计时（格占用门禁；满 30 帧触发绕行重规划）
+    // 让路冷却（OpenRA Nudge / 原版空闲单位避让）：被请求横挪后 40 帧内不再响应，
+    // 避免多车互相"让来让去"抖动。
+    int make_way_cd = 0;
+    // 当前预订格（next_col/next_row）的预订时刻：多单位争同一格时
+    // **先预订者优先**（同时刻则 id 小者优先），后来者立即改道而不是干等 30 帧。
+    uint64_t res_tick = 0;
     std::vector<std::pair<int, int>> path; // 剩余途经格（不含当前格与段终点）
     std::vector<std::pair<int, int>> waypoints; // 巡逻点（kOrderPatrol 循环）
     size_t wp_idx = 0;
@@ -342,6 +348,22 @@ struct SimWorld {
     bool update_motion(SimUnit& u);
     // 车体朝向与目标格方向偏差是否 ≤ kMoveAlignTol（对准则允许推进）
     bool segment_aligned(const SimUnit& u) const;
+    // 格预订（原版机制）：目标格的挡路者 = 他人当前格或他人**已预订的
+    // 下一格**；nullptr = 可入。双方互换（对方当前格=本格且对方预订格=我当前格）
+    // 放行，避免正面相遇时双方各自等待对方预订格而死锁。
+    SimUnit* blocker_at(SimUnit& u, int col, int row);
+    // 让路（OpenRA Nudge）：请"挡路的空闲友军"横挪一格（确定性选择，排除地形
+    // 阻挡/被占格/被挡者的当前格与预订格，别挪进对方行车线），返回是否已下达
+    bool make_way(SimUnit& blocker, const SimUnit& blocked);
+    // 槽位表（nav 路网上目标附近可走格），按离起点 (sc,sr) 由近到远排序
+    std::vector<std::pair<int, int>> nav_sources_near(const std::vector<uint8_t>& nav, int sc,
+                                                      int sr, int tc, int tr, int slots) const;
+    // 单位感知局部规划：他人**静止格 + 行进单位的预订格**当障碍
+    //（预订冲突 → 改道）；目标不可站时按"离起点最近"槽位落点。
+    // 返回空且 at_slot=false = 无路；at_slot=true = 起点已是可落槽位。
+    std::vector<std::pair<int, int>> plan_avoiding_units(const SimUnit& u, int sc, int sr,
+                                                         int tc, int tr,
+                                                         bool* at_slot = nullptr) const;
 
     // 单位是否在行进中（移动/追赶段）
     bool unit_moving(size_t i) const {
