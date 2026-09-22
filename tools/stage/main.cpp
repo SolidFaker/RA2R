@@ -90,6 +90,7 @@ static int run(int argc, char** argv) {
     std::vector<std::array<int, 3>> bumps; // --bump cx,cy,h：纯平图上指定格抬升（可重复）
     float dpi_override = 0.0f; // --dpi：强制缩放系数（高 DPI 布局验证）
     int sim_steps_arg = -1;    // --simsteps N：无头自检推进 N 逻辑帧后转储
+    int bench_arg = 0;         // --bench N：渲染性能基准（帧数；每帧 3 逻辑帧 + 全量渲染）
     bool sim_attack_arg = false; // --simattack：自检用攻击脚本
     bool sim_build_arg = false;  // --simbuild：自检用建造脚本
     bool sim_demo_arg = false;   // --simdemo：M3 验收演示
@@ -133,6 +134,8 @@ static int run(int argc, char** argv) {
             dpi_override = static_cast<float>(std::atof(argv[++i]));
         else if (std::strcmp(argv[i], "--simsteps") == 0 && i + 1 < argc)
             sim_steps_arg = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--bench") == 0 && i + 1 < argc)
+            bench_arg = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--simattack") == 0) sim_attack_arg = true;
         else if (std::strcmp(argv[i], "--simbuild") == 0) sim_build_arg = true;
         else if (std::strcmp(argv[i], "--simdemo") == 0) sim_demo_arg = true;
@@ -160,7 +163,7 @@ static int run(int argc, char** argv) {
         else {
             std::printf(
                 "usage: stage [--gamedir <dir>] [--cache <root>] [--shot <bmp>] [--test] "
-                "[--noobj] [--dpi <f>] [--backend gl|sdl]\n"
+                "[--noobj] [--dpi <f>] [--backend gl|sdl] [--perf] [--bench <frames>]\n"
                 "       stage --map battle1.yrm --skirmish [--country <c>] [--color <c>] "
                 "[--ocountry <c>] [--ocolor <c>] [--skclass 0..3] [--sktech 1..10] [--noai]\n"
                 "  双击运行（无参数）时自动发现游戏目录；找不到则弹出目录选择窗口。\n");
@@ -226,6 +229,7 @@ static int run(int argc, char** argv) {
     a.sim_build = sim_build_arg;
     a.sim_demo = sim_demo_arg;
     a.perf_log = perf_arg;
+    a.test_whole_canvas = test_mode; // 无头转储：画全图（截图基线覆盖整张画布）
     a.sk_autostart = sk_arg;
     a.sk_ai = !sk_noai;
     a.sk.class_sel = sk_class;
@@ -760,8 +764,18 @@ static int run(int argc, char** argv) {
                 a.dirty = true;
             }
         }
+        // 可见画布范围（画家序渲染只画这一块 + 余量；见 render_all）。
+        // **必须在下面 render_all 之前更新**：否则首帧范围为空 → 整屏黑。
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        const ImVec2 pos = ImGui::GetCursorScreenPos();
+        if (a.zoom > 0.0f) {
+            a.view_x0 = static_cast<int>((0.0f - a.pan_x) / a.zoom);
+            a.view_y0 = static_cast<int>((0.0f - a.pan_y) / a.zoom);
+            a.view_x1 = static_cast<int>((avail.x - a.pan_x) / a.zoom);
+            a.view_y1 = static_cast<int>((avail.y - a.pan_y) / a.zoom);
+        }
         if (a.dirty) {
-            // 重渲染节流（≤30Hz）：模拟高频变化时按需渲染，UI 保持响应；
+            // 重渲染节流（~30Hz）：模拟高频变化时按需渲染，UI 保持响应；
             // dirty 保持，节流窗口过后自动补渲染。
             const uint64_t now_ms = SDL_GetTicks();
             if (now_ms - a.last_render_ms >= 33) {
@@ -783,8 +797,6 @@ static int run(int argc, char** argv) {
                 a.dirty = false;
             }
         }
-        const ImVec2 avail = ImGui::GetContentRegionAvail();
-        const ImVec2 pos = ImGui::GetCursorScreenPos();
         ImGui::InvisibleButton("stage3d", avail,
                                ImGuiButtonFlags_MouseButtonLeft |
                                    ImGuiButtonFlags_MouseButtonRight |
@@ -1587,6 +1599,7 @@ static int run(int argc, char** argv) {
                     write_bmp(sp, a.bw, a.bh, buf2);
                     std::printf("sim dump saved -> %s (%dx%d)\n", sp.c_str(), a.bw, a.bh);
                 }
+                if (bench_arg > 0) run_bench(a, bench_arg); // --bench：先测再优化
             }
             running = false;
         }

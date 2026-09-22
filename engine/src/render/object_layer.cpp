@@ -189,6 +189,7 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
         uint8_t idle_kind = 0;    // 步兵 idle 动作（1=Idle1 2=Idle2 0=无）
         uint32_t idle_start = 0;  // idle 动作触发逻辑帧
         int fw = 1, fh = 1;       // 地基尺寸（深度排序取靠下边行）
+        float tilt = 0.0f;        // 车体俯仰（弧度；体素上下坡整模倾斜）
     };
     std::vector<Obj> sorted;
     for (size_t i = 0; i < objs.size(); ++i) {
@@ -196,7 +197,7 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
         sorted.push_back({o.cx, o.cy, o.cx + o.cy, o.kind, o.id, o.dir, o.turret_dir, o.subcell, o.height,
                           o.off_x, o.off_y, o.alpha, o.hp, o.build_p, o.remap,
                           static_cast<int>(i), o.build_ticks, o.build_total, o.moving,
-                          o.anim_clock, o.idle_kind, o.idle_start, o.fw, o.fh});
+                          o.anim_clock, o.idle_kind, o.idle_start, o.fw, o.fh, o.tilt});
     }
     // 深度序：**靠下（南）边行**在前，同行的靠右在前（原版按精灵底部屏幕 Y、
     // 再按 X 排序的等价形式）。多格建筑用 cy+fh−1——用锚点行会把建筑画在
@@ -224,9 +225,12 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
             const auto& img_name = art_images.count(o.id) ? art_images[o.id] : o.id;
             // 体素光栅缓存（按 美术名|朝向|比例16|阵营色；跨帧复用）
             const int scale16 = static_cast<int>(std::clamp(obj_scale, 0.1f, 4.0f) * 16.0f);
+            // 俯仰按 0.5° 量化进缓存键（坡度只有几个离散档，量化后缓存命中率高）
+            const int tilt_q = static_cast<int>(std::lround(o.tilt * 114.5916f)); // rad→0.5°
             const std::string vkey = img_name + '|' + std::to_string(o.dir) + '|' +
                                      std::to_string(o.turret_dir) + '|' +
-                                     std::to_string(scale16) + '|' + std::to_string(o.remap);
+                                     std::to_string(scale16) + '|' + std::to_string(o.remap) + '|' +
+                                     std::to_string(tilt_q);
             const ObjectRenderCache::VoxelEntry* vent = nullptr;
             if (cache && cache->voxels.count(vkey)) {
                 vent = &cache->voxels[vkey];
@@ -267,11 +271,12 @@ ObjectRenderStats render_objects(const std::vector<PlacedObject>& objs,
                 }
                 ra2r::render::VoxelView view;
                 // 朝向：RA2 dir 0=右上(与格平行) 32=右(与水平线平行) 64=右下…，
-                // 体素模型车头 = +x 轴（实测 TNKD 炮管向 +x 延伸：x+ 35.5 vs x− 21.5）
+                // 体素模型车头 = +x 轴（实测 TNKD 炮管在 +x 延伸：x+ 35.5 vs x− 21.5）
                 // → yaw = dir/256·2π − π/2（dir0→270°→车头右上，8 向全表吻合）
                 view.pitch = 0.0f;
                 view.scale = std::clamp(obj_scale, 0.1f, 4.0f);
                 view.remap = ramp_ptr(o.remap);
+                view.tilt = o.tilt; // 上下坡整模俯仰（坡度由 stage 按格高差算好）
                 const auto yaw_of = [](uint8_t d) {
                     return d / 256.0f * 6.2831853f - 1.5707963f;
                 };

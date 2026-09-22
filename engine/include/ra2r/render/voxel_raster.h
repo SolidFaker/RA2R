@@ -19,6 +19,10 @@ namespace ra2r::render {
 struct VoxelView {
     float yaw = 0.0f;                          // 绕 z 轴旋转（弧度）
     float pitch = 35.264f * 3.14159265f / 180.0f; // 绕 x 轴俯仰（默认等距俯角）
+    // 车体俯仰（弧度）：上下坡时整模随地形坡度前倾/后仰（原版实时算地形坡度）。
+    // 绕**模型横向轴**（车头 = +x → 横向 = y）旋转，在 HVA 摆位之后施加，
+    // 故炮塔/炮管与底盘一起倾；0 = 平地。
+    float tilt = 0.0f;
     float scale = 3.0f;                        // 每体素像素尺寸（可小数；0.5 ≈ 原版一格观感）
     // 阵营色重映射（可选）：48 字节 = 16 × RGB，替换 VXL 内嵌调色盘索引 16..31
     //（原版 Remap 段，见 assets::HouseRamp）

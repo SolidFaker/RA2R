@@ -59,6 +59,9 @@ public:
 
     // 画布纹理：整幅 RGBA（w×h×4，行主序自顶向下）；尺寸变化自动重建
     void update_texture(int w, int h, const uint8_t* rgba);
+    // 只更新纹理的一块区域（性能：整图 56MB 上传 ~9ms/帧，局部 ~0.2ms）。
+    // src = 整幅画布指针，stride = 画布行距（像素），(x,y,w,h) = 区域。
+    void update_texture_rect(int x, int y, int w, int h, int stride, const uint8_t* src);
     // 当前画布纹理句柄（ImGui::Image 用）
     ImTextureID texture_id() const;
 

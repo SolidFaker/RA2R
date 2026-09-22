@@ -3,6 +3,7 @@
 //
 // 职责：应用状态聚合 + 资源重建、类型表解析、地图生成/加载、全图渲染、
 // 地图扫描与 BMP 写出。所有算法复用引擎模块，本文件只做舞台粘合。
+#include <array>
 #include <filesystem>
 #include <map>
 #include <set>
@@ -112,6 +113,19 @@ struct StageApp {
     // 性能：静态层缓存（地形+装饰跨帧复用）+ 对象渲染缓存 + 重渲染节流
     std::vector<uint8_t> static_canvas;
     bool static_valid = false;
+    // 动态画布（持久，复用 56MB 分配）+ 脏矩形：每帧只从静态层恢复"上一帧画过
+    // 东西"的区域，纹理也只上传这些区域（整图拷贝/上传各 ~8ms/帧 → ~0.2ms）。
+    std::vector<uint8_t> canvas;
+    std::vector<std::array<int, 4>> damage; // {x0,y0,x1,y1}（半开区间）
+    bool canvas_full_dirty = true;          // 整图恢复（首帧/换图/定期兜底）
+    int frame_no = 0;
+    // 遮挡瓦片位图（每张图构建一次）：1 = 悬崖面（has_extra && ramp==0 && 高度断崖边）。
+    // 逐格判定从"每帧查表+开瓦片"退化为一次数组读；非遮挡地形画进 static_canvas。
+    std::vector<uint8_t> occluder;
+    bool occluder_valid = false;
+    // 可见画布范围（canvas 像素，半开；由 UI 每帧更新；默认 0 = 未设置 → 画全图）
+    int view_x0 = 0, view_y0 = 0, view_x1 = 0, view_y1 = 0;
+    bool test_whole_canvas = false; // --test 无头转储：画全图（截图基线覆盖整张画布）
     ra2r::render::ObjectRenderCache obj_cache;
     uint64_t last_vhash = 0;     // 上次渲染时的模拟视觉状态哈希
     uint64_t last_render_ms = 0; // 上次重渲染时刻（≤30Hz 节流）
@@ -149,6 +163,10 @@ void ensure_rules(StageApp& a);
 
 // sim 单位/步兵 → 渲染对象（含段内像素插值偏移），附加到 objects_out 尾部
 void append_sim_objects(StageApp& a, std::vector<ra2r::render::PlacedObject>& objects_out);
+
+// 性能基准（--bench N）：推进 N 帧（每帧 3 逻辑帧 + 全量渲染），打印分相均值。
+// 用途：先测再优化，避免凭感觉改渲染路径（CI/VM 无头可复现）。
+void run_bench(StageApp& a, int frames);
 
 // 选中建筑的地基菱形描边（画在**对象之前**，被建筑本体遮挡）
 void draw_building_selection_underlay(StageApp& a, const ra2r::render::IsometricGrid& grid,

@@ -165,16 +165,27 @@ std::vector<uint8_t> tmp_frame_rgba(const ra2r::render::TerrainTile& t, int fram
 void render_map_decor(const std::vector<MapDecorObject>& objs, const PaletteLut& terrain_lut,
                       const PaletteLut& resource_lut, const PaletteLut& unit_lut,
                       const IsometricGrid& grid, const FileLoader& load, int bw, int bh, int ox,
-                      int oy, std::vector<uint8_t>& canvas) {
-    // 按 (cy, cx) 行序绘制（与对象层一致，后行盖前行）
-    std::vector<const MapDecorObject*> sorted;
-    sorted.reserve(objs.size());
-    for (const auto& o : objs) sorted.push_back(&o);
-    std::sort(sorted.begin(), sorted.end(), [](const MapDecorObject* a, const MapDecorObject* b) {
-        if (a->cy != b->cy) return a->cy < b->cy;
-        return a->cx < b->cx;
-    });
+                      int oy, std::vector<uint8_t>& canvas, int only_row) {
+    // 按 (cy, cx) 行序绘制（与对象层一致，后行盖前行）。
+    // 统一画家序会按行多次调用本函数 → 排序结果缓存（装饰表在同一张图内稳定），
+    // 否则每行都重排+重查一遍整张装饰表（实测 300 行 × 上千装饰 = 数十毫秒）。
+    static std::vector<const MapDecorObject*> sorted;
+    static const void* cached_data = nullptr;
+    static size_t cached_size = 0;
+    if (cached_data != static_cast<const void*>(objs.data()) || cached_size != objs.size()) {
+        sorted.clear();
+        sorted.reserve(objs.size());
+        for (const auto& o : objs) sorted.push_back(&o);
+        std::sort(sorted.begin(), sorted.end(),
+                  [](const MapDecorObject* a, const MapDecorObject* b) {
+                      if (a->cy != b->cy) return a->cy < b->cy;
+                      return a->cx < b->cx;
+                  });
+        cached_data = objs.data();
+        cached_size = objs.size();
+    }
     for (const MapDecorObject* o : sorted) {
+        if (only_row >= 0 && o->cy != only_row) continue; // 统一画家序：只画本行
         const auto* raw = load(o->art);
         MapDecorObject eff = *o;
         if (!raw && o->kind == MapDecorObject::kTmpTile) {

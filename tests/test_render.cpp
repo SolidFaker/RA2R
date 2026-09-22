@@ -336,3 +336,33 @@ TEST(RenderVoxel, RasterIsDeterministicAndYawSensitive) {
     EXPECT_GT(c.w, 0);
     EXPECT_NE(a.rgba, c.rgba); // 朝向改变 → 输出改变
 }
+
+// 上下坡整模俯仰（原版按地形坡度实时倾斜体素）：加 tilt 后外形必须变化，
+// 且同 tilt 仍逐字节确定（缓存键含 0.5° 量化后的 tilt，见 object_layer）。
+TEST(RenderVoxel, TiltPitchesModelDeterministically) {
+    RA2R_REQUIRE_ASSETS();
+    const auto raw = test::read_asset("HTNK.VXL");
+    ASSERT_FALSE(raw.empty());
+    assets::VxlFile vxl;
+    std::string err;
+    ASSERT_TRUE(vxl.open(raw.data(), raw.size(), &err)) << err;
+    render::VoxelView v;
+    v.scale = 0.35f;
+    v.pitch = 0.0f;
+    v.yaw = 0.0f;
+    const auto flat = render::rasterize_voxel_model(vxl, nullptr, 0, v);
+    ASSERT_GT(flat.w, 0);
+    ASSERT_GT(flat.h, 0);
+    // 上坡 0.25rad（≈14°）：外形/像素必须变化，且确定性不变
+    v.tilt = 0.25f;
+    const auto up = render::rasterize_voxel_model(vxl, nullptr, 0, v);
+    const auto up2 = render::rasterize_voxel_model(vxl, nullptr, 0, v);
+    EXPECT_GT(up.w, 0);
+    EXPECT_EQ(up.rgba, up2.rgba) << "同 tilt 必须逐字节确定";
+    EXPECT_TRUE(up.w != flat.w || up.h != flat.h || up.rgba != flat.rgba)
+        << "坡度必须改变体素外形（整模倾斜）";
+    // 下坡 -0.25rad：与上坡不同（前后倾方向相反）
+    v.tilt = -0.25f;
+    const auto down = render::rasterize_voxel_model(vxl, nullptr, 0, v);
+    EXPECT_NE(up.rgba, down.rgba) << "上坡/下坡倾角方向必须不同";
+}

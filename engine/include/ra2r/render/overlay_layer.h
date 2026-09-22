@@ -61,9 +61,11 @@ bool is_unit_palette_art(const std::string& art);
 // 渲染装饰元素到画布（调用方保证 canvas 为全图 RGBA）。
 // terrain_lut = 剧场地形盘；resource_lut = TEMPERAT.PAL（矿石/宝石用）；
 // unit_lut = 剧场单位盘（墙/围栏 SHP 用）。
+// only_row >= 0 时只画该行（cy == only_row）的装饰：供"统一画家序"逐行
+// 把装饰插进地形与对象之间（树木/围墙同样按行压住后方单位）。
 void render_map_decor(const std::vector<MapDecorObject>& objs, const PaletteLut& terrain_lut,
                       const PaletteLut& resource_lut, const PaletteLut& unit_lut,
                       const IsometricGrid& grid, const FileLoader& load, int bw, int bh, int ox,
-                      int oy, std::vector<uint8_t>& canvas);
+                      int oy, std::vector<uint8_t>& canvas, int only_row = -1);
 
 } // namespace ra2r::render

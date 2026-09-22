@@ -55,6 +55,34 @@ void render_scene(const std::vector<SceneCell>& cells, int cell_w, int cell_h,
                   const FileLoader& load, cache::CacheManager* cache,
                   const std::function<int(int, int)>* light_fn, const IsometricGrid& grid,
                   int& bw, int& bh, int& ox, int& oy, std::vector<uint8_t>& canvas,
-                  int* drawn_out);
+                   int* drawn_out);
+// 该地形瓦片是否是"会遮挡对象"的一类（原版语义）：
+//   ① 格高 > 0（高台/抬升地形）→ 参与排序，可压住其后对象；
+//   ② 带扩展面、ramp == 0（不是坡面）、且位于高度断崖边（邻居高度不同）
+//      → 悬崖面（cliff 底线瓦片格高 0 也带整面向上的面，即此类）。
+// **坡面（ramp!=0）与平地永远不是遮挡物**——它们整批先画、垫在所有对象之下
+//（路缘/斜坡 art 高出格 1~15px，若参与排序会盖住走在路上的单位）。
+bool terrain_tile_is_occluder(const SceneCell& cell, const std::vector<SceneCell>& cells,
+                              int cell_w, int cell_h, int c, int r,
+                              const assets::TerrainTileset& tileset, const FileLoader& load);
+
+// 单块地形瓦片绘制（含解码缓存/高度抬升/光照）。返回是否实际画了像素。
+// 供"悬崖/地形高度遮挡"补画复用（见 redraw_terrain_front）。
+bool draw_terrain_cell(const SceneCell& cell, int cx, int cy,
+                       const assets::TerrainTileset& tileset, const PaletteLut& terrain_lut,
+                       const FileLoader& load, cache::CacheManager* cache,
+                       const IsometricGrid& grid, int bw, int bh, int ox, int oy, int light_level,
+                       std::vector<uint8_t>& canvas);
+
+// 悬崖/地形高度遮挡（参考原版/OpenRA 的画家序：地形按行压在对象上）：
+// 在**对象画完之后**，补画它"前方"（base row > 对象前沿行 = cy+fh−1）的高地形
+// 瓦片——悬崖面最高 ~76px ≈ 5 行，故取行窗口 [front+1, front+6]、列窗口
+// [cx−2, cx+fw+1]。平地瓦片不重叠、补画无害；只有带高度/扩展区的瓦片才画。
+void redraw_terrain_front(const std::vector<SceneCell>& cells, int cell_w, int cell_h,
+                          const assets::TerrainTileset& tileset, const PaletteLut& terrain_lut,
+                          const FileLoader& load, cache::CacheManager* cache,
+                          const IsometricGrid& grid, int bw, int bh, int ox, int oy,
+                          int obj_cx, int obj_cy, int fw, int fh, int obj_height,
+                          std::vector<uint8_t>& canvas);
 
 } // namespace ra2r::render

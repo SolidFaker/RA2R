@@ -25,6 +25,20 @@
 
 namespace stage {
 
+// 渲染分相性能计数（--perf）：先测再优化（拷贝/对象/遮挡/标记/上传/合计）
+struct PerfAcc {
+    double copy = 0, underlay = 0, objects = 0, occl = 0, marks = 0, upload = 0, total = 0;
+    double occl_frame = 0;
+    int occl_objs = 0; // 遮挡补画涉及的对象数（每帧）
+    int frames = 0;
+};
+static PerfAcc g_perf;
+
+static double ms_since(const std::chrono::steady_clock::time_point& t) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+}
+
+
 using ra2r::assets::TheaterConfig;
 using ra2r::render::IsometricGrid;
 using ra2r::render::TerrainTile;
@@ -64,7 +78,8 @@ bool rebuild_resources(StageApp& a, const std::string& theater, std::string* err
         a.unit_pal_bytes.assign(upal->begin(), upal->end()); // 阵营色 LUT 原料
         a.remap_luts.clear();
     }
-    a.static_valid = false; // 调色板/瓦片集变化 → 静态层重建
+    a.static_valid = false;
+    a.occluder_valid = false; // 遮挡位图随之失效 // 调色板/瓦片集变化 → 静态层重建
     return true;
 }
 
@@ -297,7 +312,8 @@ void generate_map(StageApp& a, std::string* error) {
         a.sim_active = false;
         a.selection.clear();
     }
-    a.static_valid = false; // 地图变化 → 静态层重建
+    a.static_valid = false;
+    a.occluder_valid = false; // 遮挡位图随之失效 // 地图变化 → 静态层重建
     a.obj_cache.clear();
     a.last_vhash = 0;
     a.recenter = true;
@@ -426,34 +442,41 @@ void render_all(StageApp& a, std::string* error) {
     a.oy = oy;
     const TheaterConfig cfg = ra2r::assets::theater_config(a.map.theater);
     // ── 静态层：地形 + 装饰（地图/剧场/瓦片集变化时重建一次）──
+    // 场景格视图（地形绘制与"悬崖遮挡补画"共用）
+    std::vector<ra2r::render::SceneCell> scells(static_cast<size_t>(a.map.w) * a.map.h);
+    for (int cy = 0; cy < a.map.h; ++cy)
+        for (int cx = 0; cx < a.map.w; ++cx) {
+            const StageCell& c = a.map.cell(cx, cy);
+            ra2r::render::SceneCell& s = scells[static_cast<size_t>(cy) * a.map.w + cx];
+            s.tile_id = c.tile_id;
+            s.subtile = c.subtile;
+            s.height = c.height;
+            s.present = true; // stage 的格全部有效（空槽默认 Clear01）
+        }
+    const auto load_cb = [&](const std::string& n) { return load_file(a, n); };
     const size_t canvas_bytes = static_cast<size_t>(bw) * bh * 4;
-    if (!a.static_valid || a.static_canvas.size() != canvas_bytes) {
-        a.static_canvas.assign(canvas_bytes, 0);
-        // 共享管线（与 mapview 同一份代码）：场景格 + 地形/装饰一次渲染
-        std::vector<ra2r::render::SceneCell> scells(static_cast<size_t>(a.map.w) * a.map.h);
-        for (int cy = 0; cy < a.map.h; ++cy)
-            for (int cx = 0; cx < a.map.w; ++cx) {
-                const StageCell& c = a.map.cell(cx, cy);
-                ra2r::render::SceneCell& s = scells[static_cast<size_t>(cy) * a.map.w + cx];
-                s.tile_id = c.tile_id;
-                s.subtile = c.subtile;
-                s.height = c.height;
-                s.present = true; // stage 的格全部有效（空槽默认 Clear01）
-            }
-        int drawn = 0;
-        ra2r::render::render_scene(scells, a.map.w, a.map.h, a.tileset, a.terrain_lut,
-                                   a.resource_lut, a.unit_lut, a.map.decor, a.no_decor,
-                                   [&](const std::string& n) { return load_file(a, n); },
-                                   &a.cache, nullptr, grid, bw, bh, ox, oy, a.static_canvas,
-                                   &drawn);
-        a.static_valid = true;
+    if (a.canvas.size() != canvas_bytes) a.canvas.assign(canvas_bytes, 0);
+    std::vector<uint8_t>& canvas = a.canvas;
+    // ── 统一画家序（原版/OpenRA 式，取代"整层地形 + 对象 + 启发式补画"）──
+    // 一次遍历按**砖墙行序**（后行盖前行）逐行画 [地形瓦片 → 装饰 → 对象]：
+    //   · 地形瓦片自带高度抬升与悬崖扩展面 → 南侧悬崖自然压住北侧单位；
+    //   · 装饰（树/墙）排在当行地形之后、对象之前 → 同样能遮住后方单位；
+    //   · 对象按**前沿行**（cy+fh−1 = 原版 YSortAdjust 的占地逻辑）入行，
+    //     同行内再按列序 → 建筑天然遮挡站在其身前（南）的单位。
+    // 覆盖层（选中描边/标记/血条/特效/放置预览）最后画 = 原版 ZAdjust 负值语义。
+    // 可见裁剪：交互模式只画视口范围（+余量）；--test 转储画全图（截图基线用）。
+    int vx0 = 0, vy0 = 0, vx1 = bw - 1, vy1 = bh - 1;
+    // 视口为空/未设置（首帧、缩放为 0）→ 退回整图，绝不画成空屏
+    if (!a.test_whole_canvas && a.view_x1 > a.view_x0 && a.view_y1 > a.view_y0) {
+        vx0 = std::clamp(a.view_x0 - 120, 0, bw - 1);
+        vy0 = std::clamp(a.view_y0 - 260, 0, bh - 1); // 精灵向上延伸，多画上方
+        vx1 = std::clamp(a.view_x1 + 120, vx0, bw - 1);
+        vy1 = std::clamp(a.view_y1 + 80, vy0, bh - 1);
     }
-    const auto t1 = std::chrono::steady_clock::now();
-    // ── 动态层：静态层拷贝 + 对象 + 标记/特效 ──
-    std::vector<uint8_t> canvas = a.static_canvas; // 一次整图拷贝（56MB 级 ≈ 数毫秒）
-    // 选中建筑的**地基菱形描边画在对象之前**：被建筑本体遮挡，只露出底座轮廓
-    //（此前画在对象之后，绿色菱形盖住了建筑）
-    if (a.sim_active) draw_building_selection_underlay(a, grid, bw, bh, ox, oy, canvas);
+    const int row_lo = std::max(0, (vy0 - oy) / 15 - 8);
+    const int row_hi = std::min(a.map.h - 1, (vy1 - oy) / 15 + 8);
+    const int col_lo = std::max(0, (vx0 - ox) / 60 - 3);
+    const int col_hi = std::min(a.map.w - 1, (vx1 - ox) / 60 + 3);
     std::vector<ra2r::render::PlacedObject> objs;
     if (a.sim_active) {
         append_sim_objects(a, objs);
@@ -462,9 +485,7 @@ void render_all(StageApp& a, std::string* error) {
     }
     const ra2r::render::UnitPaletteCfg upal{cfg.unit_pal, a.map.theater,
                                             a.sk.ramps.empty() ? nullptr : &a.sk.ramps};
-    // 建筑配件动画/炮塔按**该建筑所在深度**紧随本体绘制（render_objects 的
-    // post_draw 回调）：靠下的单位/建筑仍能正确遮挡靠上的建筑配件，且动画不再
-    // 越过前方单位（此前是全局后画一遍，等于把所有配件动画提到最上层）。
+    // 建筑配件动画/炮塔紧随本体（post_draw 在本对象之后、本行下一个对象之前）
     const ra2r::render::PostObjectDraw post_draw =
         a.sim_active
             ? ra2r::render::PostObjectDraw([&](const ra2r::render::PlacedObject& o,
@@ -477,17 +498,139 @@ void render_all(StageApp& a, std::string* error) {
                   }
               })
             : ra2r::render::PostObjectDraw{};
-    a.obj_stats = ra2r::render::render_objects(objs, upal, grid,
-                                               [&](const std::string& n) {
-                                                   return load_file(a, n);
-                                               },
-                                               bw, bh, ox, oy, canvas, a.obj_scale,
-                                               &a.obj_cache, post_draw);
+    int sel_front = -1;
+    if (a.sim_active && a.sel_building_id != 0) {
+        for (const auto& b : a.sim.buildings) {
+            if (b.alive && b.id == a.sel_building_id) {
+                sel_front = b.row + std::max(1, b.fw) + std::max(1, b.fh) - 2;
+                break;
+            }
+        }
+    }
+    const auto p_ob0 = std::chrono::steady_clock::now();
+    a.obj_stats = ra2r::render::ObjectRenderStats{};
+    // ── 排序键 = 屏幕 Y(15·行) + 高度(15·级) + 微调（OpenRA
+    // WorldRenderer.RenderableZPositionComparisonKey = Pos.Y + Pos.Z + ZOffset）。
+    // 地形瓦片带自己的高度级 → 抬高的瓦片会排到"更南"的位置，
+    // 前方高台/悬崖面因此天然压住其后的单位；对象用前沿行（占地调整）。
+    // 同键顺序：地形(0) → 装饰(1) → 对象(2)（与 OpenRA 先地形后精灵一致）。
+    struct DrawItem {
+        int key = 0;
+        int kind = 0; // 0=地形 1=装饰 2=对象
+        int c = 0, r = 0;
+        int obj = -1;
+    };
+    std::vector<DrawItem> items;
+    items.reserve(static_cast<size_t>(row_hi - row_lo + 1) * (col_hi - col_lo + 1) + objs.size());
+    // ① 遮挡瓦片位图：每张图构建一次（非遮挡地形不进排序表）
+    if (!a.occluder_valid || a.occluder.size() != scells.size()) {
+        a.occluder.assign(scells.size(), 0);
+        for (int r = 0; r < a.map.h; ++r)
+            for (int c = 0; c < a.map.w; ++c) {
+                const size_t i = static_cast<size_t>(r) * a.map.w + c;
+                if (i >= scells.size() || !scells[i].present) continue;
+                if (ra2r::render::terrain_tile_is_occluder(scells[i], scells, a.map.w, a.map.h, c,
+                                                           r, a.tileset, load_cb))
+                    a.occluder[i] = 1;
+            }
+        a.occluder_valid = true;
+    }
+    // ② 静态平地层：所有非遮挡地形（平地/路面/坡面/高台平顶）画一次缓存；
+    //    每帧只把**可见范围**从它拷进画布当底（不再逐帧全量重画地形）。
+    if (!a.static_valid || a.static_canvas.size() != canvas_bytes) {
+        a.static_canvas.assign(canvas_bytes, 0);
+        for (int r = 0; r < a.map.h; ++r)
+            for (int c = 0; c < a.map.w; ++c) {
+                const size_t i = static_cast<size_t>(r) * a.map.w + c;
+                if (i >= scells.size() || !scells[i].present || a.occluder[i]) continue;
+                ra2r::render::draw_terrain_cell(scells[i], c, r, a.tileset, a.terrain_lut, load_cb,
+                                                &a.cache, grid, bw, bh, ox, oy, 0, a.static_canvas);
+            }
+        a.static_valid = true;
+    }
+    for (int y = vy0; y <= vy1 && vx1 >= vx0; ++y)
+        std::memcpy(canvas.data() + (static_cast<size_t>(y) * bw + vx0) * 4,
+                    a.static_canvas.data() + (static_cast<size_t>(y) * bw + vx0) * 4,
+                    static_cast<size_t>(vx1 - vx0 + 1) * 4);
+    // ③ 遮挡地形（悬崖面）与装饰、对象一起排序：键 = 15·行 + 15·高度（+微调）
+    for (int r = row_lo; r <= row_hi; ++r)
+        for (int c = col_lo; c <= col_hi; ++c) {
+            const size_t i = static_cast<size_t>(r) * a.map.w + c;
+            if (i >= scells.size() || !scells[i].present || !a.occluder[i]) continue;
+            items.push_back({15 * r + 15 * static_cast<int>(scells[i].height), 0, c, r, -1});
+        }
+    if (!a.no_decor)
+        for (const auto& d : a.map.decor) {
+            if (d.cy < row_lo || d.cy > row_hi || d.cx < col_lo || d.cx > col_hi) continue;
+            const int h = (d.cx >= 0 && d.cy >= 0 && d.cx < a.map.w && d.cy < a.map.h)
+                              ? static_cast<int>(a.map.cell(d.cx, d.cy).height)
+                              : 0;
+            (void)h; // 装饰（围墙等）同样只按行排序
+            items.push_back({15 * d.cy, 1, d.cx, d.cy, -1});
+        }
+    for (size_t i = 0; i < objs.size(); ++i) {
+        const auto& o = objs[i];
+        // 前沿行 = 引擎格地基最大行：foundation_cells 的行 = row + i + j（i<fw, j<fh）
+        // → row + fw + fh - 2（此前误用 row + fh - 1，4x4 建筑差 3 行 → 地基下 3 行
+        // 的地形排到建筑之后，把建筑/围墙盖住）
+        const int front = o.cy + std::max(1, o.fw) + std::max(1, o.fh) - 2;
+        // 对象：OpenRA 的 Pos.Y 是**连续**世界坐标 → 用格内插值偏移 off_y 入键
+        //（否则移动中的单位排序滞后，会压住已经走到的那些单位）。
+        items.push_back({15 * front + 15 * o.height + o.off_y, 2, o.cx, o.cy, static_cast<int>(i)});
+    }
+    std::stable_sort(items.begin(), items.end(), [](const DrawItem& x, const DrawItem& y) {
+        if (x.key != y.key) return x.key < y.key;
+        if (x.kind != y.kind) return x.kind < y.kind;
+        return x.c < y.c;
+    });
+    std::vector<ra2r::render::PlacedObject> row_objs;
+    int decor_drawn_row = -1;
+    for (size_t k = 0; k < items.size();) {
+        const DrawItem& it = items[k];
+        if (it.kind == 0) { // 地形
+            const size_t i = static_cast<size_t>(it.r) * a.map.w + it.c;
+            ra2r::render::draw_terrain_cell(scells[i], it.c, it.r, a.tileset, a.terrain_lut,
+                                            load_cb, &a.cache, grid, bw, bh, ox, oy, 0, canvas);
+            ++k;
+            continue;
+        }
+        if (it.kind == 1) { // 装饰：**同一行只整批画一次**（按行去重）
+            //（逐项调用会把"整表过滤+查名"放大 D 倍：1151 件装饰 → 250ms/帧）
+            if (it.r != decor_drawn_row) {
+                ra2r::render::render_map_decor(a.map.decor, a.terrain_lut, a.resource_lut,
+                                               a.unit_lut, grid, load_cb, bw, bh, ox, oy, canvas,
+                                               it.r);
+                decor_drawn_row = it.r;
+            }
+            ++k;
+            continue;
+        }
+        // 对象：同一 key 的连续对象一起交给 render_objects（内部按 (cx+cy, cx) 定序）
+        const int key = it.key;
+        row_objs.clear();
+        while (k < items.size() && items[k].kind == 2 && items[k].key == key) {
+            row_objs.push_back(objs[static_cast<size_t>(items[k].obj)]);
+            ++k;
+        }
+        // 选中建筑的地基描边：在它本体之前（只露底座轮廓）
+        for (const auto& o : row_objs)
+            if (o.cy + std::max(1, o.fw) + std::max(1, o.fh) - 2 == sel_front)
+                draw_building_selection_underlay(a, grid, bw, bh, ox, oy, canvas);
+        const auto st = ra2r::render::render_objects(row_objs, upal, grid, load_cb, bw, bh, ox, oy,
+                                                     canvas, a.obj_scale, &a.obj_cache, post_draw);
+        a.obj_stats.units += st.units;
+        a.obj_stats.buildings += st.buildings;
+        a.obj_stats.skipped += st.skipped;
+    }
+    g_perf.objects += ms_since(p_ob0);
+    const auto t1 = std::chrono::steady_clock::now();
     if (a.sim_active) {
+        const auto p_mk0 = std::chrono::steady_clock::now();
         if (!a.selection.empty() || a.sel_building_id != 0)
             draw_selection_markers(a, grid, bw, bh, ox, oy, canvas);
         draw_sim_fx(a, grid, bw, bh, ox, oy, canvas);
         draw_building_hp_bars(a, grid, bw, bh, ox, oy, canvas);
+        g_perf.marks += ms_since(p_mk0);
     }
     // 建造落点预览：**逐格**标记——可建格绿色、被占（建筑/覆盖物/矿石/单位/
     // 地形）格红色；任一格红即拒绝放置（place_player_build 再校验一次）
@@ -521,20 +664,67 @@ void render_all(StageApp& a, std::string* error) {
         }
     }
     const auto t2 = std::chrono::steady_clock::now();
-    // 上传纹理（呈现后端抽象：OpenGL / SDLRenderer）
+    // 上传纹理（呈现后端抽象：OpenGL / SDLRenderer）：只传画过的可见范围
     if (!a.host) {
         if (error) *error = "no backend host";
         return;
     }
+    // 整幅上传：区域上传（glTexSubImage2D + GL_UNPACK_ROW_LENGTH）在本机 GL 上
+    // 静默失败（截图停留在首帧、simbuild/simattack 转储相同），在没条件逐帧验证
+    // 前不用它；整幅上传 10ms 已可接受（此前 271ms 的问题在画家序重复调用）。
     a.host->update_texture(bw, bh, canvas.data());
+    ++a.frame_no;
     const auto t3 = std::chrono::steady_clock::now();
+    g_perf.upload += std::chrono::duration<double, std::milli>(t3 - t2).count();
+    g_perf.total += std::chrono::duration<double, std::milli>(t3 - t0).count();
     if (a.perf_log) {
-        std::printf("[perf] 静态重建 %.1fms 拷贝+对象 %.1fms 上传 %.1fms 合计 %.1fms\n",
+        std::printf("[perf] 画家序遍历 %.1fms 覆盖层+上传 %.1fms 合计 %.1fms\n",
                     std::chrono::duration<double, std::milli>(t1 - t0).count(),
-                    std::chrono::duration<double, std::milli>(t2 - t1).count(),
                     std::chrono::duration<double, std::milli>(t3 - t2).count(),
                     std::chrono::duration<double, std::milli>(t3 - t0).count());
+        // 每 60 帧打印分相均值（性能监测：先测再优化，避免凭感觉改）
+        if (++g_perf.frames >= 60) {
+            const double n = static_cast<double>(g_perf.frames);
+            std::printf(
+                "[perf] 60帧均值 ms: 拷贝 %.2f | 对象 %.2f (其中遮挡 %.2f) | 标记 %.2f | 上传 %.2f "
+                "| 合计 %.2f | 本帧对象 %d 建筑 %d 遮挡补画 %d 对象\n",
+                g_perf.copy / n, g_perf.objects / n, g_perf.occl / n, g_perf.marks / n,
+                g_perf.upload / n, g_perf.total / n, a.obj_stats.units + a.obj_stats.buildings,
+                a.obj_stats.buildings, g_perf.occl_objs / g_perf.frames);
+            g_perf = PerfAcc{};
+        }
     }
+}
+
+// 性能基准（--bench N）：每帧 3 逻辑帧 + 全量渲染，打印分相均值
+void run_bench(StageApp& a, int frames) {
+    if (frames <= 0) return;
+    g_perf = PerfAcc{};
+    // 模拟交互视口（真实游戏只画可见范围 + 只上传该范围）：1500×950 窗口
+    a.test_whole_canvas = false;
+    a.view_x0 = 1400;
+    a.view_y0 = 1200;
+    a.view_x1 = 2900;
+    a.view_y1 = 2150;
+    double sim_ms = 0;
+    const auto b0 = std::chrono::steady_clock::now();
+    std::string err;
+    for (int f = 0; f < frames; ++f) {
+        const auto s0 = std::chrono::steady_clock::now();
+        for (int k = 0; k < 3; ++k) a.sim.tick();
+        sim_ms += ms_since(s0);
+        render_all(a, &err);
+    }
+    const double total_ms = ms_since(b0);
+    const double n = static_cast<double>(frames);
+    std::printf(
+        "[bench] N=%d 帧均 %.2fms = 模拟 %.2f + 拷贝 %.2f + 选中底 %.2f + 对象 %.2f "
+        "(其中遮挡 %.2f) + 标记 %.2f + 上传 %.2f | 对象 %d 建筑 %d、遮挡补画 %d 对象/帧\n",
+        frames, total_ms / n, sim_ms / n, g_perf.copy / n, g_perf.underlay / n, g_perf.objects / n,
+        g_perf.occl / n, g_perf.marks / n, g_perf.upload / n,
+        a.obj_stats.units + a.obj_stats.buildings, a.obj_stats.buildings,
+        g_perf.frames > 0 ? g_perf.occl_objs / g_perf.frames : 0);
+    fflush(stdout);
 }
 
 // ── M3 模拟层粘合 ──
@@ -702,6 +892,22 @@ void append_sim_objects(StageApp& a, std::vector<ra2r::render::PlacedObject>& ob
         // 子格（步兵 0..2 等腰三角分布）：移动中也保持偏移
         //（否则同格 3 人贴在一起看上去只有 1 个）
         po.subcell = u.subcell;
+        // 上下坡车体俯仰（原版实时按坡度倾斜体素整模）：当前格与段终点格的高差
+        // ÷ 两格屏幕距离 → 坡度角。下坡为正（车头压向低处），平地/静止 = 0。
+        if (u.kind == 1 && (u.next_col != u.col || u.next_row != u.row) &&
+            u.next_col >= 0 && u.next_row >= 0 && u.next_col < a.map.w && u.next_row < a.map.h) {
+            const int h0 = static_cast<int>(a.map.cell(u.col, u.row).height);
+            const int h1 = static_cast<int>(a.map.cell(u.next_col, u.next_row).height);
+            if (h0 != h1) {
+                const int dx = 60 * (u.next_col - u.col) + 30 * ((u.next_row & 1) - (u.row & 1));
+                const int dy = 15 * (u.next_row - u.row);
+                const float dist = std::sqrt(static_cast<float>(dx * dx + dy * dy));
+                if (dist > 0.0f)
+                    po.tilt = std::atan2(static_cast<float>(h0 - h1) *
+                                             ra2r::render::kHeightLevelPx,
+                                         dist);
+            }
+        }
         objects_out.push_back(po);
     }
 }

@@ -81,14 +81,25 @@ void Projection::project(float gx, float gy, float gz, float& px, float& py,
 }
 
 // 由 HVA 矩阵与视角参数构造投影
-Projection make_projection(const float m[12], float yaw, float pitch, float scale) {
+Projection make_projection(const float m[12], float yaw, float pitch, float scale, float tilt) {
     const float cy = std::cos(yaw), sy = std::sin(yaw);
     const float cp = std::cos(pitch), sp = std::sin(pitch);
     const float px = 2.0f * scale, py = scale, pz = 2.0f * scale; // 2:1 斜投影比例
+    // 车体俯仰（上下坡）：绕模型横向轴 y 旋转（车头 = +x）。**在 HVA 之后**，
+    // 即先摆好各节位置再整体倾斜——炮塔/炮管跟着底盘一起倾。
+    const float ct = std::cos(tilt), st = std::sin(tilt);
+    const auto tilt_vec = [&](float& x, float& y, float& z) {
+        (void)y; // 绕横向轴 y 旋转：y 分量不变
+        const float nx = x * ct + z * st;
+        const float nz = -x * st + z * ct;
+        x = nx;
+        z = nz;
+    };
     auto proj_vec = [&](float gx, float gy, float gz, float& ox, float& oy, float& od) {
-        const float wx = m[0] * gx + m[1] * gy + m[2] * gz;
-        const float wy = m[4] * gx + m[5] * gy + m[6] * gz;
-        const float wz = m[8] * gx + m[9] * gy + m[10] * gz;
+        float wx = m[0] * gx + m[1] * gy + m[2] * gz;
+        float wy = m[4] * gx + m[5] * gy + m[6] * gz;
+        float wz = m[8] * gx + m[9] * gy + m[10] * gz;
+        if (tilt != 0.0f) tilt_vec(wx, wy, wz);
         const float u = wx * cy - wy * sy;
         const float v1 = wx * sy + wy * cy;
         const float v2 = v1 * cp - wz * sp;
@@ -110,8 +121,8 @@ Projection make_projection(const float m[12], float yaw, float pitch, float scal
 // 不做该映射时三件（底盘/炮塔/炮管）都会叠在原点——炮塔埋进底盘。
 // 烘焙后 project() 仍吃索引，底盘观感与旧行为一致（步长 ≈ 1）。
 Projection make_section_projection(const assets::VxlSection& s, const float m[12], float yaw,
-                                   float pitch, float scale) {
-    Projection p = make_projection(m, yaw, pitch, scale);
+                                   float pitch, float scale, float tilt) {
+    Projection p = make_projection(m, yaw, pitch, scale, tilt);
     const float* mn = s.min;
     const float* mx = s.max;
     const float step[3] = {
@@ -356,7 +367,7 @@ RasterImage rasterize_voxel_section(const assets::VxlFile& vxl, const assets::Hv
     float hva_m[12];
     load_hva_matrix(hva, section, hva_frame, hva_m);
     const Projection proj =
-        make_section_projection(section, hva_m, view.yaw, view.pitch, view.scale);
+        make_section_projection(section, hva_m, view.yaw, view.pitch, view.scale, view.tilt);
 
     std::vector<Voxel> voxels;
     float min_x, max_x, min_y, max_y;
@@ -402,7 +413,7 @@ RasterImage rasterize_voxel_parts(const VoxelPart* parts, size_t count, const Vo
             sd.vxl = p.vxl;
             load_hva_matrix(p.hva, section, p.hva_frame, sd.hva_m);
             sd.proj = make_section_projection(section, sd.hva_m, view.yaw, view.pitch,
-                                              view.scale);
+                                              view.scale, view.tilt);
             float a, b, c, d;
             collect_voxels(section, sd.proj, sd.vx, a, b, c, d);
             if (sd.vx.empty()) continue;
@@ -458,7 +469,7 @@ RasterImage rasterize_voxel_parts(const VoxelPart* parts, size_t count, const Vo
             };
             const float identity[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
             const Projection pure =
-                make_section_projection(s0, identity, view.yaw, view.pitch, view.scale);
+                make_section_projection(s0, identity, view.yaw, view.pitch, view.scale, view.tilt);
             float ox, oy, od;
             pure.project(idx_of(s0.min[0], s0.max[0], s0.sx),
                          idx_of(s0.min[1], s0.max[1], s0.sy),

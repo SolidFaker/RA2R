@@ -197,6 +197,25 @@ void BackendHost::update_texture(int w, int h, const uint8_t* rgba) {
     }
 }
 
+void BackendHost::update_texture_rect(int x, int y, int w, int h, int stride, const uint8_t* src) {
+    if (w <= 0 || h <= 0 || !src || stride <= 0) return;
+    if (kind_ == BackendKind::kOpenGL) {
+        if (!impl_->gl_tex || impl_->tex_w <= 0 || impl_->tex_h <= 0) return;
+        SDL_GL_MakeCurrent(window_, impl_->gl);
+        glBindTexture(GL_TEXTURE_2D, impl_->gl_tex);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, stride);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE,
+                        src + (static_cast<size_t>(y) * stride + x) * 4);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    } else {
+        if (!impl_->tex) return;
+        const SDL_Rect r{x, y, w, h};
+        SDL_UpdateTexture(impl_->tex, &r, src + (static_cast<size_t>(y) * stride + x) * 4,
+                          stride * 4);
+    }
+}
+
 ImTextureID BackendHost::texture_id() const {
     if (kind_ == BackendKind::kOpenGL)
         return static_cast<ImTextureID>(static_cast<uint64_t>(impl_->gl_tex));
