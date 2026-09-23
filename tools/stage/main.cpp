@@ -4,7 +4,8 @@
 //   1. 地形类型选择（6 剧场）
 //   2. 地图生成模式：算法（湖泊+高度团块）/ 完全平坦 / 加载游戏目录地图
 //   3. 放置对象：建筑 / 步兵 / 载具（左键放置、右键删除）
-// 交互：视口拖拽平移、滚轮缩放（地图切换后自动居中适配）。
+// 交互：视口拖拽平移（鼠标中键；macOS 触控板两指滑动同效）、滚轮缩放
+// （macOS 触控板两指捏合同效；地图切换后自动居中适配）。
 //
 // GUI 约束（与项目统一）：双击可运行（自动发现游戏目录，找不到弹出目录选择）、
 // 中文界面（系统 CJK 字体）、统一 DPI 缩放（ra2r::ui 引导，布局固定尺寸 × S）。
@@ -73,6 +74,13 @@ void SDLCALL on_folder_picked(void* userdata, const char* const* filelist, int f
     g_pick_done = true;
     if (filelist && filelist[0]) g_picked_folder = filelist[0];
 }
+
+#ifdef __APPLE__
+// macOS 触控板：SDL 滚轮单位 = 0.1 点，×10 还原为视口像素（1:1 跟手）
+constexpr float kMacPanPixels = 10.0f;
+// 手势结束后动量滚动继续按平移处理的冷却窗口（1s）
+constexpr uint64_t kMacMomentumNs = 1000000000ull;
+#endif
 
 } // namespace
 
@@ -178,6 +186,12 @@ static int run(int argc, char** argv) {
     }
     ra2r::ui::enable_dpi_awareness();
     ra2r::ui::console_utf8();
+#ifdef __APPLE__
+    // macOS 触控板：SDL 默认把触控板伪装成鼠标（不产生触摸事件）。开启后
+    // 触控板作为独立触摸设备上报 FINGER 事件，用于识别两指手势/区分触控板
+    // 与物理滚轮；鼠标移动/点击行为不变（该 hint 仅改变触摸事件的设备归属）。
+    SDL_SetHint(SDL_HINT_TRACKPAD_IS_TOUCH_ONLY, "1");
+#endif
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
@@ -389,10 +403,32 @@ static int run(int argc, char** argv) {
     bool running = true;
     int frame = 0;
     uint64_t sim_clock = SDL_GetTicks(); // M3 模拟层 15Hz 累计时钟（ms）
+#ifdef __APPLE__
+    // macOS 触控板：两指滑动平移（等价中键拖动）、两指捏合缩放（等价滚轮）。
+    // 触控板与物理滚轮在 SDL 层同为 MOUSE_WHEEL 事件，无法直接区分，故用
+    // "活跃手指数 / 刚结束的两指手势" 判定来源：触控板→平移，物理滚轮→缩放。
+    int mac_fingers = 0;         // 当前触控板上的手指数
+    uint64_t mac_two_finger_ns = 0; // 最近一次两指手势时间（含动量冷却）
+#endif
     while (running) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             host.process_event(&ev);
+#ifdef __APPLE__
+            // 触控板手势：统计手指数（判定滚轮来源）；捏合直接缩放视角
+            if (ev.type == SDL_EVENT_FINGER_DOWN) {
+                if (++mac_fingers >= 2) mac_two_finger_ns = SDL_GetTicksNS();
+            } else if (ev.type == SDL_EVENT_FINGER_MOTION) {
+                if (mac_fingers >= 2) mac_two_finger_ns = SDL_GetTicksNS();
+            } else if (ev.type == SDL_EVENT_FINGER_UP || ev.type == SDL_EVENT_FINGER_CANCELED) {
+                if (mac_fingers >= 2) mac_two_finger_ns = SDL_GetTicksNS(); // 进入动量冷却
+                if (mac_fingers > 0) --mac_fingers;
+            } else if (ev.type == SDL_EVENT_PINCH_UPDATE) {
+                // 两指分离 scale>1 放大，合并 scale<1 缩小（乘性缩放更跟手）
+                a.zoom = std::clamp(a.zoom * ev.pinch.scale, 0.1f, 3.0f);
+                a.dirty = true;
+            }
+#endif
             if (ev.type == SDL_EVENT_QUIT) running = false;
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_ESCAPE) running = false;
             // 展开基地车（D）/ 取消放置（Esc 之外的右键）
@@ -811,8 +847,26 @@ static int run(int argc, char** argv) {
             a.pan_y += d.y;
         }
         if (view_hovered) {
-            const float w = ImGui::GetIO().MouseWheel;
-            if (w != 0.0f) a.zoom = std::clamp(a.zoom + w * 0.1f, 0.1f, 3.0f);
+            const ImGuiIO& io = ImGui::GetIO();
+#ifdef __APPLE__
+            // 触控板两指滑动 = 滚轮事件 → 平移视角（等价中键拖动）；
+            // 动量滚动在手指离开后继续平移；物理滚轮（无触控板手势）→ 缩放。
+            const bool trackpad_wheel =
+                mac_fingers >= 2 ||
+                (mac_two_finger_ns != 0 &&
+                 (SDL_GetTicksNS() - mac_two_finger_ns) < kMacMomentumNs);
+            if (trackpad_wheel) {
+                if (io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f) {
+                    a.pan_x += io.MouseWheelH * kMacPanPixels;
+                    a.pan_y += io.MouseWheel * kMacPanPixels;
+                    a.dirty = true;
+                }
+            } else
+#endif
+            {
+                const float w = io.MouseWheel;
+                if (w != 0.0f) a.zoom = std::clamp(a.zoom + w * 0.1f, 0.1f, 3.0f);
+            }
         }
         if (view_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             const ImVec2 mp = ImGui::GetIO().MousePos;

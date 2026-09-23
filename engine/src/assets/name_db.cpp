@@ -7,11 +7,8 @@
 #include <fstream>
 #include <set>
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
-
 #include "ra2r/core/endian.h"
+#include "ra2r/core/executable_path.h"
 #include "ra2r/core/ini_file.h"
 
 namespace ra2r::assets {
@@ -136,10 +133,8 @@ size_t load_global_names_from_xcc(MixFile& mix, const uint8_t* data, size_t size
 bool try_load_xcc_database(MixFile& mix, std::string* loaded_from) {
     std::vector<std::filesystem::path> candidates;
     // exe 目录及向上几级（开发时 exe 在 build/tools/ 下，数据在仓库根 data/）
-#ifdef _WIN32
-    wchar_t buf[MAX_PATH];
-    if (GetModuleFileNameW(nullptr, buf, MAX_PATH) > 0) {
-        const std::filesystem::path exe(buf);
+    const std::filesystem::path exe = core::executable_path();
+    if (!exe.empty()) {
         const std::filesystem::path dir = exe.parent_path();
         for (const char* rel : {"", "data/", "../data/", "../../data/", "../../../data/",
                                 "../third_party/reference/",
@@ -148,20 +143,6 @@ bool try_load_xcc_database(MixFile& mix, std::string* loaded_from) {
             candidates.push_back(dir / (rel + std::string("global mix database.dat")));
         }
     }
-#else
-    // Linux：/proc/self/exe（无 wmain/GetModuleFileName）
-    std::error_code xec;
-    const auto exe = std::filesystem::read_symlink("/proc/self/exe", xec);
-    if (!xec) {
-        const std::filesystem::path dir = exe.parent_path();
-        for (const char* rel : {"", "data/", "../data/", "../../data/", "../../../data/",
-                                "../third_party/reference/",
-                                "../../third_party/reference/",
-                                "../../../third_party/reference/"}) {
-            candidates.push_back(dir / (rel + std::string("global mix database.dat")));
-        }
-    }
-#endif
     candidates.emplace_back("data/global mix database.dat");
     candidates.emplace_back("third_party/reference/global mix database.dat");
     candidates.emplace_back("global mix database.dat");

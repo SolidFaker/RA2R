@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "ra2r/core/executable_path.h"
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -124,28 +126,14 @@ std::string find_game_dir() {
 
     // 3) exe 目录向上几级（开发布局：exe 在 build/tools/，游戏在仓库根 Yuri/）
     std::vector<std::filesystem::path> candidates;
-#ifdef _WIN32
-    wchar_t buf[MAX_PATH];
-    if (::GetModuleFileNameW(nullptr, buf, MAX_PATH) > 0) {
-        const std::filesystem::path exe_dir = std::filesystem::path(buf).parent_path();
+    const std::filesystem::path exe = executable_path();
+    if (!exe.empty()) {
+        const std::filesystem::path exe_dir = exe.parent_path();
         for (const char* rel : {"Yuri", "RA2", "Red Alert 2", "Yuri's Revenge", "../Yuri",
                                 "../RA2", "../../Yuri", "../../RA2", "../Red Alert 2"}) {
             candidates.push_back(exe_dir / rel);
         }
     }
-#else
-    // Linux：/proc/self/exe 解析可执行文件路径（wmain 入口在非 Windows 不存在）
-    std::error_code exe_ec;
-    const auto exe = std::filesystem::read_symlink("/proc/self/exe", exe_ec);
-    if (!exe_ec) {
-        const std::filesystem::path exe_dir = exe.parent_path();
-        for (const char* rel : {"Yuri", "RA2", "Red Alert 2", "Yuri's Revenge", "../Yuri",
-                                "../RA2", "../../Yuri", "../../RA2", "../Red Alert 2",
-                                "../../Yuri"}) {
-            candidates.push_back(exe_dir / rel);
-        }
-    }
-#endif
     candidates.emplace_back("Yuri");
     candidates.emplace_back(".");
     candidates.emplace_back("..");

@@ -23,7 +23,8 @@ void enable_dpi_awareness();
 // Windows 控制台切换到 UTF-8（代码页 65001）；无控制台（双击运行）时无害。
 void console_utf8();
 
-// 加载系统中文字体（黑体/雅黑/宋体/等线，含拉丁字形）为 ImGui 默认字体。
+// 加载系统中文字体（Windows 黑体/雅黑/宋体/等线；macOS 苹方/冬青黑体/黑体/宋体；
+// Linux Noto CJK/文泉驿/思源，含拉丁字形）为 ImGui 默认字体。
 // pixel_size 建议 18×DPI 缩放。成功返回 true；无可用中文字体时退回
 // ImGui 内置字体（中文显示为占位符）并返回 false。
 bool setup_cjk_font(float pixel_size);

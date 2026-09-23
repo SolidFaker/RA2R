@@ -965,6 +965,43 @@ DeaccelerationFactor）+ 转向（ROT/TurretROT）
 - **延后**：飞机返场/停机坪（`AirportBound`）、潜艇下潜/声呐反潜、
   `NavalTargeting/LandTargeting` 槽位选武器（字段已解析）。
 
+### 3.44 macOS 构建与资源发现（第三个平台）
+- **构建**：Apple clang 21 + CMake 4.4 + Ninja + Homebrew SDL3 3.4.16，
+  `-DCMAKE_PREFIX_PATH=/opt/homebrew`；91 目标 0 error，`ctest` 156/156。
+- **exe 路径**：`game_dir.cpp` / `name_db.cpp` 原来只在非 Windows 用
+  `/proc/self/exe`（Linux 专属），macOS 无 `/proc` → 无法按 exe 位置发现游戏目录
+  与 XCC 名库。抽出 `core::executable_path()`（Win `GetModuleFileNameW` /
+  macOS `_NSGetExecutablePath` / Linux `/proc/self/exe`），两处统一调用。
+- **现象与根因**：cwd 在仓库根时一切正常（`data/`、`Yuri/` 恰好在 CWD），
+  从 `build/tools/` 或其它目录启动则"未找到游戏目录"或
+  "palette missing: ISOTEM.PAL"——后者因嵌套 MIX 条目无名，需 XCC 名库
+  （`global mix database.dat`）解析，而名库查找同样依赖 exe 路径。
+- **中文字体**：`ui::setup_cjk_font` 补 macOS 候选——苹方 `PingFang.ttc`
+  （SC Regular 为 TTC 内索引 3；新版系统在 `/System/Library/AssetsV2` 哈希目录，
+  固定路径缺失时扫描 `com_apple_MobileAsset_Font*`）、冬青黑体 SC、黑体 SC、
+  宋体 SC、Arial Unicode。TTC 字面索引经 `ImFontConfig::FontNo` 传入。
+- **验证**：`build/tools/` 下自动发现、`--gamedir` 手动指定、`/tmp` 下
+  `RA2R_GAME_DIR` 三种方式均正确加载（XCC 14386 名 + rules 559 单位）；
+  `stage --test` 日志 `cjk_font=1 font=PingFang.ttc`。
+- **触控板两指平移 + 捏合缩放**：SDL 默认把 macOS 触控板触摸伪装成鼠标事件，
+  不产生 `SDL_EVENT_FINGER_*`（`SDL_HINT_MOUSE_TOUCH_EVENTS` 桌面默认关，见
+  `SDL_touch.c`：`id==SDL_MOUSE_TOUCHID && !mouse_touch_events` 直接丢弃）。
+  开启 `SDL_HINT_TRACKPAD_IS_TOUCH_ONLY=1`（`SDL_Init` 前）后触控板作为独立
+  触摸设备上报 FINGER 事件，且**不影响鼠标移动/点击**（该标志在
+  `SDL_cocoawindow.m` 仅用于 `isTouchFromTrackpad` 的设备归属判定）。
+  · **两指滑动 → 平移**：触控板两指滑动在 SDL 层就是 `SDL_EVENT_MOUSE_WHEEL`
+    （x/y），stage 把这类滚轮按 `MouseWheelH/MouseWheel × 10` 累加到
+    `pan_x/pan_y`（SDL 对精确滚动乘 0.1，×10 还原为点，1:1 跟手），等价中键拖动；
+    手指离开后的动量滚动在 1s 冷却窗口内继续平移。
+  · **捏合 → 缩放**：`SDL_EVENT_PINCH_UPDATE` 的 `scale` 乘到 `zoom`
+    （>1 分离放大、<1 合并缩小），等价滚轮。
+  · **区分触控板/物理滚轮**：二者同为 MOUSE_WHEEL 无法从事件本身分辨，故用
+    FINGER 事件统计手指数——`≥2 指` 或刚结束两指手势（动量窗口）判为触控板→
+    平移，否则（物理滚轮）→ 缩放。
+  · 注意：系统"两指轻扫切换页面"等手势可能截获横向滑动，需在系统设置里关闭。
+- **验证（触控板）**：编译 0 error、`ctest` 156/156、`stage --test` 正常；
+  两指手势需在真机触控板上人工确认（CI/无头环境无法注入）。
+
 ## 4. 构建/工具链类
 
 - 无管理员工具链：WinLibs MinGW（免安装）+ pip CMake + SDL3 mingw 预编译包，全部放 `I:\tools\`（不入库）。

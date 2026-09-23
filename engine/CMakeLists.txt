@@ -2,6 +2,7 @@
 add_library(ra2r_engine STATIC
   src/core/ini_file.cpp
   src/core/crc32.cpp
+  src/core/executable_path.cpp
   src/core/game_dir.cpp
   src/cache/cache_manager.cpp
   src/crypto/blowfish.cpp

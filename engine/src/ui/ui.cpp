@@ -55,17 +55,24 @@ void console_utf8() {
 }
 
 namespace {
+// 候选字体：path 为字体文件；face_index 为 TTC/OTC 集合内的字体索引
+// （如 macOS 苹方 PingFang.ttc 内含 HK/MO/TC/SC 多个字面，简体为索引 3）。
+struct FontCandidate {
+    std::string path;
+    int face_index = 0;
+};
+
 // 追加存在的字体文件到候选表
-void add_font(std::vector<std::string>& out, const std::string& path) {
+void add_font(std::vector<FontCandidate>& out, const std::string& path, int face_index = 0) {
     std::error_code ec;
-    if (std::filesystem::is_regular_file(path, ec)) out.push_back(path);
+    if (std::filesystem::is_regular_file(path, ec)) out.push_back({path, face_index});
 }
 
 #ifdef __linux__
 // fontconfig 查询（Linux 发行版字体路径各不相同：Noto/WQY/思源/文鼎…）：
 // `fc-match -f %{file}` 交给 fontconfig 选一个含中文字形的字体。
 // 不依赖 libfontconfig 链接（只用命令行，缺失时静默跳过）。
-void add_fontconfig_candidates(std::vector<std::string>& out) {
+void add_fontconfig_candidates(std::vector<FontCandidate>& out) {
     static const char* kQueries[] = {
         "sans-serif:lang=zh-cn", "Noto Sans CJK SC", "Source Han Sans SC",
         "WenQuanYi Micro Hei",   "WenQuanYi Zen Hei", "AR PL UMing CN",
@@ -126,14 +133,51 @@ std::vector<std::string> list_cjk_font_files() {
     return out;
 }
 #endif
+
+#ifdef __APPLE__
+// macOS 系统中文字体：优先苹方（PingFang SC），其次冬青黑体/黑体/宋体。
+// .ttc 集合内的简体字面索引见各 add_font 注释（ImGui FontNo）。
+// 新版 macOS 把苹方放进 /System/Library/AssetsV2 的哈希目录（路径不稳定），
+// 固定路径缺失时扫描 MobileAsset 字体目录兜底。
+void add_macos_candidates(std::vector<FontCandidate>& out) {
+    const size_t before = out.size();
+    add_font(out, "/System/Library/Fonts/PingFang.ttc", 3); // 苹方 SC Regular
+    if (out.size() == before) {
+        const std::filesystem::path assets = "/System/Library/AssetsV2";
+        std::error_code ec;
+        if (std::filesystem::is_directory(assets, ec)) {
+            for (const auto& entry : std::filesystem::directory_iterator(
+                     assets, std::filesystem::directory_options::skip_permission_denied, ec)) {
+                if (ec) break;
+                const std::string dir = entry.path().filename().string();
+                if (dir.rfind("com_apple_MobileAsset_Font", 0) != 0) continue; // 仅字体资产目录
+                for (auto it = std::filesystem::recursive_directory_iterator(
+                         entry.path(),
+                         std::filesystem::directory_options::skip_permission_denied, ec);
+                     it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+                    if (ec) break;
+                    if (it->is_regular_file() && it->path().filename() == "PingFang.ttc")
+                        add_font(out, it->path().string(), 3); // 苹方 SC Regular
+                }
+            }
+        }
+    }
+    add_font(out, "/System/Library/Fonts/Hiragino Sans GB.ttc", 0);    // 冬青黑体 SC W3
+    add_font(out, "/System/Library/Fonts/STHeiti Medium.ttc", 1);      // 黑体 SC Medium
+    add_font(out, "/System/Library/Fonts/STHeiti Light.ttc", 1);       // 黑体 SC Light
+    add_font(out, "/System/Library/Fonts/Supplemental/Songti.ttc", 0); // 宋体 SC
+    add_font(out, "/System/Library/Fonts/Supplemental/Arial Unicode.ttf");
+    add_font(out, "/Library/Fonts/Arial Unicode.ttf");
+}
+#endif
 } // namespace
 
 bool setup_cjk_font(float pixel_size) {
     ImGuiIO& io = ImGui::GetIO();
-    // 候选顺序：Windows 黑体/雅黑/宋体/等线/楷体；Linux 常见发行版路径；
-    // fontconfig 兜底（发行版路径千差万别，交给 fontconfig 最稳）。
+    // 候选顺序：Windows 黑体/雅黑/宋体/等线/楷体；macOS 苹方/冬青黑体/黑体/宋体；
+    // Linux 常见发行版路径；fontconfig 兜底（发行版路径千差万别，交给 fontconfig 最稳）。
     // CJK 字体自带拉丁字形，直接作为唯一默认字体即可。
-    std::vector<std::string> fonts;
+    std::vector<FontCandidate> fonts;
     add_font(fonts, "C:\\Windows\\Fonts\\simhei.ttf");
     add_font(fonts, "C:\\Windows\\Fonts\\msyh.ttf");
     add_font(fonts, "C:\\Windows\\Fonts\\msyh.ttc");
@@ -141,6 +185,9 @@ bool setup_cjk_font(float pixel_size) {
     add_font(fonts, "C:\\Windows\\Fonts\\Deng.ttf");
     add_font(fonts, "C:\\Windows\\Fonts\\simkai.ttf");
     add_font(fonts, "C:\\Windows\\Fonts\\msyhl.ttc");
+#ifdef __APPLE__
+    add_macos_candidates(fonts);
+#endif
     // Arch（noto-cjk）/ Debian（opentype/noto）/ Fedora / 文泉驿 / 思源
     add_font(fonts, "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc");
     add_font(fonts, "/usr/share/fonts/noto-cjk/NotoSansCJKsc-Regular.otf");
@@ -160,19 +207,23 @@ bool setup_cjk_font(float pixel_size) {
     add_fontconfig_candidates(fonts);
     if (fonts.size() == before_fc) {
         // fontconfig 也不可用（极简容器）：扫描常见字体目录里名字像 CJK 的字体
-        for (const auto& f : list_cjk_font_files()) fonts.push_back(f);
+        for (const auto& f : list_cjk_font_files()) fonts.push_back({f, 0});
     }
 #endif
     for (const auto& f : fonts) {
+        ImFontConfig cfg;
+        cfg.FontNo = static_cast<ImU32>(f.face_index); // TTC/OTC 集合内字面索引
         ImFont* font = io.Fonts->AddFontFromFileTTF(
-            f.c_str(), pixel_size, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+            f.path.c_str(), pixel_size, &cfg, io.Fonts->GetGlyphRangesChineseFull());
         if (font) {
             io.FontDefault = font;
-            std::printf("[ui] CJK font: %s\n", f.c_str());
+            std::printf("[ui] CJK font: %s\n", f.path.c_str());
             return true;
         }
     }
-    std::fprintf(stderr, "[ui] 未找到中文字体（安装 noto-cjk 或 wqy-microhei）\n");
+    std::fprintf(stderr,
+                 "[ui] 未找到中文字体（Windows：黑体/雅黑；Linux：noto-cjk/wqy；"
+                 "macOS：系统自带苹方/冬青黑体）\n");
     return false;
 }
 
