@@ -19,6 +19,7 @@
 #include "ra2r/render/object_layer.h"
 #include "ra2r/render/palette_lut.h"
 #include "ra2r/render/terrain_tile.h"
+#include "ra2r/sim/game_speed.h"
 #include "ra2r/sim/sim_world.h"
 #include "ra2r/sim/skirmish.h"
 #include "ra2r/ui/backend.h"
@@ -76,6 +77,9 @@ struct StageApp {
     // 框选拖拽状态（模拟模式左键空地按下 → 松开按框选）
     bool box_active = false;
     float box_x0 = 0, box_y0 = 0;
+    // 游戏速度档 0..6（0 最快、6 最慢；原版 rulesmd [MultiplayerDialogSettings]
+    // GameSpeed 语义）。驱动方按档位间隔喂逻辑帧，逻辑逐帧确定性不变。
+    int game_speed = ra2r::sim::kGameSpeedDefault;
     int sim_steps = -1; // --simsteps N：无头自检推进 N 逻辑帧后转储（-1=关闭）
     bool sim_attack = false; // --simattack：自检用攻击脚本（单位0 攻击首个敌对单位）
     bool sim_build = false;  // --simbuild：自检用建造脚本（单位0 阵营起造 GAPOWR）

@@ -1002,6 +1002,31 @@ DeaccelerationFactor）+ 转向（ROT/TurretROT）
 - **验证（触控板）**：编译 0 error、`ctest` 156/156、`stage --test` 正常；
   两指手势需在真机触控板上人工确认（CI/无头环境无法注入）。
 
+### 3.45 游戏速度（对齐原版 GameSpeed 的两套相反表示）
+- **两套表示（易踩坑，务必区分）**：
+  · **游戏内设置滑条**（玩家视角）：**0 = 最慢，6 = 最快**。实测换算系数
+    （GameFAQs "YR Time Study" / Cheatbook，建造时间→真实秒）：
+    `0:1.50(最慢) 1:1.25 2:1.00 3:0.75(普通) 4:0.50(快) 5:0.25 6:0.125(最快)`。
+  · **rulesmd.ini `[MultiplayerDialogSettings] GameSpeed` 标志值**：游戏自带注释原文
+    `; GameSpeed = starting game speed. For some wacky reason, 0=fastest, 6=slowest. (def=0)`
+    ——与游戏内滑条**相反**（ModEnc："inversed from the actual selection in the game"）。
+  本项目采用**游戏内滑条约定（0 最慢、6 最快）**（玩家视角），并在代码注释写明另一套的
+  相反关系，避免再次搞反。
+- **实现**：原版把速度当作"时间倍率"——档位越高，单位/建造/超武计时等一切按真实时间
+  推进越快（世界/渲染各自独立）。本项目逻辑恒为逐帧确定性（15Hz 基准），故
+  `sim::game_speed_*`（engine/sim/game_speed.{h,cpp}）把档位映射为**喂帧间隔**
+  `1000/fps`：**只改真实时间推进速度，不改模拟结果**。7 档 fps 表
+  `{8,10,12,15,20,30,60}`（索引 0 最慢 → 6 最快）；索引 3 = 本项目 15Hz 基准
+  （默认档，保持既有手感）。原版相对倍率更极端（最快/最慢 ≈ 12×），这里按 15Hz
+  收敛为可实用的 ~7.5×。
+- **接入**：`StageApp::game_speed`（0..6）驱动 stage 的 `sim_clock` 步进
+  （`game_speed_interval_ms`，默认档 = 66ms，与原 15Hz 一致）；面板滑条 + `[`/`]`
+  调档（右 = 更快）；`--speed N` 命令行。逻辑帧内容不受影响（无头
+  `--test`/`--simsteps` 走逐帧 `tick()`，与档位无关）。
+- **验证**：`GameSpeed.*` 3 例（fps 随档位单调递增、默认档=15fps/66ms、夹取与越界名）
+  锁住取值；总 159；`stage --test --speed 0/6` 打印 `speed=0(最慢,8fps)` /
+  `speed=6(最快,60fps)`。
+
 ## 4. 构建/工具链类
 
 - 无管理员工具链：WinLibs MinGW（免安装）+ pip CMake + SDL3 mingw 预编译包，全部放 `I:\tools\`（不入库）。

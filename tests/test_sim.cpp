@@ -11,6 +11,7 @@
 
 #include "ra2r/assets/rules_db.h"
 #include "ra2r/render/isometric.h"
+#include "ra2r/sim/game_speed.h"
 #include "ra2r/sim/sim_world.h"
 #include "test_util.h"
 
@@ -1703,4 +1704,30 @@ TEST(SimDeterminism, IdenticalSequencesProduceIdenticalState) {
         EXPECT_EQ(a.units[i].hp, b.units[i].hp);
         EXPECT_EQ(a.units[i].idle_kind, b.units[i].idle_kind);
     }
+}
+
+// 游戏速度（原版游戏内滑条：0 最慢、6 最快；rulesmd 的标志值与之相反）。
+// 本项目把 15Hz 基准定为普通档 3。
+TEST(GameSpeed, FpsAscendsFromSlowestToFastest) {
+    EXPECT_EQ(sim::game_speed_fps(sim::kGameSpeedMin), 8); // 0 = 最慢 = 8fps
+    for (int i = sim::kGameSpeedMin; i < sim::kGameSpeedMax; ++i)
+        EXPECT_LT(sim::game_speed_fps(i), sim::game_speed_fps(i + 1))
+            << "档 " << i << " 应慢于档 " << (i + 1);
+    EXPECT_EQ(sim::game_speed_fps(sim::kGameSpeedMax), 60); // 6 = 最快 = 60fps
+}
+
+TEST(GameSpeed, DefaultKeeps15HzBaseline) {
+    // 默认档 = 既有 15Hz 基准（引擎默认手感不变）
+    EXPECT_EQ(sim::game_speed_fps(sim::kGameSpeedDefault), 15);
+    EXPECT_EQ(sim::game_speed_interval_ms(sim::kGameSpeedDefault), 66);
+    // 越快间隔越短（最快档间隔 < 最慢档间隔）
+    EXPECT_LT(sim::game_speed_interval_ms(6), sim::game_speed_interval_ms(0));
+}
+
+TEST(GameSpeed, ClampAndNames) {
+    EXPECT_EQ(sim::clamp_game_speed(-5), sim::kGameSpeedMin);
+    EXPECT_EQ(sim::clamp_game_speed(99), sim::kGameSpeedMax);
+    EXPECT_EQ(sim::game_speed_fps(-5), sim::game_speed_fps(sim::kGameSpeedMin));
+    EXPECT_EQ(sim::game_speed_fps(99), sim::game_speed_fps(sim::kGameSpeedMax));
+    EXPECT_STRNE(sim::game_speed_name(3), "");
 }

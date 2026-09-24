@@ -5,7 +5,8 @@
 //   2. 地图生成模式：算法（湖泊+高度团块）/ 完全平坦 / 加载游戏目录地图
 //   3. 放置对象：建筑 / 步兵 / 载具（左键放置、右键删除）
 // 交互：视口拖拽平移（鼠标中键；macOS 触控板两指滑动同效）、滚轮缩放
-// （macOS 触控板两指捏合同效；地图切换后自动居中适配）。
+// （macOS 触控板两指捏合同效；地图切换后自动居中适配）；游戏速度档可调
+// （面板滑条 / [/] 键；原版游戏内滑条语义：0 最慢..6 最快）。
 //
 // GUI 约束（与项目统一）：双击可运行（自动发现游戏目录，找不到弹出目录选择）、
 // 中文界面（系统 CJK 字体）、统一 DPI 缩放（ra2r::ui 引导，布局固定尺寸 × S）。
@@ -109,6 +110,7 @@ static int run(int argc, char** argv) {
     bool sk_noai = false;        // --noai：对手不自动展开/建造
     std::string sk_country, sk_color, sk_ocountry, sk_ocolor;
     int sk_class = 2, sk_tech = 10;
+    int speed_arg = -1; // --speed 0..6：游戏速度档（0 最慢、6 最快；原版游戏内滑条）
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--gamedir") == 0 && i + 1 < argc)
             gamedir_arg = argv[++i];
@@ -159,6 +161,8 @@ static int run(int argc, char** argv) {
             sk_class = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--sktech") == 0 && i + 1 < argc)
             sk_tech = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--speed") == 0 && i + 1 < argc)
+            speed_arg = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
             const std::string b = argv[++i];
             if (b == "sdl" || b == "sdgpu" || b == "sdlrenderer") backend_arg = 1;
@@ -171,7 +175,8 @@ static int run(int argc, char** argv) {
         else {
             std::printf(
                 "usage: stage [--gamedir <dir>] [--cache <root>] [--shot <bmp>] [--test] "
-                "[--noobj] [--dpi <f>] [--backend gl|sdl] [--perf] [--bench <frames>]\n"
+                "[--noobj] [--dpi <f>] [--backend gl|sdl] [--perf] [--bench <frames>] "
+                "[--speed 0..6]\n"
                 "       stage --map battle1.yrm --skirmish [--country <c>] [--color <c>] "
                 "[--ocountry <c>] [--ocolor <c>] [--skclass 0..3] [--sktech 1..10] [--noai]\n"
                 "  双击运行（无参数）时自动发现游戏目录；找不到则弹出目录选择窗口。\n");
@@ -248,6 +253,7 @@ static int run(int argc, char** argv) {
     a.sk_ai = !sk_noai;
     a.sk.class_sel = sk_class;
     a.sk.tech_level = sk_tech;
+    if (speed_arg >= 0) a.game_speed = ra2r::sim::clamp_game_speed(speed_arg);
     if (!sk_country.empty()) a.sk.cfg.player.country = sk_country;
     if (!sk_color.empty()) a.sk.cfg.player.color = sk_color;
     if (!sk_ocountry.empty()) a.sk.cfg.opponent.country = sk_ocountry;
@@ -314,8 +320,10 @@ static int run(int argc, char** argv) {
     if (!gamedir.empty()) std::snprintf(dir_buf, sizeof(dir_buf), "%s", gamedir.c_str());
     if (test_mode) {
         const ImFont* f = ImGui::GetIO().FontDefault;
-        std::printf("dpi: scale=%.2f cjk_font=%d font=%s gamedir=%s auto=%d\n", S, cjk ? 1 : 0,
-                    f ? f->GetDebugName() : "(none)", gamedir.c_str(), gamedir_arg ? 0 : 1);
+        std::printf("dpi: scale=%.2f cjk_font=%d font=%s gamedir=%s auto=%d speed=%d(%s,%dfps)\n",
+                    S, cjk ? 1 : 0, f ? f->GetDebugName() : "(none)", gamedir.c_str(),
+                    gamedir_arg ? 0 : 1, a.game_speed, ra2r::sim::game_speed_name(a.game_speed),
+                    ra2r::sim::game_speed_fps(a.game_speed));
     }
 
     // ── 无头测试：算法图 + 放置样本对象 + 转储（--noobj 只渲染纯地形便于对照）──
@@ -465,6 +473,17 @@ static int run(int argc, char** argv) {
                 }
                 a.dirty = true;
             }
+            // 游戏速度：[/] 调档（0 最慢..6 最快；原版游戏内滑条语义）
+            if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat &&
+                (ev.key.key == SDLK_LEFTBRACKET || ev.key.key == SDLK_RIGHTBRACKET)) {
+                const int d = (ev.key.key == SDLK_RIGHTBRACKET) ? 1 : -1;
+                const int ns = ra2r::sim::clamp_game_speed(a.game_speed + d);
+                if (ns != a.game_speed) {
+                    a.game_speed = ns;
+                    std::fprintf(stderr, "[stage] 游戏速度: %s (%d fps)\n",
+                                 ra2r::sim::game_speed_name(ns), ra2r::sim::game_speed_fps(ns));
+                }
+            }
             // 目录选择对话框的回调结果（对话框关闭时在主线程触发）
             if (g_pick_done) {
                 g_pick_done = false;
@@ -474,13 +493,16 @@ static int run(int argc, char** argv) {
                 }
             }
         }
-        // 模拟层逻辑帧（15Hz，与渲染帧率解耦；仅视觉状态变化才触发重渲染）
+        // 模拟层逻辑帧（基准 15Hz，与渲染帧率解耦；仅视觉状态变化才触发重渲染）。
+        // 游戏速度档只改"喂帧的真实时间间隔"，逻辑仍逐帧确定性推进（结果不变）。
         if (a.sim_active && !test_mode) {
             const uint64_t now = SDL_GetTicks();
-            while (sim_clock + 66 <= now) {
+            const uint64_t tick_ms =
+                static_cast<uint64_t>(ra2r::sim::game_speed_interval_ms(a.game_speed));
+            while (sim_clock + tick_ms <= now) {
                 if (a.sk.active) skirmish_ai_tick(a);
                 if (a.sim.tick()) a.dirty = true;
-                sim_clock += 66;
+                sim_clock += tick_ms;
                 if (now - sim_clock > 2000) sim_clock = now; // 窗口阻塞后不追帧
             }
             const uint64_t vh = a.sim.visual_hash();
@@ -592,6 +614,12 @@ static int run(int argc, char** argv) {
             static const char* kClassNames[4] = {"仅基地车", "轻装", "中装", "重装"};
             ImGui::Combo("开局兵力", &a.sk.class_sel, kClassNames, 4);
             ImGui::SliderInt("科技等级", &a.sk.tech_level, 1, 10);
+            // 游戏速度（原版游戏内滑条：0 最慢、6 最快；[/] 可调）
+            ImGui::SliderInt("游戏速度", &a.game_speed, ra2r::sim::kGameSpeedMin,
+                             ra2r::sim::kGameSpeedMax, "%d 档");
+            ImGui::TextDisabled("%s · %d fps（原版滑条：0 最慢、6 最快）",
+                                ra2r::sim::game_speed_name(a.game_speed),
+                                ra2r::sim::game_speed_fps(a.game_speed));
             if (ImGui::Button("开始遭遇战")) {
                 std::string skerr;
                 if (!start_skirmish(a, &skerr))

@@ -34,6 +34,7 @@ add_library(ra2r_engine STATIC
   src/render/object_layer.cpp
   src/render/overlay_layer.cpp
   src/render/map_scene.cpp
+  src/sim/game_speed.cpp
   src/sim/pathfind.cpp
   src/sim/sim_world.cpp
   src/sim/skirmish.cpp
